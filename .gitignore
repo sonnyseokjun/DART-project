@@ -1,0 +1,16 @@
+# 환경 변수 (API 키 등 비밀 값)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+
+# Django
+db.sqlite3
+/staticfiles/
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db

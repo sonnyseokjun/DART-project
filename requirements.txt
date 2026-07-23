@@ -1,0 +1,4 @@
+django>=5.2,<6.0
+djangorestframework>=3.17
+requests>=2.32
+python-dotenv>=1.0
