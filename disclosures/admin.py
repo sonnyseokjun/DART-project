@@ -23,8 +23,8 @@ class DisclosureSummaryInline(admin.StackedInline):
 
 @admin.register(Disclosure)
 class DisclosureAdmin(admin.ModelAdmin):
-    list_display = ('rcept_no', 'company', 'report_name', 'filed_at', 'raw_fetched')
-    list_filter = ('company', 'filed_at', 'raw_fetched')
+    list_display = ('rcept_no', 'company', 'disclosure_type', 'report_name', 'filed_at', 'raw_fetched')
+    list_filter = ('company', 'disclosure_type', 'filed_at', 'raw_fetched')
     search_fields = ('rcept_no', 'report_name')
     date_hierarchy = 'filed_at'
     inlines = [DisclosureSummaryInline]

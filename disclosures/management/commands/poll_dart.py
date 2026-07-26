@@ -10,7 +10,7 @@ from datetime import date, timedelta
 
 from django.core.management.base import BaseCommand
 
-from disclosures.dart import dart_viewer_url, iter_disclosures
+from disclosures.dart import PBLNTF_TYPES, dart_viewer_url, iter_disclosures
 from disclosures.models import Company, Disclosure
 
 
@@ -39,29 +39,34 @@ class Command(BaseCommand):
         bgn_de, end_de = bgn.strftime('%Y%m%d'), end.strftime('%Y%m%d')
         self.stdout.write(f'조회 범위 {bgn_de} ~ {end_de} · 추적 기업 {len(companies)}곳')
 
+        # 공시유형은 list.json 응답에 없으므로 유형별로 나눠 조회해 각 공시에 유형을 태깅한다.
+        # 유형은 전체 공시를 분할하므로 기업 수와 무관하게 호출 수가 고정된다(PLAN.md 12.2).
         scanned, new = 0, 0
-        for item in iter_disclosures(bgn_de, end_de):
-            scanned += 1
-            company = companies.get(item['corp_code'])
-            if company is None:
-                continue
-            _, created = Disclosure.objects.get_or_create(
-                rcept_no=item['rcept_no'],
-                defaults={
-                    'company': company,
-                    'report_name': item['report_nm'].strip(),
-                    'disclosure_type': item.get('pblntf_ty', ''),
-                    'filed_at': date(
-                        int(item['rcept_dt'][:4]),
-                        int(item['rcept_dt'][4:6]),
-                        int(item['rcept_dt'][6:8]),
-                    ),
-                    'dart_url': dart_viewer_url(item['rcept_no']),
-                },
-            )
-            if created:
-                new += 1
-                self.stdout.write(f'  신규: [{company.name}] {item["report_nm"].strip()}')
+        for code, type_name in PBLNTF_TYPES.items():
+            for item in iter_disclosures(bgn_de, end_de, pblntf_ty=code):
+                scanned += 1
+                company = companies.get(item['corp_code'])
+                if company is None:
+                    continue
+                _, created = Disclosure.objects.get_or_create(
+                    rcept_no=item['rcept_no'],
+                    defaults={
+                        'company': company,
+                        'report_name': item['report_nm'].strip(),
+                        'disclosure_type': type_name,
+                        'filed_at': date(
+                            int(item['rcept_dt'][:4]),
+                            int(item['rcept_dt'][4:6]),
+                            int(item['rcept_dt'][6:8]),
+                        ),
+                        'dart_url': dart_viewer_url(item['rcept_no']),
+                    },
+                )
+                if created:
+                    new += 1
+                    self.stdout.write(
+                        f'  신규: [{company.name}] ({type_name}) {item["report_nm"].strip()}'
+                    )
 
         self.stdout.write(self.style.SUCCESS(
             f'완료: 전체 공시 {scanned:,}건 스캔, 신규 저장 {new}건'
