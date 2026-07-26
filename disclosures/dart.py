@@ -16,6 +16,22 @@ BASE_URL = 'https://opendart.fss.or.kr/api'
 STATUS_OK = '000'
 STATUS_NO_DATA = '013'
 
+# 공시유형(pblntf_ty) 코드 → 명칭.
+# list.json 응답 항목에는 공시유형 필드가 없다. pblntf_ty는 요청 필터 파라미터일 뿐이므로,
+# 유형별로 나눠 조회해 각 공시에 유형을 태깅한다(유형은 전체 공시를 분할하므로 호출 오버헤드는 작다).
+PBLNTF_TYPES = {
+    'A': '정기공시',
+    'B': '주요사항보고',
+    'C': '발행공시',
+    'D': '지분공시',
+    'E': '기타공시',
+    'F': '외부감사관련',
+    'G': '펀드공시',
+    'H': '자산유동화',
+    'I': '거래소공시',
+    'J': '공정위공시',
+}
+
 
 class DartApiError(Exception):
     def __init__(self, status, message):
@@ -61,10 +77,11 @@ def download_corp_codes():
     return result
 
 
-def list_disclosures(bgn_de, end_de, corp_code=None, page_no=1, page_count=100):
+def list_disclosures(bgn_de, end_de, corp_code=None, pblntf_ty=None, page_no=1, page_count=100):
     """list.json 1페이지 조회. 응답 dict를 그대로 반환한다.
 
     corp_code 없이 호출하면 시장 전체 공시를 날짜 범위로 받는다(확장 전략).
+    pblntf_ty(PBLNTF_TYPES의 코드)를 주면 해당 공시유형만 조회한다.
     """
     params = {
         'crtfc_key': _api_key(),
@@ -75,6 +92,8 @@ def list_disclosures(bgn_de, end_de, corp_code=None, page_no=1, page_count=100):
     }
     if corp_code:
         params['corp_code'] = corp_code
+    if pblntf_ty:
+        params['pblntf_ty'] = pblntf_ty
     resp = requests.get(f'{BASE_URL}/list.json', params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -83,13 +102,15 @@ def list_disclosures(bgn_de, end_de, corp_code=None, page_no=1, page_count=100):
     return data
 
 
-def iter_disclosures(bgn_de, end_de, corp_code=None):
+def iter_disclosures(bgn_de, end_de, corp_code=None, pblntf_ty=None):
     """list.json 전체 페이지를 순회하며 공시 항목을 하나씩 yield."""
     page_no = 1
     while True:
-        data = list_disclosures(bgn_de, end_de, corp_code=corp_code, page_no=page_no)
+        data = list_disclosures(
+            bgn_de, end_de, corp_code=corp_code, pblntf_ty=pblntf_ty, page_no=page_no
+        )
         yield from data.get('list', [])
-        if page_no >= int(data.get('total_page', 1)):
+        if page_no >= int(data.get('total_page', 1) or 1):
             break
         page_no += 1
 
