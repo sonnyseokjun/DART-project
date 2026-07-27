@@ -1,18 +1,28 @@
-"""1단계 데이터 수집 파이프라인 회귀 테스트.
+"""데이터 수집·선별·원문 확보 파이프라인 회귀 테스트.
 
 DART 실호출 없이(네트워크·API 키 불필요) 동작을 고정한다.
-seed_companies는 download_corp_codes를, poll_dart는 iter_disclosures를 목으로 대체한다.
+seed_companies는 download_corp_codes를, poll_dart는 iter_disclosures를,
+fetch_documents는 fetch_document를 목으로 대체한다.
 """
-from datetime import date
+import json
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
-from disclosures.dart import PBLNTF_TYPES, dart_viewer_url
+from disclosures.dart import (
+    MAX_LIST_SPAN_DAYS, OFFERING_KEY_SECTIONS, PBLNTF_TYPES, PERIODIC_KEY_SECTIONS,
+    DartApiError, dart_viewer_url, extract_key_sections, is_dart_xml,
+    preprocess_document, split_date_range, strip_markup,
+)
 from disclosures.management.commands.seed_companies import TARGET_COMPANIES
-from disclosures.models import Company, Disclosure, Sector
+from disclosures.models import Company, Disclosure, DisclosureSummary, Sector
+from disclosures import summarizer
+from disclosures.selection import (
+    ExclusionReason, SelectionState, evaluate, is_blacklisted, normalize_title,
+)
 
 
 def _fake_corp_codes(skip=()):
@@ -95,6 +105,30 @@ def _fake_iter(bgn_de, end_de, corp_code=None, pblntf_ty=None):
     return iter(FAKE_BY_TYPE.get(pblntf_ty, []))
 
 
+class _RecordingIter:
+    """iter_disclosures 대역. 호출된 (bgn_de, end_de)를 순서대로 기록한다.
+
+    날짜 범위와 무관하게 같은 항목을 돌려주므로, 청크가 여러 개면 같은 공시가
+    청크 수만큼 반복 조회된다 — 멱등성 검증에 그대로 쓸 수 있다.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, bgn_de, end_de, corp_code=None, pblntf_ty=None):
+        self.calls.append((bgn_de, end_de))
+        return iter(FAKE_BY_TYPE.get(pblntf_ty, []))
+
+    @property
+    def chunks(self):
+        """유형별 반복 호출을 접어 날짜 청크 목록만 순서대로 반환."""
+        chunks = []
+        for date_range in self.calls:
+            if date_range not in chunks:
+                chunks.append(date_range)
+        return chunks
+
+
 class PollDartTest(TestCase):
     def setUp(self):
         self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
@@ -153,3 +187,773 @@ class PollDartTest(TestCase):
         # 추적 기업이 없으면 DART를 호출하지 않고 조기 반환한다.
         mock_iter.assert_not_called()
         self.assertEqual(Disclosure.objects.count(), 0)
+
+
+class SplitDateRangeTest(TestCase):
+    """검색기간 3개월 한도(오류 코드 100) 회피용 날짜 분할 단위 테스트."""
+
+    def test_short_range_is_single_chunk(self):
+        chunks = split_date_range(date(2026, 7, 1), date(2026, 7, 10))
+        self.assertEqual(chunks, [(date(2026, 7, 1), date(2026, 7, 10))])
+
+    def test_range_at_limit_is_not_split(self):
+        bgn = date(2026, 1, 1)
+        end = bgn + timedelta(days=MAX_LIST_SPAN_DAYS)  # 실측 통과 경계(89일)
+        self.assertEqual(split_date_range(bgn, end), [(bgn, end)])
+
+    def test_one_day_over_limit_splits(self):
+        bgn = date(2026, 1, 1)
+        end = bgn + timedelta(days=MAX_LIST_SPAN_DAYS + 1)
+        self.assertEqual(split_date_range(bgn, end), [
+            (bgn, bgn + timedelta(days=MAX_LIST_SPAN_DAYS)),
+            (bgn + timedelta(days=MAX_LIST_SPAN_DAYS), end),
+        ])
+
+    def test_every_chunk_within_limit_and_covers_range(self):
+        bgn, end = date(2024, 1, 1), date(2026, 7, 26)  # 2년 반
+        chunks = split_date_range(bgn, end)
+
+        self.assertGreater(len(chunks), 1)
+        for chunk_bgn, chunk_end in chunks:
+            self.assertLessEqual((chunk_end - chunk_bgn).days, MAX_LIST_SPAN_DAYS)
+        # 청크들의 합집합이 전체 범위를 빠짐없이 덮는다.
+        covered = set()
+        for chunk_bgn, chunk_end in chunks:
+            covered.update(
+                chunk_bgn + timedelta(days=i)
+                for i in range((chunk_end - chunk_bgn).days + 1)
+            )
+        expected = {bgn + timedelta(days=i) for i in range((end - bgn).days + 1)}
+        self.assertEqual(covered, expected)
+
+    def test_chunks_overlap_by_one_day(self):
+        chunks = split_date_range(date(2026, 1, 1), date(2026, 6, 30))
+        for prev, nxt in zip(chunks, chunks[1:]):
+            # 앞 창의 종료일 = 뒤 창의 시작일 (경계일 중복 조회)
+            self.assertEqual(prev[1], nxt[0])
+
+    def test_reversed_range_raises(self):
+        with self.assertRaises(ValueError):
+            split_date_range(date(2026, 7, 10), date(2026, 7, 1))
+
+
+class PollDartBackfillTest(TestCase):
+    """--bgn/--end 임의 구간 지정과 3개월 초과 범위 자동 분할."""
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자', is_active=True,
+        )
+
+    def _run(self, **options):
+        """iter_disclosures를 기록용 대역으로 바꿔 poll_dart를 실행한다."""
+        recorder = _RecordingIter()
+        with patch(
+            'disclosures.management.commands.poll_dart.iter_disclosures',
+            new=recorder,
+        ):
+            call_command('poll_dart', **options)
+        return recorder
+
+    def test_bgn_end_queries_given_range(self):
+        recorder = self._run(bgn='20260701', end='20260710')
+
+        self.assertEqual(recorder.chunks, [('20260701', '20260710')])
+        # 유형 10종을 모두 조회한다(공시유형 태깅).
+        self.assertEqual(len(recorder.calls), len(PBLNTF_TYPES))
+        self.assertEqual(Disclosure.objects.count(), 2)
+
+    def test_bgn_without_end_uses_today(self):
+        recorder = self._run(bgn=f'{date.today() - timedelta(days=2):%Y%m%d}')
+
+        self.assertEqual(
+            recorder.chunks, [(
+                f'{date.today() - timedelta(days=2):%Y%m%d}',
+                f'{date.today():%Y%m%d}',
+            )]
+        )
+
+    def test_days_with_bgn_end_raises(self):
+        with self.assertRaises(CommandError) as ctx:
+            self._run(days=7, bgn='20260701', end='20260710')
+        self.assertIn('함께 지정할 수 없습니다', str(ctx.exception))
+
+        with self.assertRaises(CommandError):
+            self._run(days=7, bgn='20260701')
+        with self.assertRaises(CommandError):
+            self._run(days=7, end='20260710')
+
+    def test_end_without_bgn_raises(self):
+        with self.assertRaises(CommandError) as ctx:
+            self._run(end='20260710')
+        self.assertIn('--bgn', str(ctx.exception))
+
+    def test_invalid_date_format_raises(self):
+        for bad in ('2026-07-01', '20260732', 'abcdefgh', '202607'):
+            with self.assertRaises(CommandError, msg=bad):
+                self._run(bgn=bad, end='20260710')
+
+    def test_bgn_after_end_raises(self):
+        with self.assertRaises(CommandError) as ctx:
+            self._run(bgn='20260710', end='20260701')
+        self.assertIn('늦습니다', str(ctx.exception))
+
+    def test_future_end_raises(self):
+        future = date.today() + timedelta(days=10)
+        with self.assertRaises(CommandError) as ctx:
+            self._run(bgn=f'{date.today():%Y%m%d}', end=f'{future:%Y%m%d}')
+        self.assertIn('미래', str(ctx.exception))
+
+    def test_negative_days_raises(self):
+        with self.assertRaises(CommandError):
+            self._run(days=-1)
+
+    def test_long_range_splits_into_expected_chunks(self):
+        # 2026-01-01 ~ 06-30 (181일) → 89일 이하 창 3개. 경계일이 하루씩 겹친다.
+        recorder = self._run(bgn='20260101', end='20260630')
+
+        self.assertEqual(recorder.chunks, [
+            ('20260101', '20260331'),
+            ('20260331', '20260628'),
+            ('20260628', '20260630'),
+        ])
+        # 청크 × 공시유형 만큼 호출된다.
+        self.assertEqual(len(recorder.calls), 3 * len(PBLNTF_TYPES))
+
+    def test_chunks_cover_range_without_gap(self):
+        bgn, end = date(2025, 1, 1), date(2026, 7, 20)
+        recorder = self._run(bgn=f'{bgn:%Y%m%d}', end=f'{end:%Y%m%d}')
+
+        covered = set()
+        for bgn_de, end_de in recorder.chunks:
+            chunk_bgn = date(int(bgn_de[:4]), int(bgn_de[4:6]), int(bgn_de[6:8]))
+            chunk_end = date(int(end_de[:4]), int(end_de[4:6]), int(end_de[6:8]))
+            self.assertLessEqual((chunk_end - chunk_bgn).days, MAX_LIST_SPAN_DAYS)
+            covered.update(
+                chunk_bgn + timedelta(days=i)
+                for i in range((chunk_end - chunk_bgn).days + 1)
+            )
+        # 전체 범위의 모든 날짜가 어느 한 청크에는 반드시 들어간다(누락 0일).
+        expected = {bgn + timedelta(days=i) for i in range((end - bgn).days + 1)}
+        self.assertEqual(covered, expected)
+
+    def test_days_over_limit_completes_without_error(self):
+        # --days 150은 3개월 한도를 넘지만 자동 분할로 오류 없이 완료돼야 한다.
+        recorder = self._run(days=150)
+
+        self.assertEqual(len(recorder.chunks), 2)
+        for bgn_de, end_de in recorder.chunks:
+            chunk_bgn = date(int(bgn_de[:4]), int(bgn_de[4:6]), int(bgn_de[6:8]))
+            chunk_end = date(int(end_de[:4]), int(end_de[4:6]), int(end_de[6:8]))
+            self.assertLessEqual((chunk_end - chunk_bgn).days, MAX_LIST_SPAN_DAYS)
+        self.assertEqual(f'{date.today():%Y%m%d}', recorder.chunks[-1][1])
+
+    def test_overlapping_chunks_do_not_duplicate(self):
+        # 대역은 청크마다 같은 공시를 돌려준다 → 3회 조회되지만 저장은 1건씩.
+        recorder = self._run(bgn='20260101', end='20260630')
+
+        self.assertEqual(len(recorder.chunks), 3)
+        self.assertEqual(Disclosure.objects.count(), 2)
+        self.assertEqual(
+            Disclosure.objects.filter(rcept_no='20260724000001').count(), 1
+        )
+
+    def test_backfill_then_rerun_is_idempotent(self):
+        self._run(bgn='20260101', end='20260630')
+        self._run(bgn='20260101', end='20260630')
+
+        self.assertEqual(Disclosure.objects.count(), 2)
+
+
+# ---------------------------------------------------------------------------
+# 요약 대상 선별 정책 (disclosures/selection.py)
+# ---------------------------------------------------------------------------
+
+class SelectionPolicyTest(TestCase):
+    """선별 규칙 자체를 순수 함수 수준에서 고정한다. LLM 비용이 여기 달려 있다."""
+
+    def test_normalize_strips_bracket_prefix_and_whitespace(self):
+        self.assertEqual(
+            normalize_title('[기재정정]임원ㆍ주요주주특정증권등소유상황보고서'),
+            '임원ㆍ주요주주특정증권등소유상황보고서',
+        )
+        # 정렬용 연속 공백이 섞여도 같은 제목으로 본다.
+        self.assertEqual(
+            normalize_title('[기재정정]소송등의판결ㆍ결정      (주주총회결의취소)'),
+            '소송등의판결ㆍ결정(주주총회결의취소)',
+        )
+        # 대괄호 태그가 겹쳐 붙어도 모두 벗긴다.
+        self.assertEqual(normalize_title('[기재정정][첨부정정]분기보고서'), '분기보고서')
+
+    def test_blacklist_matches_exactly(self):
+        self.assertTrue(is_blacklisted('임원ㆍ주요주주특정증권등소유상황보고서'))
+        # [기재정정]이 붙어도 같은 공시로 판정한다.
+        self.assertTrue(is_blacklisted('[기재정정]임원ㆍ주요주주특정증권등소유상황보고서'))
+
+    def test_lookalike_reports_are_split_opposite_ways(self):
+        """이름이 거의 같은 두 서류가 제외/대상으로 갈리는 것을 고정한다.
+
+        `소유상황보고서`는 사후 신고(821건, 정형) → 제외.
+        `거래계획보고서`는 내부자의 사전 매도계획 보고(2건, 신호 가치 높음) → 대상.
+        부분 일치 블랙리스트를 쓰면 후자가 우연히 걸린다 (한미반도체 20260702000197 회귀).
+        """
+        self.assertTrue(is_blacklisted('임원ㆍ주요주주특정증권등소유상황보고서'))
+        self.assertFalse(is_blacklisted('임원ㆍ주요주주특정증권등거래계획보고서'))
+
+        state, reason = evaluate('지분공시', '임원ㆍ주요주주특정증권등소유상황보고서')
+        self.assertEqual(state, SelectionState.EXCLUDED)
+        self.assertEqual(reason, ExclusionReason.BLACKLIST)
+
+        state, reason = evaluate('지분공시', '임원ㆍ주요주주특정증권등거래계획보고서')
+        self.assertEqual(state, SelectionState.TARGET)
+        self.assertEqual(reason, '')
+
+    def test_excluded_types_are_excluded(self):
+        for disclosure_type, report_name in (
+            ('지분공시', '주식소유상황보고서'),
+            ('기타공시', '주식매수선택권부여에관한신고'),
+        ):
+            state, reason = evaluate(disclosure_type, report_name)
+            self.assertEqual(state, SelectionState.EXCLUDED, msg=report_name)
+            self.assertEqual(reason, ExclusionReason.EXCLUDED_TYPE, msg=report_name)
+
+    def test_whitelist_revives_equity_reports(self):
+        """지분공시 유형 제외의 예외 — 접두어 매칭이라 (약식)·(일반)이 붙어도 걸린다."""
+        for report_name in (
+            '주식등의대량보유상황보고서(약식)',
+            '주식등의대량보유상황보고서(일반)',
+            '[기재정정]주식등의대량보유상황보고서(일반)',
+            '임원ㆍ주요주주특정증권등거래계획보고서',
+        ):
+            state, reason = evaluate('지분공시', report_name)
+            self.assertEqual(state, SelectionState.TARGET, msg=report_name)
+            self.assertEqual(reason, '', msg=report_name)
+
+    def test_whitelist_revives_treasury_stock_result_report(self):
+        """지분공시 유형 제외의 예외 2 — 주요사항보고서(자기주식처분결정)의 결과 보고."""
+        for report_name in (
+            '자기주식처분결과보고서',
+            '[기재정정]자기주식처분결과보고서',
+        ):
+            state, reason = evaluate('기타공시', report_name)
+            self.assertEqual(state, SelectionState.TARGET, msg=report_name)
+            self.assertEqual(reason, '', msg=report_name)
+
+    def test_other_types_are_targets(self):
+        for disclosure_type, report_name in (
+            ('정기공시', '분기보고서 (2026.03)'),
+            ('주요사항보고', '주요사항보고서(유상증자결정)'),
+            ('발행공시', '증권신고서(지분증권)'),
+            ('거래소공시', '단일판매ㆍ공급계약체결'),
+            ('공정위공시', '특수관계인과의내부거래'),
+        ):
+            state, reason = evaluate(disclosure_type, report_name)
+            self.assertEqual(state, SelectionState.TARGET, msg=report_name)
+            self.assertEqual(reason, '', msg=report_name)
+
+
+class ApplySelectionCommandTest(TestCase):
+    """판정 결과가 DB에 남아 재실행 시 재평가되지 않는지."""
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+        self.target = self._make('20260701000001', '거래소공시', '단일판매ㆍ공급계약체결')
+        self.excluded = self._make(
+            '20260701000002', '지분공시', '임원ㆍ주요주주특정증권등소유상황보고서'
+        )
+
+    def _make(self, rcept_no, disclosure_type, report_name):
+        return Disclosure.objects.create(
+            company=self.company, rcept_no=rcept_no, report_name=report_name,
+            disclosure_type=disclosure_type, filed_at=date(2026, 7, 1),
+            dart_url=dart_viewer_url(rcept_no),
+        )
+
+    def test_marks_target_and_excluded(self):
+        call_command('apply_selection')
+
+        self.target.refresh_from_db()
+        self.excluded.refresh_from_db()
+        self.assertEqual(self.target.selection_state, SelectionState.TARGET)
+        self.assertEqual(self.target.exclusion_reason, '')
+        self.assertTrue(self.target.is_summary_target)
+        self.assertEqual(self.excluded.selection_state, SelectionState.EXCLUDED)
+        self.assertEqual(self.excluded.exclusion_reason, ExclusionReason.BLACKLIST)
+
+    def test_rerun_skips_already_decided(self):
+        call_command('apply_selection')
+        # 수동으로 뒤집어 둔 판정은 --force 없이 재실행해도 유지돼야 한다.
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            selection_state=SelectionState.EXCLUDED,
+            exclusion_reason=ExclusionReason.EXCLUDED_TYPE,
+        )
+
+        call_command('apply_selection')
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.selection_state, SelectionState.EXCLUDED)
+
+    def test_force_reevaluates(self):
+        call_command('apply_selection')
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            selection_state=SelectionState.EXCLUDED,
+            exclusion_reason=ExclusionReason.EXCLUDED_TYPE,
+        )
+
+        call_command('apply_selection', force=True)
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.selection_state, SelectionState.TARGET)
+        self.assertEqual(self.target.exclusion_reason, '')
+
+    def test_dry_run_does_not_save(self):
+        call_command('apply_selection', dry_run=True)
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.selection_state, SelectionState.PENDING)
+
+
+# ---------------------------------------------------------------------------
+# 원문 전처리 (disclosures/dart.py)
+# ---------------------------------------------------------------------------
+
+# 거래소공시 원문을 모사한 HTML. charset을 euc-kr로 잘못 선언하는 실제 특성을 담았다.
+FAKE_HTML_DOCUMENT = """<html>
+<head><meta http-equiv="Content-Type" content="text/html; charset=euc-kr">
+<style>.t { color: red; }</style>
+<script>var noise = "버려져야 하는 스크립트";</script>
+</head>
+<body>
+<!-- 주석도 사라져야 한다 -->
+<p>단일판매ㆍ공급계약 체결</p>
+<table><tr><th>구분</th><th>금액</th></tr>
+<tr><td>계약금액</td><td>1,234,567</td></tr>
+<tr><td>매출액 대비</td><td>12.34%</td></tr>
+<tr><td>&nbsp;</td><td>&nbsp;</td></tr></table>
+</body></html>"""
+
+# 정기공시 DART XML을 모사한 최소 문서.
+FAKE_DART_XML = """<?xml version="1.0" encoding="utf-8"?>
+<DOCUMENT xsi:noNamespaceSchemaLocation="dart4.xsd">
+<DOCUMENT-NAME ACODE="11013">분기보고서</DOCUMENT-NAME>
+<BODY>
+<SECTION-1><TITLE ATOC="Y">I. 회사의 개요</TITLE><P>회사 개요 본문</P></SECTION-1>
+<SECTION-1><TITLE ATOC="Y">III. 재무에 관한 사항</TITLE>
+  <SECTION-2><TITLE>1. 요약재무정보</TITLE>
+    <TABLE><TR><TD>매출액</TD><TE>79,987,654</TE></TR></TABLE>
+  </SECTION-2>
+  <SECTION-2><TITLE>3. 연결재무제표 주석</TITLE><P>버려져야 하는 주석 본문</P></SECTION-2>
+</SECTION-1>
+<SECTION-1><TITLE ATOC="Y">VIII. 임원 및 직원 등에 관한 사항</TITLE>
+  <P>버려져야 하는 임직원 명부</P></SECTION-1>
+</BODY></DOCUMENT>"""
+
+
+class StripMarkupTest(TestCase):
+    def test_removes_script_style_and_comments(self):
+        text = strip_markup(FAKE_HTML_DOCUMENT)
+
+        self.assertNotIn('<', text)
+        self.assertNotIn('noise', text)
+        self.assertNotIn('color: red', text)
+        self.assertNotIn('주석도 사라져야', text)
+
+    def test_preserves_table_numbers_separately(self):
+        text = strip_markup(FAKE_HTML_DOCUMENT)
+
+        # 표의 수치가 살아남아야 요약의 숫자 대조가 가능하다.
+        self.assertIn('1,234,567', text)
+        self.assertIn('12.34%', text)
+        # 셀이 붙어 `계약금액1,234,567`이 되면 안 된다.
+        self.assertIn('계약금액 | 1,234,567', text)
+
+    def test_drops_empty_rows_and_normalizes_whitespace(self):
+        text = strip_markup(FAKE_HTML_DOCUMENT)
+
+        self.assertNotIn('|  |', text)
+        self.assertNotIn('   ', text)
+        for line in text.split('\n'):
+            self.assertEqual(line, line.strip())
+
+    def test_is_dart_xml_distinguishes_formats(self):
+        self.assertTrue(is_dart_xml(FAKE_DART_XML))
+        self.assertFalse(is_dart_xml(FAKE_HTML_DOCUMENT))
+
+
+class ExtractKeySectionsTest(TestCase):
+    def test_keeps_key_sections_only(self):
+        extracted = extract_key_sections(FAKE_DART_XML, PERIODIC_KEY_SECTIONS)
+        text = strip_markup(extracted)
+
+        self.assertIn('79,987,654', text)          # 요약재무정보의 수치는 남는다
+        self.assertNotIn('주석 본문', text)         # 재무제표 주석은 버린다
+        self.assertNotIn('임직원 명부', text)       # 임원·직원 섹션은 버린다
+        self.assertNotIn('회사 개요 본문', text)    # 회사 개요 상용구도 버린다
+
+    def test_returns_none_when_no_section_matches(self):
+        # 형식이 다른 보고서는 None → 호출자가 전체 정제로 되돌아간다.
+        self.assertIsNone(extract_key_sections(FAKE_DART_XML, OFFERING_KEY_SECTIONS))
+
+    def test_preprocess_uses_section_map_only_for_large_types(self):
+        sectioned = preprocess_document(FAKE_DART_XML, disclosure_type='정기공시')
+        whole = preprocess_document(FAKE_DART_XML, disclosure_type='거래소공시')
+
+        self.assertNotIn('임직원 명부', sectioned)
+        self.assertIn('임직원 명부', whole)      # 맵이 없는 유형은 원문 전체를 정제
+        self.assertLess(len(sectioned), len(whole))
+
+    def test_preprocess_falls_back_when_sections_missing(self):
+        # 발행공시 맵으로는 매칭되는 섹션이 없으므로 전체 정제로 되돌아간다(빈 결과 금지).
+        text = preprocess_document(FAKE_DART_XML, disclosure_type='발행공시')
+        self.assertIn('임직원 명부', text)
+
+
+# ---------------------------------------------------------------------------
+# 원문 확보 명령 (fetch_documents)
+# ---------------------------------------------------------------------------
+
+class FetchDocumentsTest(TestCase):
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+        self.target = self._make('20260701000001', SelectionState.TARGET)
+        self.excluded = self._make('20260701000002', SelectionState.EXCLUDED)
+        self.pending = self._make('20260701000003', SelectionState.PENDING)
+
+    def _make(self, rcept_no, state, raw_fetched=False, disclosure_type='거래소공시'):
+        return Disclosure.objects.create(
+            company=self.company, rcept_no=rcept_no,
+            report_name='단일판매ㆍ공급계약체결', disclosure_type=disclosure_type,
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url(rcept_no),
+            selection_state=state, raw_fetched=raw_fetched,
+        )
+
+    def _run(self, side_effect=None, **options):
+        with patch(
+            'disclosures.management.commands.fetch_documents.fetch_document',
+            side_effect=side_effect or (lambda rcept_no: FAKE_HTML_DOCUMENT),
+        ) as mock_fetch:
+            call_command('fetch_documents', **options)
+        return mock_fetch
+
+    def test_fetches_only_targets(self):
+        mock_fetch = self._run()
+
+        self.assertEqual(
+            [c.args[0] for c in mock_fetch.call_args_list], ['20260701000001']
+        )
+        self.target.refresh_from_db()
+        self.assertTrue(self.target.raw_fetched)
+        self.assertIn('1,234,567', self.target.raw_content)
+        # 제외·미판정 공시는 건드리지 않는다.
+        for disclosure in (self.excluded, self.pending):
+            disclosure.refresh_from_db()
+            self.assertFalse(disclosure.raw_fetched)
+            self.assertEqual(disclosure.raw_content, '')
+
+    def test_does_not_refetch_already_fetched(self):
+        """이미 확보한 원문은 재호출하지 않는다 (DART 호출량 규칙)."""
+        self._run()
+        mock_fetch = self._run()
+
+        mock_fetch.assert_not_called()
+
+    def test_refetch_option_forces_recall(self):
+        self._run()
+        mock_fetch = self._run(refetch=True)
+
+        self.assertEqual(mock_fetch.call_count, 1)
+
+    def test_stores_preprocessed_text_not_raw_markup(self):
+        self._run()
+
+        self.target.refresh_from_db()
+        self.assertNotIn('<table', self.target.raw_content)
+        self.assertNotIn('var noise', self.target.raw_content)
+        self.assertIn('계약금액 | 1,234,567', self.target.raw_content)
+
+    def test_limit_caps_processed_count(self):
+        second = self._make('20260701000004', SelectionState.TARGET)
+        mock_fetch = self._run(limit=1)
+
+        self.assertEqual(mock_fetch.call_count, 1)
+        second.refresh_from_db()
+        self.assertFalse(second.raw_fetched)
+
+    def test_type_filter(self):
+        periodic = self._make(
+            '20260701000005', SelectionState.TARGET, disclosure_type='정기공시'
+        )
+        mock_fetch = self._run(disclosure_type='정기공시')
+
+        self.assertEqual(
+            [c.args[0] for c in mock_fetch.call_args_list], [periodic.rcept_no]
+        )
+        self.target.refresh_from_db()
+        self.assertFalse(self.target.raw_fetched)
+
+    def test_failure_on_one_continues_with_next(self):
+        """건별 실패로 전체가 죽으면 안 된다 — 실패는 기록하고 다음 건을 계속 처리한다."""
+        second = self._make('20260701000004', SelectionState.TARGET)
+
+        def flaky(rcept_no):
+            if rcept_no == self.target.rcept_no:
+                raise DartApiError('900', '원문을 찾을 수 없습니다.')
+            return FAKE_HTML_DOCUMENT
+
+        mock_fetch = self._run(side_effect=flaky)
+
+        self.assertEqual(mock_fetch.call_count, 2)
+        self.target.refresh_from_db()
+        second.refresh_from_db()
+        self.assertFalse(self.target.raw_fetched)   # 실패 건은 미확보로 남아 재시도된다
+        self.assertTrue(second.raw_fetched)
+
+    def test_invalid_limit_raises(self):
+        with self.assertRaises(CommandError):
+            self._run(limit=0)
+
+
+# ---------------------------------------------------------------------------
+# 요약 모듈 ↔ 모델 경계면 (disclosures/summarizer.py ↔ DisclosureSummary)
+# ---------------------------------------------------------------------------
+
+class SummarySchemaConsistencyTest(TestCase):
+    """LLM 출력 스키마와 모델 필드가 어긋나면 저장이 깨진다. 경계면을 고정한다.
+
+    스키마는 `summarizer.py`, 필드는 `models.py`로 소유자가 갈려 있어 한쪽만 바뀌기 쉽다.
+    어긋난 채로 실호출하면 LLM 비용을 쓰고 나서 저장 단계에서 터진다 — 그 전에 잡는다.
+    """
+
+    def test_importance_enum_matches_model_choices(self):
+        schema_enum = summarizer.SUMMARY_JSON_SCHEMA['properties']['importance']['enum']
+        self.assertEqual(
+            sorted(schema_enum), sorted(DisclosureSummary.Importance.values)
+        )
+
+    def test_one_line_max_length_matches_model(self):
+        schema_max = summarizer.SUMMARY_JSON_SCHEMA['properties']['one_line']['maxLength']
+        field_max = DisclosureSummary._meta.get_field('one_line').max_length
+        self.assertEqual(schema_max, field_max)
+        # 파이썬 쪽 하드 검증 상수도 같은 값이어야 이중 제약이 성립한다.
+        self.assertEqual(summarizer.ONE_LINE_MAX_CHARS, field_max)
+
+    def test_evidence_field_enum_matches_summary_text_fields(self):
+        evidence_fields = (
+            summarizer.SUMMARY_JSON_SCHEMA['properties']['evidence']
+            ['items']['properties']['field']['enum']
+        )
+        for name in evidence_fields:
+            DisclosureSummary._meta.get_field(name)  # 없으면 FieldDoesNotExist
+
+    def test_schema_required_fields_exist_on_model(self):
+        for name in summarizer.SUMMARY_JSON_SCHEMA['required']:
+            DisclosureSummary._meta.get_field(name)
+
+
+class SummaryPersistenceTest(TestCase):
+    """근거·검증 경고가 모델에 그대로 실려야 QA가 LLM 재호출 없이 재검증할 수 있다."""
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+        self.disclosure = Disclosure.objects.create(
+            company=company, rcept_no='20260701000001',
+            report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+        )
+
+    def _summary(self, **kwargs):
+        defaults = dict(
+            disclosure=self.disclosure, one_line='한 줄', easy_explanation='설명',
+            why_important='의미', importance=DisclosureSummary.Importance.MEDIUM,
+        )
+        defaults.update(kwargs)
+        return DisclosureSummary.objects.create(**defaults)
+
+    def test_json_fields_default_to_empty_list(self):
+        summary = self._summary()
+        summary.refresh_from_db()
+
+        self.assertEqual(summary.evidence, [])
+        self.assertEqual(summary.review_warnings, [])
+
+    def test_evidence_round_trips(self):
+        evidence = [{
+            'field': 'one_line', 'claim': '계약금액 1,234,567원',
+            'quote': '계약금액 | 1,234,567', 'quote_found': True,
+            'numbers_ok': True, 'missing_numbers': [],
+        }]
+        self._summary(evidence=evidence)
+
+        stored = DisclosureSummary.objects.get(disclosure=self.disclosure)
+        self.assertEqual(stored.evidence, evidence)
+        self.assertTrue(stored.evidence[0]['quote_found'])
+
+    def test_needs_review_flags_high_importance_and_warnings(self):
+        summary = self._summary(importance=DisclosureSummary.Importance.HIGH)
+        self.assertTrue(summary.needs_review)          # 중요도 높음 → 검수 게이트
+
+        summary.importance = DisclosureSummary.Importance.LOW
+        summary.review_warnings = ['evidence[0]: 인용문이 원문에서 발견되지 않음']
+        self.assertTrue(summary.needs_review)          # 경고 있음 → 검수 필요
+
+        summary.review_warnings = []
+        self.assertFalse(summary.needs_review)         # 경고 없고 중요도 낮음
+
+        summary.importance = DisclosureSummary.Importance.HIGH
+        summary.is_reviewed = True
+        self.assertFalse(summary.needs_review)         # 이미 검수 완료
+
+
+def _valid_summary_payload(**overrides):
+    """스키마를 만족하는 응답 본문(JSON 문자열)을 만든다."""
+    payload = {
+        'one_line': '삼성전자가 1,234,567원 규모의 공급계약을 체결했다.',
+        'easy_explanation': '회사가 제품을 팔기로 계약했다. 금액은 1,234,567원이다. '
+                            '계약 상대와 기간은 원문에 적혀 있다.',
+        'why_important': '회사의 매출로 이어지는 계약이다.',
+        'importance': 'medium',
+        'evidence': [{
+            'field': 'one_line',
+            'claim': '1,234,567원 규모의 공급계약',
+            'quote': '계약금액 | 1,234,567',
+        }],
+    }
+    payload.update(overrides)
+    return json.dumps(payload, ensure_ascii=False)
+
+
+#: _call_openai 대역이 돌려주는 (본문, usage, 모델ID) 중 usage 자리.
+FAKE_USAGE = {
+    'input_tokens': 1500, 'output_tokens': 200, 'cached_tokens': 1400,
+    'cache_write_tokens': 0, 'reasoning_tokens': 0, 'total_tokens': 1700,
+}
+
+
+class SummarizerRetryTest(TestCase):
+    """OpenAI 실호출 없이 재시도·거부·길이 초과·검증 실패 경로를 고정한다."""
+
+    RAW_TEXT = '단일판매ㆍ공급계약 체결\n계약금액 | 1,234,567\n매출액 대비 | 12.34%'
+
+    def _summarize(self, side_effect, **kwargs):
+        with patch(
+            'disclosures.summarizer._call_openai', side_effect=side_effect
+        ) as mock_call:
+            try:
+                result = summarizer.summarize_disclosure(
+                    company_name='삼성전자', report_name='단일판매ㆍ공급계약체결',
+                    filed_at='2026-07-01', rcept_no='20260701000001',
+                    raw_text=self.RAW_TEXT, disclosure_type='거래소공시', **kwargs,
+                )
+            except summarizer.SummarizerError as exc:
+                return mock_call, exc
+        return mock_call, result
+
+    def test_succeeds_on_first_attempt(self):
+        mock_call, result = self._summarize(
+            lambda *a: (_valid_summary_payload(), FAKE_USAGE, 'gpt-5.6-luna')
+        )
+
+        self.assertEqual(mock_call.call_count, 1)
+        self.assertEqual(result['attempts'], 1)
+        self.assertEqual(result['importance'], 'medium')
+        self.assertEqual(result['model_name'], 'gpt-5.6-luna')
+        # 근거의 인용문이 원문에 있으므로 대조를 통과한다.
+        self.assertTrue(result['evidence'][0]['quote_found'])
+        self.assertEqual(result['unsupported_numbers'], [])
+
+    def test_retries_after_invalid_json_then_succeeds(self):
+        responses = [
+            ('{깨진 JSON', FAKE_USAGE, 'gpt-5.6-luna'),
+            (_valid_summary_payload(), FAKE_USAGE, 'gpt-5.6-luna'),
+        ]
+        mock_call, result = self._summarize(lambda *a: responses.pop(0))
+
+        self.assertEqual(mock_call.call_count, 2)
+        self.assertEqual(result['attempts'], 2)
+
+    def test_refusal_is_not_retried(self):
+        """안전 거부는 같은 입력으로 재시도해도 결과가 같다 — 호출을 낭비하지 않는다."""
+        mock_call, error = self._summarize(
+            summarizer.SummaryRefusedError('안전상의 이유로 거부됨')
+        )
+
+        self.assertIsInstance(error, summarizer.SummaryRefusedError)
+        self.assertEqual(mock_call.call_count, 1)
+
+    def test_too_large_input_raises_without_calling(self):
+        """상한 초과는 호출 전에 걸러야 비용이 발생하지 않는다."""
+        mock_call, error = self._summarize(
+            lambda *a: (_valid_summary_payload(), FAKE_USAGE, 'gpt-5.6-luna'),
+            max_input_tokens=10,
+        )
+
+        self.assertIsInstance(error, summarizer.SummaryTooLargeError)
+        mock_call.assert_not_called()
+
+    def test_one_line_over_limit_fails_after_retries(self):
+        """one_line이 모델 max_length를 넘으면 저장이 깨지므로 하드 검증으로 막는다."""
+        too_long = '가' * (summarizer.ONE_LINE_MAX_CHARS + 1)
+        mock_call, error = self._summarize(
+            lambda *a: (
+                _valid_summary_payload(one_line=too_long), FAKE_USAGE, 'gpt-5.6-luna'
+            )
+        )
+
+        self.assertIsInstance(error, summarizer.SummaryValidationError)
+        # 최초 1회 + 재시도 MAX_RETRIES회를 모두 소진한다.
+        self.assertEqual(mock_call.call_count, summarizer.MAX_RETRIES + 1)
+
+    def test_missing_evidence_fails_validation(self):
+        mock_call, error = self._summarize(
+            lambda *a: (_valid_summary_payload(evidence=[]), FAKE_USAGE, 'gpt-5.6-luna')
+        )
+
+        self.assertIsInstance(error, summarizer.SummaryValidationError)
+        self.assertIn('evidence', str(error))
+
+    def test_unsupported_number_is_recorded_as_warning_not_failure(self):
+        """근거 없는 수치는 실패가 아니라 경고로 남겨 검수로 넘긴다."""
+        payload = _valid_summary_payload(
+            why_important='이 계약은 회사 연매출의 99.9%에 해당한다.'
+        )
+        _mock_call, result = self._summarize(
+            lambda *a: (payload, FAKE_USAGE, 'gpt-5.6-luna')
+        )
+
+        self.assertIn('99.9', ' '.join(result['unsupported_numbers']))
+        self.assertTrue(result['warnings'])
+
+    def test_fabricated_quote_is_flagged(self):
+        payload = _valid_summary_payload(evidence=[{
+            'field': 'one_line', 'claim': '계약금액 1,234,567원',
+            'quote': '원문에 존재하지 않는 인용 구절',
+        }])
+        _mock_call, result = self._summarize(
+            lambda *a: (payload, FAKE_USAGE, 'gpt-5.6-luna')
+        )
+
+        self.assertFalse(result['evidence'][0]['quote_found'])
+        self.assertTrue(result['warnings'])
+
+    def test_model_name_fits_model_field(self):
+        long_id = 'gpt-' + 'x' * 100
+        _mock_call, result = self._summarize(
+            lambda *a: (_valid_summary_payload(), FAKE_USAGE, long_id)
+        )
+
+        max_length = DisclosureSummary._meta.get_field('model_name').max_length
+        self.assertLessEqual(len(result['model_name']), max_length)

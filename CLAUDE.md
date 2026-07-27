@@ -17,6 +17,7 @@ DART 전자공시를 AI가 일반인 친화적으로 요약해 보여주는 Djan
 .\venv\Scripts\python.exe manage.py test disclosures # 테스트 (단일: test disclosures.tests.TestClass.test_method)
 .\venv\Scripts\python.exe manage.py seed_companies   # 반도체 10개 기업 시드 + corpCode.xml로 corp_code 매핑
 .\venv\Scripts\python.exe manage.py poll_dart --days 3  # DART 공시 폴링·적재 (멱등)
+.\venv\Scripts\python.exe manage.py poll_dart --bgn 20260101 --end 20260630  # 임의 구간 백필 (89일 창으로 자동 분할)
 ```
 
 `DART_API_KEY`는 `.env`에서 로드된다(`settings.DART_API_KEY`). 키가 없으면 DART 호출 명령은 `DartApiError`로 실패한다.

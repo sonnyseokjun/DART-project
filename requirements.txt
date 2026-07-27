@@ -2,3 +2,5 @@ django>=5.2,<6.0
 djangorestframework>=3.17
 requests>=2.32
 python-dotenv>=1.0
+openai>=2.48
+tiktoken>=0.13
