@@ -1,5 +1,18 @@
 {
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Edit(disclosures/**)",
+      "Edit(config/**)",
+      "Bash(./venv/Scripts/python.exe manage.py test*)",
+      "Bash(./venv/Scripts/python.exe manage.py check*)"
+    ],
+    "deny": [
+      "Edit(.env*)",
+      "Bash(rm *)",
+      "Bash(git push*)"
+    ]
   }
 }

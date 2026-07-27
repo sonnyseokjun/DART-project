@@ -37,6 +37,10 @@ ALLOWED_HOSTS = [h for h in os.getenv('DJANGO_ALLOWED_HOSTS', '').split(',') if 
 # DART OpenAPI (https://opendart.fss.or.kr/)
 DART_API_KEY = os.getenv('DART_API_KEY', '')
 
+# OpenAI API (https://developers.openai.com/) — 공시 AI 요약에 사용.
+# 관리 명령/비동기 태스크에서만 호출한다. 사용자 요청 경로에서 직접 호출 금지(PLAN.md 12.1).
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+
 
 # Application definition
 
