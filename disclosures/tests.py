@@ -11,6 +11,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from django.urls import reverse
 
 from disclosures.dart import (
     MAX_LIST_SPAN_DAYS, OFFERING_KEY_SECTIONS, PBLNTF_TYPES, PERIODIC_KEY_SECTIONS,
@@ -19,7 +20,7 @@ from disclosures.dart import (
 )
 from disclosures.management.commands.seed_companies import TARGET_COMPANIES
 from disclosures.models import Company, Disclosure, DisclosureSummary, Sector
-from disclosures import summarizer
+from disclosures import summarizer, views
 from disclosures.selection import (
     ExclusionReason, SelectionState, evaluate, is_blacklisted, normalize_title,
 )
@@ -1271,3 +1272,423 @@ class RevalidateSummariesCommandTest(TestCase):
         with patch.object(summarizer, '_call_openai') as mock_call:
             call_command('revalidate_summaries', verbosity=0)
         mock_call.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 3단계: 웹 조회 화면
+# ---------------------------------------------------------------------------
+
+class WebViewTestBase(TestCase):
+    """화면 테스트 공용 픽스처. 요약 있는 공시와 없는 공시를 함께 둔다."""
+
+    def setUp(self):
+        self.sector = Sector.objects.create(
+            name='반도체', slug='semiconductor', description='메모리·파운드리·장비',
+        )
+        # 종목코드 선행 0이 URL에서 살아남는지 확인하기 위해 '000660'을 쓴다.
+        self.samsung = Company.objects.create(
+            sector=self.sector, corp_code='00126380', stock_code='005930',
+            name='삼성전자', sub_category='메모리',
+        )
+        self.hynix = Company.objects.create(
+            sector=self.sector, corp_code='00164779', stock_code='000660',
+            name='SK하이닉스', sub_category='메모리',
+        )
+        self.high = self._disclosure(
+            self.samsung, '20260701000001', '단일판매ㆍ공급계약체결',
+            importance=DisclosureSummary.Importance.HIGH,
+        )
+        self.medium = self._disclosure(
+            self.hynix, '20260702000001', '자기주식취득결정',
+            importance=DisclosureSummary.Importance.MEDIUM,
+        )
+        # 요약이 없는 공시 — 어느 화면에도 나오면 안 된다.
+        self.unsummarized = Disclosure.objects.create(
+            company=self.samsung, rcept_no='20260703000001',
+            report_name='임원ㆍ주요주주특정증권등소유상황보고서',
+            disclosure_type='지분공시', filed_at=date(2026, 7, 3),
+            dart_url=dart_viewer_url('20260703000001'),
+            selection_state=SelectionState.EXCLUDED,
+            exclusion_reason=ExclusionReason.BLACKLIST,
+        )
+
+    def _disclosure(self, company, rcept_no, report_name, *, importance,
+                    is_reviewed=False, evidence=None, filed_at=None):
+        disclosure = Disclosure.objects.create(
+            company=company, rcept_no=rcept_no, report_name=report_name,
+            disclosure_type='거래소공시', filed_at=filed_at or date(2026, 7, 1),
+            dart_url=dart_viewer_url(rcept_no),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content='원문',
+        )
+        DisclosureSummary.objects.create(
+            disclosure=disclosure,
+            one_line=f'{report_name} 한 줄 요약',
+            easy_explanation='첫 문장이다. 둘째 문장이다. 셋째 문장이다.',
+            why_important='중요한 이유다.',
+            importance=importance, is_reviewed=is_reviewed,
+            model_name='gpt-5.6-luna',
+            evidence=evidence if evidence is not None else [
+                {'field': 'one_line', 'claim': '계약금액 1,234,567원',
+                 'quote': '계약금액 | 1,234,567', 'quote_found': True,
+                 'numbers_ok': True, 'missing_numbers': []},
+            ],
+        )
+        return disclosure
+
+
+class ViewsDoNotCallExternalApisTest(WebViewTestBase):
+    """PLAN.md 12.1 — 사용자 요청 경로에서 DART·LLM을 호출하지 않는다.
+
+    이 프로젝트에서 가장 깨지기 쉬운 원칙이라 테스트로 고정한다. "원문이 없으면 그때
+    가져오자", "요약이 없으면 즉석에서 만들자"는 코드가 들어가면 DART 호출 수와 LLM 비용이
+    트래픽에 비례하게 되어 설계 전체가 무너진다.
+    """
+
+    def test_views_module_does_not_import_dart_or_summarizer(self):
+        import inspect
+
+        from disclosures import views
+
+        source = inspect.getsource(views)
+        for forbidden in ('dart', 'summarizer'):
+            with self.subTest(module=forbidden):
+                self.assertNotIn(f'from .{forbidden} import', source)
+                self.assertNotIn(f'from disclosures.{forbidden} import', source)
+
+    def test_rendering_pages_never_calls_openai_or_dart(self):
+        urls = [
+            reverse('disclosures:sector_list'),
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:company_detail', args=['005930']),
+            reverse('disclosures:disclosure_detail', args=['20260701000001']),
+        ]
+        with patch.object(summarizer, '_call_openai') as mock_llm, \
+                patch('disclosures.dart.requests.get') as mock_dart:
+            for url in urls:
+                self.assertEqual(self.client.get(url).status_code, 200)
+        mock_llm.assert_not_called()
+        mock_dart.assert_not_called()
+
+
+class PageRenderingTest(WebViewTestBase):
+    """4개 화면이 뜨고, 공통 규칙(면책·원문 링크)이 지켜지는지."""
+
+    def _all_urls(self):
+        return (
+            reverse('disclosures:sector_list'),
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:company_detail', args=['005930']),
+            reverse('disclosures:disclosure_detail', args=['20260701000001']),
+        )
+
+    def test_all_pages_return_200(self):
+        for url in self._all_urls():
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 200)
+
+    def test_disclaimer_is_on_every_page(self):
+        """면책 문구 상시 노출(PLAN.md 1.4·5.3). base.html에 있어 전 페이지에 떠야 한다."""
+        for url in self._all_urls():
+            with self.subTest(url=url):
+                content = self.client.get(url).content.decode()
+                self.assertIn('투자 자문이 아니며', content)
+                self.assertIn('DART 원문', content)
+
+    def test_dart_link_is_shown_on_card_and_detail(self):
+        """요약이 보이는 곳에는 반드시 원문 링크가 함께 있어야 한다."""
+        expected = dart_viewer_url('20260701000001')
+        for url in (
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:disclosure_detail', args=['20260701000001']),
+        ):
+            with self.subTest(url=url):
+                self.assertContains(self.client.get(url), expected)
+
+    def test_detail_shows_summary_sections_in_plan_order(self):
+        content = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260701000001'])
+        ).content.decode()
+        positions = [
+            content.index('한 줄 요약'),
+            content.index('쉬운 설명'),
+            content.index('왜 중요한가'),
+            content.index('원문 근거'),
+            content.index('원문 확인'),
+        ]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_leading_zero_stock_code_resolves(self):
+        """'000660'이 660으로 잘리면 SK하이닉스 페이지가 404가 된다."""
+        response = self.client.get(reverse('disclosures:company_detail', args=['000660']))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'SK하이닉스')
+
+    def test_unknown_slug_and_company_return_404(self):
+        self.assertEqual(
+            self.client.get(
+                reverse('disclosures:sector_detail', args=['none'])).status_code, 404)
+        self.assertEqual(
+            self.client.get(
+                reverse('disclosures:company_detail', args=['999999'])).status_code, 404)
+
+    def test_sector_list_counts_only_summarized_disclosures(self):
+        """섹터 카드의 건수는 화면에 실제로 보이는 수와 같아야 한다."""
+        response = self.client.get(reverse('disclosures:sector_list'))
+        sector = response.context['sectors'][0]
+        self.assertEqual(sector.company_count, 2)
+        self.assertEqual(sector.summary_count, 2)   # 미요약 1건은 세지 않는다
+
+
+class ExposurePolicyTest(WebViewTestBase):
+    """요약이 있는 공시만 노출한다 — published_disclosures()가 단일 출처."""
+
+    def test_unsummarized_disclosure_is_hidden_from_lists(self):
+        for url in (
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:company_detail', args=['005930']),
+        ):
+            with self.subTest(url=url):
+                self.assertNotContains(
+                    self.client.get(url), self.unsummarized.report_name)
+
+    def test_unsummarized_disclosure_detail_is_404(self):
+        self.assertEqual(
+            self.client.get(
+                reverse('disclosures:disclosure_detail',
+                        args=['20260703000001'])).status_code, 404)
+
+    def test_unreviewed_summary_is_shown_with_badge(self):
+        """검수분만 노출하면 화면이 비므로 미검수도 노출하되 배지를 단다."""
+        self.assertContains(
+            self.client.get(
+                reverse('disclosures:disclosure_detail', args=['20260701000001'])),
+            '미검수')
+
+    def test_reviewed_summary_has_no_badge(self):
+        summary = self.high.summary
+        summary.is_reviewed = True
+        summary.save(update_fields=['is_reviewed'])
+
+        self.assertNotContains(
+            self.client.get(
+                reverse('disclosures:disclosure_detail', args=['20260701000001'])),
+            '미검수')
+
+    def test_accuracy_warning_shows_banner_with_the_numbers(self):
+        """수치 오류를 잡고도 화면에 알리지 않으면 사용자가 틀린 값을 그대로 믿는다.
+
+        실제로 SK하이닉스 유상증자 요약이 39조 8,905억을 3조 9,891억으로 10배 잘못 적었고,
+        자동 검증은 이를 잡았지만 화면에는 '미검수' 배지만 떠 있었다.
+        """
+        summary = self.high.summary
+        summary.review_warnings = [
+            summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억, 4,000억'
+        ]
+        summary.save(update_fields=['review_warnings'])
+
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260701000001']))
+        self.assertContains(response, '원문과 대조되지 않았습니다')
+        self.assertContains(response, '3조 9,891억')
+        self.assertContains(response, '4,000억')
+
+    def test_accuracy_warning_shows_badge_in_lists(self):
+        """목록에서도 보여야 훑어보는 사용자가 놓치지 않는다."""
+        summary = self.high.summary
+        summary.review_warnings = [summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억']
+        summary.save(update_fields=['review_warnings'])
+
+        self.assertContains(
+            self.client.get(reverse('disclosures:sector_detail', args=['semiconductor'])),
+            '수치 확인 필요')
+
+    def test_style_only_warning_does_not_trigger_banner(self):
+        """문장 수는 문체 문제다. 이것까지 배너를 띄우면 경고가 흔해져 무시당한다."""
+        summary = self.high.summary
+        summary.review_warnings = [
+            summarizer.SENTENCE_COUNT_PREFIX + ': 쉬운 설명이 7문장 (권장 3~5문장)'
+        ]
+        summary.save(update_fields=['review_warnings'])
+
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260701000001']))
+        self.assertNotContains(response, '원문과 대조되지 않았습니다')
+        self.assertNotContains(response, '수치 확인 필요')
+
+    def test_reviewed_summary_has_no_accuracy_banner(self):
+        """사람이 확인했으면 배너를 걷는다."""
+        summary = self.high.summary
+        summary.review_warnings = [summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억']
+        summary.is_reviewed = True
+        summary.save(update_fields=['review_warnings', 'is_reviewed'])
+
+        self.assertNotContains(
+            self.client.get(
+                reverse('disclosures:disclosure_detail', args=['20260701000001'])),
+            '원문과 대조되지 않았습니다')
+
+    def test_unverified_quote_warning_uses_generic_wording(self):
+        """수치 목록이 없으면 숫자를 나열하지 않고 일반 문구로 안내한다."""
+        summary = self.high.summary
+        summary.review_warnings = [
+            f'{summarizer.UNVERIFIED_QUOTE_PREFIX} (근거 1번): 어떤 구절'
+        ]
+        summary.save(update_fields=['review_warnings'])
+
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260701000001']))
+        self.assertContains(response, '원문과 대조되지 않았습니다')
+        self.assertContains(response, '일부를 원문에서 확인하지 못했습니다')
+
+    def test_unverified_quote_is_not_rendered_as_evidence(self):
+        """원문에서 확인되지 않은 인용을 근거로 보여주면 신뢰를 떨어뜨린다."""
+        summary = self.high.summary
+        summary.evidence = [
+            {'field': 'one_line', 'claim': '검증된 주장',
+             'quote': '원문에 있는 구절', 'quote_found': True},
+            {'field': 'one_line', 'claim': '미검증 주장',
+             'quote': '원문에서 찾지 못한 구절', 'quote_found': False},
+        ]
+        summary.save(update_fields=['evidence'])
+
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260701000001']))
+        self.assertContains(response, '원문에 있는 구절')
+        self.assertNotContains(response, '원문에서 찾지 못한 구절')
+
+
+class FilterAndPaginationTest(WebViewTestBase):
+    """필터·페이지네이션 동작과 두 기능의 상호작용."""
+
+    def test_importance_filter_narrows_results(self):
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'importance': 'high'})
+        self.assertEqual(response.context['total_count'], 1)
+        self.assertContains(response, '단일판매ㆍ공급계약체결')
+        self.assertNotContains(response, '자기주식취득결정')
+
+    def test_company_filter_narrows_results(self):
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'company': '000660'})
+        self.assertEqual(response.context['total_count'], 1)
+        self.assertContains(response, '자기주식취득결정')
+
+    def test_invalid_importance_is_ignored_not_500(self):
+        """잘못된 쿼리스트링으로 서버 오류가 나면 안 된다."""
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'importance': '../etc/passwd'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['total_count'], 2)
+
+    def test_pagination_splits_pages(self):
+        for i in range(views.PAGE_SIZE):
+            self._disclosure(
+                self.samsung, f'2026080100{i:04d}', f'추가공시{i}',
+                importance=DisclosureSummary.Importance.LOW,
+                filed_at=date(2026, 8, 1))
+
+        url = reverse('disclosures:sector_detail', args=['semiconductor'])
+        first = self.client.get(url)
+        self.assertEqual(first.context['page_obj'].paginator.num_pages, 2)
+        self.assertEqual(len(first.context['page_obj']), views.PAGE_SIZE)
+
+        second = self.client.get(url, {'page': 2})
+        self.assertEqual(len(second.context['page_obj']), 2)
+
+    def test_filter_survives_pagination_links(self):
+        """2페이지로 넘어갈 때 필터가 풀리면 사용자가 다른 목록을 보게 된다."""
+        # 필터를 적용한 뒤에도 2페이지가 나오려면 PAGE_SIZE를 '넘겨야' 한다.
+        for i in range(views.PAGE_SIZE + 1):
+            self._disclosure(
+                self.samsung, f'2026080200{i:04d}', f'낮은공시{i}',
+                importance=DisclosureSummary.Importance.LOW,
+                filed_at=date(2026, 8, 2))
+
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'importance': 'low'})
+        self.assertContains(response, 'importance=low')
+        self.assertContains(response, 'page=2')
+
+
+class QueryEfficiencyTest(WebViewTestBase):
+    """N+1 방지 — 목록 쿼리 수가 공시 건수에 비례해 늘면 안 된다."""
+
+    def _query_count(self, url):
+        from django.db import connection, reset_queries
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            self.client.get(url)
+        return len(ctx)
+
+    def test_list_query_count_does_not_grow_with_rows(self):
+        url = reverse('disclosures:sector_detail', args=['semiconductor'])
+        baseline = self._query_count(url)
+
+        for i in range(10):
+            self._disclosure(
+                self.samsung, f'2026080300{i:04d}', f'추가공시{i}',
+                importance=DisclosureSummary.Importance.MEDIUM,
+                filed_at=date(2026, 8, 3))
+
+        self.assertEqual(self._query_count(url), baseline)
+
+    def test_detail_query_count_is_bounded(self):
+        url = reverse('disclosures:disclosure_detail', args=['20260701000001'])
+        self.assertLessEqual(self._query_count(url), 3)
+
+
+class AccuracyWarningClassificationTest(TestCase):
+    """정확성 경고와 문체 경고의 구분 — 배너 조건의 근간."""
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자')
+        disclosure = Disclosure.objects.create(
+            company=company, rcept_no='20260801000001', report_name='공시',
+            filed_at=date(2026, 8, 1), dart_url=dart_viewer_url('20260801000001'))
+        self.summary = DisclosureSummary.objects.create(
+            disclosure=disclosure, one_line='요약', easy_explanation='설명',
+            why_important='이유', importance=DisclosureSummary.Importance.MEDIUM)
+
+    def _set(self, warnings, is_reviewed=False):
+        self.summary.review_warnings = warnings
+        self.summary.is_reviewed = is_reviewed
+        return self.summary
+
+    def test_unsupported_numbers_are_parsed_out(self):
+        summary = self._set([summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억, 4,000억'])
+        self.assertEqual(summary.unsupported_numbers, ['3조 9,891억', '4,000억'])
+
+    def test_sentence_count_warning_is_not_an_accuracy_warning(self):
+        summary = self._set([summarizer.SENTENCE_COUNT_PREFIX + ': 쉬운 설명이 9문장'])
+        self.assertEqual(summary.accuracy_warnings, [])
+        self.assertEqual(summary.unsupported_numbers, [])
+
+    def test_unverified_quote_is_an_accuracy_warning(self):
+        summary = self._set([f'{summarizer.UNVERIFIED_QUOTE_PREFIX} (근거 2번): 구절'])
+        self.assertEqual(len(summary.accuracy_warnings), 1)
+        self.assertEqual(summary.unsupported_numbers, [])   # 나열할 수치는 없다
+
+    def test_reviewed_summary_reports_no_accuracy_warnings(self):
+        summary = self._set(
+            [summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조'], is_reviewed=True)
+        self.assertEqual(summary.accuracy_warnings, [])
+
+    def test_build_review_warnings_uses_declared_prefixes(self):
+        """접두어 상수와 실제 생성 문구가 어긋나면 배너 조건이 조용히 깨진다."""
+        warnings = summarizer.build_review_warnings({
+            'unsupported_numbers': ['3조 9,891억'],
+            'evidence': [{'quote': '지어낸 인용', 'quote_found': False}],
+            'sentence_count': 9,
+        })
+        self.assertEqual(len(warnings), 3)
+        self.assertTrue(warnings[0].startswith(summarizer.UNSUPPORTED_NUMBER_PREFIX))
+        self.assertTrue(warnings[1].startswith(summarizer.UNVERIFIED_QUOTE_PREFIX))
+        self.assertTrue(warnings[2].startswith(summarizer.SENTENCE_COUNT_PREFIX))

@@ -1,0 +1,25 @@
+{% comment %}
+페이지네이션 — 목록 화면 공용.
+
+`{% querystring %}`(Django 5.1+)은 현재 쿼리스트링을 유지한 채 page만 바꾼다.
+직접 `?page=N`을 쓰면 적용 중인 기업·중요도 필터가 2페이지에서 풀려버린다.
+{% endcomment %}
+{% if page_obj.paginator.num_pages > 1 %}
+  <nav class="pagination" aria-label="페이지 이동">
+    {% if page_obj.has_previous %}
+      <a href="{% querystring page=page_obj.previous_page_number %}">← 이전</a>
+    {% else %}
+      <span class="disabled">← 이전</span>
+    {% endif %}
+
+    <span class="page-status">
+      {{ page_obj.number }} / {{ page_obj.paginator.num_pages }} 페이지
+    </span>
+
+    {% if page_obj.has_next %}
+      <a href="{% querystring page=page_obj.next_page_number %}">다음 →</a>
+    {% else %}
+      <span class="disabled">다음 →</span>
+    {% endif %}
+  </nav>
+{% endif %}

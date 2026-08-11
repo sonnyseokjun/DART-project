@@ -1,0 +1,42 @@
+{% extends 'disclosures/base.html' %}
+
+{% block title %}공시 쉽게 보기{% endblock %}
+
+{% block content %}
+  <section class="intro">
+    <h1>어떤 공시가 올라왔는지, 쉬운 말로 확인하세요</h1>
+    <p>
+      기업이 의무적으로 공개하는 DART 전자공시 중 투자자에게 의미 있는 것만 골라
+      AI가 요약했습니다. 모든 요약에는 원문 링크가 함께 있습니다.
+    </p>
+  </section>
+
+  <section>
+    <h2>섹터</h2>
+    <div class="sector-grid">
+      {% for sector in sectors %}
+        <a class="sector-card" href="{% url 'disclosures:sector_detail' sector.slug %}">
+          <h3>{{ sector.name }}</h3>
+          {% if sector.description %}<p class="sector-desc">{{ sector.description }}</p>{% endif %}
+          <p class="sector-stat">
+            기업 {{ sector.company_count }}곳 · 요약된 공시 {{ sector.summary_count }}건
+          </p>
+        </a>
+      {% empty %}
+        <p class="empty">등록된 섹터가 없습니다.</p>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section>
+    <h2>주요 공시</h2>
+    <p class="section-sub">중요도가 높다고 판정된 최신 공시입니다.</p>
+    <div class="card-list">
+      {% for disclosure in highlights %}
+        {% include 'disclosures/_disclosure_card.html' %}
+      {% empty %}
+        <p class="empty">아직 요약된 주요 공시가 없습니다.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}

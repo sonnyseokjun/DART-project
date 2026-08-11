@@ -1,0 +1,43 @@
+{% load static %}<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}공시 쉽게 보기{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'disclosures/css/style.css' %}">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="{% url 'disclosures:sector_list' %}">
+        공시 <strong>쉽게 보기</strong>
+      </a>
+      <p class="brand-sub">DART 전자공시를 AI가 일반인 눈높이로 요약합니다</p>
+    </div>
+  </header>
+
+  {# 면책 문구는 base에 두어 전 페이지에 상시 노출한다(PLAN.md 1.4·5.3). #}
+  {# 개별 템플릿으로 옮기면 새 화면을 추가할 때 빠뜨리기 쉽다. #}
+  <div class="disclaimer" role="note">
+    <div class="wrap">
+      <strong>⚠️ 면책 고지</strong>
+      본 서비스가 제공하는 요약과 해설은 <strong>투자 자문이 아니며</strong>, AI가 생성한 정보에는
+      오류가 있을 수 있습니다. 모든 판단의 근거는 반드시 <strong>DART 원문 공시</strong>로 확인하세요.
+    </div>
+  </div>
+
+  <main class="wrap">
+    {% block breadcrumb %}{% endblock %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>
+        데이터 출처: 금융감독원 전자공시시스템(DART).
+        본 서비스는 DART 원문을 AI로 요약해 제공하며, 원문과 다를 수 있습니다.
+      </p>
+    </div>
+  </footer>
+</body>
+</html>
