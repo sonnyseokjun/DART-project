@@ -69,7 +69,8 @@ MAX_INPUT_TOKENS = 300_000
 MAX_RETRIES = 2
 
 #: 프롬프트 버전. 시스템 프롬프트를 고치면 반드시 올린다(캐시 키·재현성).
-PROMPT_VERSION = 'v1'
+#: v2: 인용문이 원문의 연속된 한 구간이어야 한다는 규칙을 §4에 추가.
+PROMPT_VERSION = 'v2'
 
 #: 길이 제약. DisclosureSummary.one_line 의 max_length=200 과 일치해야 한다.
 ONE_LINE_MAX_CHARS = 200
@@ -238,6 +239,9 @@ SYSTEM_PROMPT = """\
 요약에 쓴 금액·비율·주식수·날짜·기간은 하나도 빠짐없이 evidence 배열에 근거를 남긴다.
 - quote 에는 원문 구절을 **한 글자도 바꾸지 말고 그대로 복사**한다.
   숫자의 쉼표·단위·띄어쓰기까지 원문 그대로여야 한다. 요약·의역·재작성은 위반이다.
+- quote 는 원문의 **연속된 한 구간**이어야 한다. 떨어져 있는 두 곳(예: 표의 2행과 5행,
+  항목 4번과 항목 6번)을 하나의 quote 로 이어 붙이지 마라.
+  두 곳이 모두 필요하면 **evidence 항목을 두 개로 나눈다**.
 - 원문에서 그대로 옮길 구절을 찾지 못했다면, 그 수치는 요약에 쓰지 마라.
 - claim 에는 요약문에 실제로 쓴 표현을 그대로 옮긴다. 요약문에 없는 내용을 넣지 않는다.
 - 근거는 요약문에 등장한 순서대로 담는다.
@@ -409,6 +413,30 @@ _APPROX = re.compile(r'약|가량|여|안팎|상당')
 #: 근사 표현이 있을 때 허용하는 상대 오차.
 APPROX_TOLERANCE = 0.05
 
+#: 연도 표기(1900~2099). 금액이 아니므로 대조 대상에서 뺀다.
+_YEAR = re.compile(r'^(19|20)\d{2}$')
+
+#: 이 값 이하의 맨 정수는 항목번호·순번·일자로 본다(`1. 거래상대방`, `제3자배정`, `5월`).
+#: 실측: 경고를 유발한 수치 상위 3개가 `2026`(78회)·`1`(60회)·`2025`(38회)였다.
+ORDINAL_MAX = 31
+
+#: 표 머리글의 단위 표기(`(단위 : 천원)`, `(단위 : 백만 원)`)로 생기는 자릿수 차이.
+#: 머리글을 파싱하는 대신 배수 일치를 허용한다 — 머리글은 인용문 밖에 있는 경우가 많아
+#: 파싱해도 인용문만으로는 복원되지 않는다.
+_SCALE_MULTIPLIERS = (10 ** 3, 10 ** 4, 10 ** 6, 10 ** 8, 10 ** 12)
+
+#: 배수 일치로 인정할 때의 상대 오차. 반올림 표기(3,746억 ↔ 374,629백만) 흡수용.
+SCALE_TOLERANCE = 0.01
+
+#: 인용문을 조각으로 나누는 구분자: 줄바꿈·표 구분자·생략부호.
+_FRAGMENT_SPLIT = re.compile(r'\n|\||\.{3}|…')
+
+#: 조각 검증에 쓸 최소 길이(서식 문자 제거 후). 이보다 짧으면 라벨·구분자라 판정에 무의미하다.
+MIN_FRAGMENT_CHARS = 4
+
+#: 서식 문자를 모두 제거해 '내용'만 남기는 정규화. 표 구분자·공백·괄호 유무 차이를 흡수한다.
+_CONTENT_ONLY = re.compile(r'[^0-9A-Za-z가-힣.%\-]')
+
 
 def _normalize(text):
     """원문 대조용 정규화. 공백과 표 셀 구분자를 흡수한다.
@@ -467,6 +495,32 @@ def extract_numbers(text):
     return results
 
 
+def is_reference_number(text, value):
+    """대조에서 제외할 '수치 아닌 숫자'(연도·항목번호·순번)인지 판정한다.
+
+    금액·비율·주식수는 검증의 핵심이므로 절대 제외하지 않는다. 판정 기준은 보수적이다.
+      - 한국어 단위(조·억·만·천)가 붙었으면 금액이다 → 제외하지 않는다
+      - 쉼표나 소수점이 있으면 자릿수 구분·비율이다 → 제외하지 않는다
+      - 그 외 맨 정수 중 연도(19xx·20xx)와 0~ORDINAL_MAX 만 제외한다
+    """
+    bare = (text or '').strip()
+    if re.search(r'[조억만천]', bare):
+        return False
+    if ',' in bare or '.' in bare:
+        return False
+    if _YEAR.match(bare):
+        return True
+    return value == int(value) and 0 <= value <= ORDINAL_MAX
+
+
+def extract_comparable_numbers(text):
+    """extract_numbers 에서 연도·항목번호를 걸러낸 대조용 수치 목록."""
+    return [
+        (raw, value) for raw, value in extract_numbers(text)
+        if not is_reference_number(raw, value)
+    ]
+
+
 def _value_supported(value, quote_values, approximate):
     """요약의 수치 value가 인용문의 수치들로 뒷받침되는지 판정한다."""
     for qvalue in quote_values:
@@ -477,7 +531,63 @@ def _value_supported(value, quote_values, approximate):
             APPROX_TOLERANCE if approximate else 0.0
         ):
             return True
+    # 표 머리글 단위(`(단위 : 천원)`)로 자릿수만 어긋난 경우.
+    # 원문 표가 374,629(백만원)이고 요약이 '3조 7,462억'이면 값은 10^6 배 차이지만 옳은 환산이다.
+    for qvalue in quote_values:
+        if not qvalue:
+            continue
+        for multiplier in _SCALE_MULTIPLIERS:
+            for left, right in ((value, qvalue * multiplier), (value * multiplier, qvalue)):
+                if right and abs(left - right) / abs(right) <= SCALE_TOLERANCE:
+                    return True
     return False
+
+
+def _content_only(text):
+    """서식 문자를 지우고 내용 문자만 남긴다. 표 구분자·공백 차이를 흡수하기 위한 정규화."""
+    return _CONTENT_ONLY.sub('', text or '')
+
+
+def quote_fragments(quote):
+    """인용문을 대조 단위 조각으로 나눈다(서식 문자 제거 후, 짧은 조각은 버린다)."""
+    return [
+        fragment for fragment in (
+            _content_only(part) for part in _FRAGMENT_SPLIT.split(quote or '')
+        )
+        if len(fragment) >= MIN_FRAGMENT_CHARS
+    ]
+
+
+def verify_quote(quote, raw_text=None, *, raw_content=None):
+    """인용문이 원문에 근거하는지 판정한다. 판정 불가면 None.
+
+    ## 왜 '통짜 일치'가 아니라 '조각 순서 일치'인가
+
+    모델은 표에서 **떨어진 두 행을 하나의 인용문으로 이어 붙이는** 경우가 많다.
+    예: `4. 개최방법 | 대면미팅` + `6. 주요 설명회내용(요약) | ...` (5번 항목을 건너뜀).
+    각 조각은 원문에 정확히 존재하고 이어 붙인 문자열만 존재하지 않는다. 즉 할루시네이션이
+    아니라 인용 형식 문제다. 통짜 일치로 보면 이런 정상 인용이 전부 경고로 뜬다
+    (실측: 요약 140건 중 44건).
+
+    그래서 인용문을 조각으로 나눠 **원문에 순서대로 등장하는지**만 본다.
+    조각 하나라도 원문에 없으면 여전히 실패하므로 지어낸 인용은 그대로 걸린다.
+    조각 순서를 요구하는 것도 의미가 있다 — 원문 순서를 뒤집어 인과를 왜곡한 인용은 잡힌다.
+
+    프롬프트에는 "인용문은 연속된 한 구간이어야 한다"고 명시해 두었다(§4).
+    이 완화는 그 지시가 없던 시점에 생성된 요약을 구제하기 위한 것이기도 하다.
+    """
+    if raw_content is None:
+        raw_content = _content_only(_normalize(raw_text))
+    fragments = quote_fragments(quote)
+    if not fragments:
+        return None  # 판정할 만한 내용이 없는 짧은 인용
+    position = 0
+    for fragment in fragments:
+        found = raw_content.find(fragment, position)
+        if found < 0:
+            return False
+        position = found + len(fragment)
+    return True
 
 
 def count_sentences(text):
@@ -493,36 +603,45 @@ def verify_evidence(evidence, raw_text):
     """근거 항목을 원문과 대조한다. QA 숫자 대조의 기계적 1차 관문.
 
     각 항목에 두 개의 판정을 붙인다.
-      quote_found  — quote 가 원문에 그대로(공백 정규화 후) 존재하는가.
-                     False면 인용 자체가 지어낸 것이다.
-      numbers_ok   — claim 에 등장하는 모든 수치가 quote 안에도 있는가.
-                     False면 요약 수치가 근거에 없는 값이다.
+      quote_found  — quote 의 각 조각이 원문에 순서대로 존재하는가(verify_quote 참고).
+                     False면 인용에 원문에 없는 내용이 섞인 것이다.
+      numbers_ok   — claim 에 등장하는 수치가 **근거 전체**로 뒷받침되는가.
+                     진단용 필드이며 경고를 만들지 않는다(아래 참고).
     반환: (판정이 붙은 evidence 리스트, 경고 문자열 리스트)
+
+    ## numbers_ok 로는 경고를 만들지 않는 이유
+
+    근거 하나가 주장 여러 개를 걸치는 일이 흔해서, 항목별 대조는 오탐이 대부분이다.
+    "인용 없이 등장한 수치"는 validate_summary 의 집계 검사가 정확히 걸러내므로
+    검수 게이트는 그쪽에 맡기고, 여기서는 판정 결과만 기록해 원인 추적에 쓴다.
+    대조 범위를 자기 인용문이 아니라 **전체 인용문**으로 둔 것도 같은 이유다
+    (실측: 자기 인용문 대조는 55건 오탐, 전체 대조는 13건).
     """
-    normalized_raw = _normalize(raw_text)
+    raw_content = _content_only(_normalize(raw_text))
+    all_quote_values = []
+    for item in evidence:
+        all_quote_values.extend(
+            value for _, value in extract_numbers(_normalize(item.get('quote', '')))
+        )
+
     checked = []
     warnings = []
     for idx, item in enumerate(evidence):
-        quote = _normalize(item.get('quote', ''))
         claim = item.get('claim', '')
-        quote_found = bool(quote) and quote in normalized_raw
+        verdict = verify_quote(item.get('quote', ''), raw_content=raw_content)
         approximate = bool(_APPROX.search(claim))
-        quote_values = [value for _, value in extract_numbers(quote)]
         missing = sorted({
-            text for text, value in extract_numbers(claim)
-            if not _value_supported(value, quote_values, approximate)
+            text for text, value in extract_comparable_numbers(claim)
+            if not _value_supported(value, all_quote_values, approximate)
         })
         result = dict(item)
-        result['quote_found'] = quote_found
+        # 판정 불가(None)는 실패로 취급하지 않는다. 경고를 만들지 못하는 근거일 뿐이다.
+        result['quote_found'] = verdict is not False
         result['numbers_ok'] = not missing
         result['missing_numbers'] = missing
         checked.append(result)
-        if not quote_found:
+        if verdict is False:
             warnings.append(f'evidence[{idx}]: 인용문이 원문에서 발견되지 않음')
-        if missing:
-            warnings.append(
-                f'evidence[{idx}]: 요약 수치 {", ".join(missing)}이(가) 인용문에 없음'
-            )
     return checked, warnings
 
 
@@ -557,14 +676,19 @@ def validate_summary(data, raw_text):
     # QA 숫자 대조의 본 관문: 요약 본문에 등장한 모든 수치가 근거 인용문 전체로 뒷받침되는가.
     # 항목별 대조는 근거 하나가 주장 여러 개를 걸칠 때 오탐이 나지만, 이 집계 검사는
     # "인용 없이 등장한 수치"만 정확히 걸러낸다. 단위 환산 오차는 허용한다.
+    # 연도·항목번호는 금액이 아니므로 대조에서 뺀다(is_reference_number 참고).
+    # 인용문은 verify_evidence 와 똑같이 정규화한 뒤 수치를 뽑는다.
+    # 표 구분자를 지우지 않으면 `1,234|567` 같은 셀 경계에서 값이 다르게 읽힌다.
     quote_values = []
     for item in evidence:
-        quote_values.extend(value for _, value in extract_numbers(item.get('quote', '')))
+        quote_values.extend(
+            value for _, value in extract_numbers(_normalize(item.get('quote', '')))
+        )
     summary_text = ' '.join(
         data[f] for f in ('one_line', 'easy_explanation', 'why_important')
     )
     unsupported = sorted({
-        text for text, value in extract_numbers(summary_text)
+        text for text, value in extract_comparable_numbers(summary_text)
         if not _value_supported(value, quote_values, approximate=True)
     })
     if unsupported:
@@ -589,6 +713,36 @@ def validate_summary(data, raw_text):
         'sentence_count': sentences,
         'warnings': warnings,
     }
+
+
+def build_review_warnings(result):
+    """DisclosureSummary.review_warnings 에 저장할 경고 목록을 만든다.
+
+    요약 생성(summarize_disclosures)과 재검증(revalidate_summaries) 두 경로가 이 함수를
+    공유해야 같은 요약이 경로에 따라 다르게 판정되지 않는다. 문구를 고칠 일이 있으면
+    여기만 고친다.
+
+    validate_summary 가 반환하는 `warnings` 를 그대로 쓰지 않는 이유는, 검수자가
+    admin에서 바로 판단할 수 있도록 문제가 된 인용문·수치를 문구에 담기 위해서다.
+    """
+    warnings = []
+    if result.get('unsupported_numbers'):
+        warnings.append(
+            '인용 근거 없는 수치: ' + ', '.join(result['unsupported_numbers'])
+        )
+    for idx, item in enumerate(result.get('evidence', [])):
+        if not item.get('quote_found', True):
+            quote = (item.get('quote') or '').strip()
+            warnings.append(f'evidence[{idx}] 원문에서 찾지 못한 인용: {quote[:60]}')
+    sentences = result.get('sentence_count')
+    if sentences is not None and not (
+        EXPLANATION_MIN_SENTENCES <= sentences <= EXPLANATION_MAX_SENTENCES
+    ):
+        warnings.append(
+            f'easy_explanation이 {sentences}문장 '
+            f'(권장 {EXPLANATION_MIN_SENTENCES}~{EXPLANATION_MAX_SENTENCES}문장)'
+        )
+    return warnings
 
 
 # ---------------------------------------------------------------------------

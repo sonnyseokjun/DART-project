@@ -957,3 +957,317 @@ class SummarizerRetryTest(TestCase):
 
         max_length = DisclosureSummary._meta.get_field('model_name').max_length
         self.assertLessEqual(len(result['model_name']), max_length)
+
+
+class ReferenceNumberTest(TestCase):
+    """연도·항목번호를 대조에서 빼되, 금액·비율은 절대 빼지 않는다.
+
+    실측 배경: 경고를 유발한 수치 상위 3개가 `2026`(78회)·`1`(60회)·`2025`(38회)로
+    전부 금액이 아니었다. 이 필터가 오탐의 큰 축을 없앤다.
+    """
+
+    def _dropped(self, text):
+        kept = {raw for raw, _ in summarizer.extract_comparable_numbers(text)}
+        allnum = {raw for raw, _ in summarizer.extract_numbers(text)}
+        return allnum - kept
+
+    def test_years_and_ordinals_are_dropped(self):
+        dropped = self._dropped('2026년 1분기, 제3자배정, 5월 12일')
+        self.assertIn('2026', dropped)
+        self.assertIn('1', dropped)
+        self.assertIn('3', dropped)
+
+    def test_amounts_are_never_dropped(self):
+        # 단위가 붙었으면 값이 작아도 금액이다
+        self.assertEqual(self._dropped('3조 9,891억'), set())
+        self.assertEqual(self._dropped('12억'), set())
+        # 쉼표·소수점이 있으면 자릿수 구분·비율이다
+        self.assertEqual(self._dropped('1,234,567원 / 지분율 17.33% / 2.44배'), set())
+
+    def test_large_bare_integer_is_kept(self):
+        """ORDINAL_MAX를 넘는 맨 정수는 주식수일 수 있으므로 남긴다."""
+        self.assertEqual(self._dropped('17790000'), set())
+
+
+class VerifyQuoteTest(TestCase):
+    """인용문 조각 검증 — 표 행을 이어 붙인 정상 인용은 통과, 지어낸 인용은 차단."""
+
+    RAW = (
+        '3. 개최목적 | 2026년 1분기 경영실적 발표\n'
+        '4. 개최방법 | 대면미팅, One-on-One미팅\n'
+        '5. 개최일시 | 2026-05-06\n'
+        '6. 주요 설명회내용(요약) | 2026년 1분기 경영실적 설명\n'
+    )
+
+    def _verify(self, quote):
+        return summarizer.verify_quote(quote, self.RAW)
+
+    def test_contiguous_quote_passes(self):
+        self.assertTrue(self._verify('4. 개최방법 | 대면미팅, One-on-One미팅'))
+
+    def test_stitched_rows_pass(self):
+        """떨어진 두 행을 이어 붙인 인용 — 각 조각이 원문에 순서대로 있으면 통과한다.
+
+        모델이 5번 항목을 건너뛰고 4번과 6번을 이어 붙인 형태. 할루시네이션이 아니라
+        인용 형식 문제이므로 경고를 만들면 안 된다.
+        """
+        self.assertTrue(self._verify(
+            '4. 개최방법 | 대면미팅, One-on-One미팅\n6. 주요 설명회내용(요약) | 2026년 1분기'
+        ))
+
+    def test_table_separator_differences_are_absorbed(self):
+        """구분자·공백 유무만 다른 인용은 통과한다(모델이 표 구분자를 자주 생략한다)."""
+        self.assertTrue(self._verify('5. 개최일시   2026-05-06'))
+
+    # --- 완화해도 여전히 잡혀야 하는 것들 -------------------------------------
+
+    def test_fabricated_fragment_is_rejected(self):
+        """조각 하나라도 원문에 없으면 실패한다 — 할루시네이션 탐지력은 유지된다."""
+        self.assertFalse(self._verify(
+            '4. 개최방법 | 대면미팅\n7. 참가비 | 무료 300,000원'
+        ))
+
+    def test_fabricated_number_inside_real_row_is_rejected(self):
+        self.assertFalse(self._verify('5. 개최일시 | 2026-05-09'))
+
+    def test_reversed_order_is_rejected(self):
+        """원문 순서를 뒤집은 인용은 인과를 왜곡할 수 있으므로 통과시키지 않는다."""
+        self.assertFalse(self._verify(
+            '6. 주요 설명회내용(요약) | 2026년 1분기 경영실적 설명\n3. 개최목적'
+        ))
+
+    def test_too_short_quote_is_undecidable(self):
+        """판정할 내용이 없으면 None — 실패로 몰아 경고를 만들지 않는다."""
+        self.assertIsNone(self._verify('| |'))
+
+    def test_undecidable_quote_does_not_warn(self):
+        checked, warnings = summarizer.verify_evidence(
+            [{'field': 'one_line', 'claim': '', 'quote': '| |'}], self.RAW
+        )
+        self.assertTrue(checked[0]['quote_found'])
+        self.assertEqual(warnings, [])
+
+
+class ScaleToleranceTest(TestCase):
+    """표 머리글 단위(`(단위 : 백만원)`)로 자릿수만 어긋난 환산을 정상으로 인정한다."""
+
+    def test_million_won_table_conversion_is_supported(self):
+        # 원문 표: 374,629 (단위: 백만원) → 요약: 3,746억 (반올림 표기까지 인정한다)
+        quote_values = [value for _, value in summarizer.extract_numbers('매출액 | 374,629')]
+        value = summarizer.extract_numbers('3,746억')[0][1]
+        self.assertTrue(summarizer._value_supported(value, quote_values, approximate=False))
+
+    def test_thousand_won_table_conversion_is_supported(self):
+        quote_values = [v for _, v in summarizer.extract_numbers('63,956,675')]
+        value = summarizer.extract_numbers('639억 5,668만')[0][1]
+        self.assertTrue(summarizer._value_supported(value, quote_values, approximate=False))
+
+    def test_unrelated_number_is_still_unsupported(self):
+        """자릿수 배수가 아닌 값은 여전히 뒷받침되지 않는다."""
+        quote_values = [v for _, v in summarizer.extract_numbers('매출액 | 374,629')]
+        value = summarizer.extract_numbers('9,999억')[0][1]
+        self.assertFalse(summarizer._value_supported(value, quote_values, approximate=True))
+
+
+class EvidenceScopeTest(TestCase):
+    """claim 수치는 자기 인용문이 아니라 **전체 인용문**과 대조한다."""
+
+    RAW = '계약금액 | 1,234,567\n계약기간 | 2026.01.01 ~ 2026.12.31\n매출액 대비 | 12.34%'
+
+    def test_number_from_sibling_quote_is_not_flagged(self):
+        """근거 하나가 주장 여러 개를 걸치는 흔한 형태 — 오탐이면 안 된다."""
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '계약금액 1,234,567원 (매출 대비 12.34%)',
+             'quote': '계약금액 | 1,234,567'},
+            {'field': 'why_important', 'claim': '매출액 대비 12.34%',
+             'quote': '매출액 대비 | 12.34%'},
+        ], self.RAW)
+
+        self.assertTrue(checked[0]['numbers_ok'])
+        self.assertEqual(checked[0]['missing_numbers'], [])
+
+    def test_number_absent_from_all_quotes_is_recorded(self):
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '계약금액 9,999,999원',
+             'quote': '계약금액 | 1,234,567'},
+        ], self.RAW)
+
+        self.assertFalse(checked[0]['numbers_ok'])
+        self.assertIn('9,999,999', checked[0]['missing_numbers'])
+
+    def test_number_mismatch_does_not_create_warning(self):
+        """항목별 수치 판정은 진단용이다. 검수 게이트는 집계 검사(validate_summary)가 맡는다."""
+        _checked, warnings = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '계약금액 9,999,999원',
+             'quote': '계약금액 | 1,234,567'},
+        ], self.RAW)
+
+        self.assertEqual(warnings, [])
+
+
+class ReviewWarningBuilderTest(TestCase):
+    """생성·재검증 두 경로가 같은 경고를 만들도록 build_review_warnings가 단일 출처다."""
+
+    def test_unsupported_numbers_and_bad_quotes_are_reported(self):
+        warnings = summarizer.build_review_warnings({
+            'unsupported_numbers': ['9,999억'],
+            'evidence': [
+                {'quote': '진짜 인용', 'quote_found': True},
+                {'quote': '지어낸 인용', 'quote_found': False},
+            ],
+            'sentence_count': 4,
+        })
+
+        self.assertEqual(len(warnings), 2)
+        self.assertIn('9,999억', warnings[0])
+        self.assertIn('지어낸 인용', warnings[1])
+
+    def test_clean_summary_has_no_warnings(self):
+        self.assertEqual(summarizer.build_review_warnings({
+            'unsupported_numbers': [],
+            'evidence': [{'quote': '진짜 인용', 'quote_found': True}],
+            'sentence_count': 4,
+        }), [])
+
+    def test_sentence_count_out_of_range_warns(self):
+        warnings = summarizer.build_review_warnings({
+            'unsupported_numbers': [], 'evidence': [], 'sentence_count': 9,
+        })
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('9문장', warnings[0])
+
+
+class ReferenceDocSelectionTest(TestCase):
+    """대형 참고문서 제외 — 크다는 이유만으로 빼지 않는다는 점이 핵심이다."""
+
+    def test_representative_company_variant_is_excluded(self):
+        """집단 전체 계열사 명부(494,378 토큰) — 입력 상한을 넘겨 요약이 실패한다."""
+        state, reason = evaluate(
+            '공정위공시', '대규모기업집단현황공시[연1회공시및1/4분기용(대표회사)]'
+        )
+        self.assertEqual(state, SelectionState.EXCLUDED)
+        self.assertEqual(reason, ExclusionReason.REFERENCE_DOC)
+
+    def test_correction_tag_does_not_evade_exclusion(self):
+        state, reason = evaluate(
+            '공정위공시', '[기재정정]대규모기업집단현황공시[연1회공시및1/4분기용(대표회사)]'
+        )
+        self.assertEqual(state, SelectionState.EXCLUDED)
+        self.assertEqual(reason, ExclusionReason.REFERENCE_DOC)
+
+    def test_individual_company_variants_stay_targets(self):
+        """같은 공시명이라도 개별회사·동일인용 서식은 6K~16K 토큰이고 요약에 성공했다.
+
+        접두어만 보고 `대규모기업집단현황공시`를 통째로 빼면 정상 요약 4건이 함께 날아간다.
+        """
+        for title in (
+            '대규모기업집단현황공시[연1회공시및1/4분기용(개별회사)]',
+            '대규모기업집단현황공시[연1회(동일인용)]',
+        ):
+            with self.subTest(title=title):
+                state, reason = evaluate('공정위공시', title)
+                self.assertEqual(state, SelectionState.TARGET)
+                self.assertEqual(reason, '')
+
+    def test_governance_report_stays_a_target(self):
+        """기업지배구조보고서공시는 41K~103K 토큰으로 크지만 요약에 성공했고
+        지배구조는 투자자 관심사라 의도적으로 대상에 남겼다. 같이 빼지 말 것."""
+        state, reason = evaluate('거래소공시', '기업지배구조보고서공시')
+        self.assertEqual(state, SelectionState.TARGET)
+        self.assertEqual(reason, '')
+
+    def test_other_fair_trade_disclosures_stay_targets(self):
+        """유형째 빼면 안 된다 — 같은 공정위공시에도 요약 가치가 있는 공시가 있다."""
+        state, _ = evaluate('공정위공시', '대규모내부거래관련공시')
+        self.assertEqual(state, SelectionState.TARGET)
+
+
+class RevalidateSummariesCommandTest(TestCase):
+    """재검증은 LLM을 부르지 않고 판정만 갱신한다."""
+
+    RAW = (
+        '3. 개최목적 | 2026년 1분기 경영실적 발표\n'
+        '4. 개최방법 | 대면미팅, One-on-One미팅\n'
+        '5. 개최일시 | 2026-05-06\n'
+        '6. 주요 설명회내용(요약) | 계약금액 1,234,567원\n'
+    )
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자',
+        )
+        self.disclosure = Disclosure.objects.create(
+            company=company, rcept_no='20260701000002',
+            report_name='기업설명회(IR)개최', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000002'),
+            raw_content=self.RAW, raw_fetched=True,
+        )
+        # 옛 규칙에서 오탐 경고가 붙은 채 저장된 요약을 재현한다.
+        self.summary = DisclosureSummary.objects.create(
+            disclosure=self.disclosure,
+            one_line='계약금액 1,234,567원 규모의 설명회를 연다.',
+            easy_explanation='회사가 설명회를 연다. 금액은 1,234,567원이다. 방법은 대면미팅이다.',
+            why_important='투자자 소통 창구다.',
+            importance=DisclosureSummary.Importance.MEDIUM,
+            evidence=[{
+                'field': 'one_line', 'claim': '계약금액 1,234,567원',
+                # 4번과 6번을 이어 붙인 인용 — 옛 규칙에서는 미발견으로 판정됐다
+                'quote': '4. 개최방법 | 대면미팅, One-on-One미팅\n'
+                         '6. 주요 설명회내용(요약) | 계약금액 1,234,567원',
+                'quote_found': False, 'numbers_ok': False,
+                'missing_numbers': ['1,234,567'],
+            }],
+            review_warnings=['원문에서 찾지 못한 인용: 4. 개최방법 | 대면미팅'],
+        )
+
+    def test_false_positive_warning_is_cleared(self):
+        call_command('revalidate_summaries', verbosity=0)
+
+        self.summary.refresh_from_db()
+        self.assertEqual(self.summary.review_warnings, [])
+        self.assertTrue(self.summary.evidence[0]['quote_found'])
+
+    def test_dry_run_does_not_save(self):
+        call_command('revalidate_summaries', '--dry-run', verbosity=0)
+
+        self.summary.refresh_from_db()
+        self.assertEqual(
+            self.summary.review_warnings,
+            ['원문에서 찾지 못한 인용: 4. 개최방법 | 대면미팅'],
+        )
+
+    def test_genuine_hallucination_is_still_flagged(self):
+        """재검증이 경고를 지우기만 하는 것은 아니다 — 진짜 문제는 다시 붙는다."""
+        self.summary.evidence = [{
+            'field': 'one_line', 'claim': '계약금액 1,234,567원',
+            'quote': '원문에 존재하지 않는 인용 구절입니다',
+            'quote_found': True, 'numbers_ok': True, 'missing_numbers': [],
+        }]
+        self.summary.review_warnings = []
+        self.summary.save(update_fields=['evidence', 'review_warnings'])
+
+        call_command('revalidate_summaries', verbosity=0)
+
+        self.summary.refresh_from_db()
+        self.assertTrue(self.summary.review_warnings)
+        self.assertFalse(self.summary.evidence[0]['quote_found'])
+
+    def test_missing_raw_content_is_skipped(self):
+        """원문이 없으면 대조가 불가능하므로 기존 판정을 건드리지 않는다."""
+        self.disclosure.raw_content = ''
+        self.disclosure.raw_fetched = False
+        self.disclosure.save(update_fields=['raw_content', 'raw_fetched'])
+
+        call_command('revalidate_summaries', verbosity=0)
+
+        self.summary.refresh_from_db()
+        self.assertEqual(
+            self.summary.review_warnings,
+            ['원문에서 찾지 못한 인용: 4. 개최방법 | 대면미팅'],
+        )
+
+    def test_does_not_call_openai(self):
+        with patch.object(summarizer, '_call_openai') as mock_call:
+            call_command('revalidate_summaries', verbosity=0)
+        mock_call.assert_not_called()
