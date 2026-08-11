@@ -9,9 +9,11 @@ LLM 비용의 대부분이 여기서 결정된다. 수집한 공시 전부를 �
 ## 판정 순서
 
 1. **제목 블랙리스트** (`TITLE_BLACKLIST`) — 정형·반복 공시. 정확 일치로 판정한다
-2. **공시유형 제외** (`EXCLUDED_TYPES`) — 지분공시·기타공시는 기본 제외.
+2. **대형 참고문서** (`REFERENCE_DOC_PATTERNS`) — 요약이 불가능하거나 무의미한 대형 문서.
+   제목 패턴으로 판정하며 공시유형과 무관하게 제외한다
+3. **공시유형 제외** (`EXCLUDED_TYPES`) — 지분공시·기타공시는 기본 제외.
    단 `TYPE_WHITELIST_PREFIXES`에 걸리면 대상으로 되살린다
-3. 나머지는 모두 대상
+4. 나머지는 모두 대상
 
 블랙리스트를 유형 제외보다 먼저 보는 이유는 제외 사유를 더 구체적으로 남기기 위해서다.
 둘 다 해당하는 지분공시 정형 공시는 "정형 반복 공시"로 기록되어야 분포가 읽힌다.
@@ -44,6 +46,7 @@ class ExclusionReason(models.TextChoices):
 
     BLACKLIST = 'blacklist', '정형 반복 공시(제목 블랙리스트)'
     EXCLUDED_TYPE = 'excluded_type', '요약 가치 낮은 공시유형'
+    REFERENCE_DOC = 'reference_doc', '요약 부적합 대형 참고문서'
 
 
 # --- 정책 상수 -----------------------------------------------------------
@@ -79,6 +82,30 @@ TYPE_WHITELIST_PREFIXES = {
     '기타공시': ('자기주식처분결과보고서',),
 }
 
+#: 제목이 일치하면 **공시유형과 무관하게** 제외하는 대형 참고문서. 정규화된 제목에 매칭한다.
+#:
+#: ## 왜 유형이 아니라 제목으로 거르는가
+#:
+#: `대규모기업집단현황공시`는 공정위공시이고, 같은 유형에는 요약 가치가 있는 공시도 있다.
+#: 유형째로 빼면 그것들까지 잃으므로 제목으로만 정확히 집는다.
+#:
+#: ## 왜 '대표회사' 서식만 빼는가 (실측 · 정리하지 말 것)
+#:
+#: 같은 `대규모기업집단현황공시`라도 서식에 따라 크기가 50배 넘게 차이 난다.
+#:   - `[...(대표회사)]`  — **집단 전체의 계열회사 명부**. 삼성전자 기준 494,378 토큰으로
+#:     `MAX_INPUT_TOKENS`(300,000)를 넘겨 요약이 실패한다. 명부 전체가 본문이라
+#:     핵심 섹션 추출도 통하지 않고, 일반 투자자에게 전달할 서사도 없다
+#:   - `[...(개별회사)]`·`[...(동일인용)]` — 해당 회사 몫만 담아 6K~16K 토큰이다.
+#:     실제로 요약에 성공했으므로 **대상에 남긴다**
+#:
+#: 제목 접두어만 보고 `대규모기업집단현황공시` 전체를 빼면 정상 요약 4건이 함께 날아간다.
+#: 크기가 크다는 이유만으로도 넣지 말 것 — `기업지배구조보고서공시`(41K~103K 토큰, 4건)는
+#: 크지만 요약에 성공했고 지배구조는 투자자 관심사라 **의도적으로 대상에 남겼다**.
+REFERENCE_DOC_PATTERNS = (
+    # 공백은 normalize_title이 이미 제거했다. 괄호 안 표기 변화를 견디도록 느슨하게 맞춘다.
+    re.compile(r'^대규모기업집단현황공시.*대표회사'),
+)
+
 #: 제목 앞에 붙는 대괄호 태그(`[기재정정]`, `[발행조건확정]`, `[기재정정][첨부정정]` 등).
 _BRACKET_PREFIX_RE = re.compile(r'^(?:\[[^\]]*\])+')
 _WHITESPACE_RE = re.compile(r'\s+')
@@ -111,10 +138,19 @@ def is_whitelisted(disclosure_type, report_name):
     return normalized.startswith(prefixes)
 
 
+def is_reference_doc(report_name):
+    """요약 부적합 대형 참고문서인지. 같은 공시명이라도 서식에 따라 갈린다."""
+    normalized = normalize_title(report_name)
+    return any(pattern.search(normalized) for pattern in REFERENCE_DOC_PATTERNS)
+
+
 def evaluate(disclosure_type, report_name):
     """(선별 상태, 제외 사유)를 반환한다. 모델에 의존하지 않는 순수 함수."""
     if is_blacklisted(report_name):
         return SelectionState.EXCLUDED, ExclusionReason.BLACKLIST
+
+    if is_reference_doc(report_name):
+        return SelectionState.EXCLUDED, ExclusionReason.REFERENCE_DOC
 
     if disclosure_type in EXCLUDED_TYPES and not is_whitelisted(disclosure_type, report_name):
         return SelectionState.EXCLUDED, ExclusionReason.EXCLUDED_TYPE

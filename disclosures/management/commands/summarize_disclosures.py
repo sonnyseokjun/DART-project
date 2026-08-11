@@ -20,6 +20,7 @@ from disclosures.selection import SelectionState
 from disclosures.summarizer import (
     DEFAULT_MODEL,
     SummarizerError,
+    build_review_warnings,
     count_tokens,
     estimate_summary_cost,
     summarize_disclosure,
@@ -185,14 +186,9 @@ class Command(BaseCommand):
             model=model,
         )
 
-        warnings = list(result.get('warnings', []))
-        if result.get('unsupported_numbers'):
-            warnings.append(
-                '인용 근거 없는 수치: ' + ', '.join(result['unsupported_numbers'])
-            )
-        for e in result.get('evidence', []):
-            if not e.get('quote_found', True):
-                warnings.append(f'원문에서 찾지 못한 인용: {e.get("quote", "")[:60]}')
+        # 경고 문구는 summarizer.build_review_warnings 가 단일 출처다
+        # (재검증 명령과 판정이 어긋나지 않게 한다).
+        warnings = build_review_warnings(result)
 
         fields = {
             'one_line': result['one_line'],
