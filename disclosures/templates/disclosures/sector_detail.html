@@ -1,0 +1,60 @@
+{% extends 'disclosures/base.html' %}
+
+{% block title %}{{ sector.name }} 공시 · 공시 쉽게 보기{% endblock %}
+
+{% block breadcrumb %}
+  <nav class="breadcrumb">
+    <a href="{% url 'disclosures:sector_list' %}">홈</a> ›
+    <span>{{ sector.name }}</span>
+  </nav>
+{% endblock %}
+
+{% block content %}
+  <h1>{{ sector.name }}</h1>
+  {% if sector.description %}<p class="lead">{{ sector.description }}</p>{% endif %}
+
+  <form class="filters" method="get">
+    <label>
+      기업
+      <select name="company">
+        <option value="">전체</option>
+        {% for company in companies %}
+          <option value="{{ company.stock_code }}"
+                  {% if company.stock_code == selected_company %}selected{% endif %}>
+            {{ company.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      중요도
+      <select name="importance">
+        <option value="">전체</option>
+        {% for option in importance_options %}
+          <option value="{{ option.value }}"
+                  {% if option.value == selected_importance %}selected{% endif %}>
+            {{ option.label }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <button type="submit">적용</button>
+    {% if selected_company or selected_importance %}
+      <a class="filter-reset" href="{% url 'disclosures:sector_detail' sector.slug %}">초기화</a>
+    {% endif %}
+  </form>
+
+  <p class="result-count">공시 {{ total_count }}건</p>
+
+  <div class="card-list">
+    {% for disclosure in page_obj %}
+      {% include 'disclosures/_disclosure_card.html' %}
+    {% empty %}
+      <p class="empty">조건에 맞는 공시가 없습니다.</p>
+    {% endfor %}
+  </div>
+
+  {% include 'disclosures/_pagination.html' %}
+{% endblock %}

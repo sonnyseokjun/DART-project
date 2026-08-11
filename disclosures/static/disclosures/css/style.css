@@ -1,0 +1,218 @@
+/* 공시 조회 화면 스타일.
+ *
+ * 외부 CDN·빌드 단계 없이 순수 CSS로만 작성한다. MVP 단계에서 프런트엔드 빌드 체인을
+ * 들이면 Docker 배포(로드맵 5단계)까지 복잡도가 따라온다.
+ *
+ * 색은 중요도 3단계(높음/보통/낮음)를 구분하는 데만 쓴다. 공시는 텍스트가 본체라
+ * 장식보다 가독성이 우선이다. */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #1c1f23;
+  --text-muted: #5b6472;
+  --border: #e2e5ea;
+  --accent: #1f5fbf;
+
+  --high: #c0392b;
+  --high-bg: #fdeceb;
+  --medium: #b46a00;
+  --medium-bg: #fdf3e3;
+  --low: #4a5568;
+  --low-bg: #eef0f3;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic',
+               'Apple SD Gothic Neo', sans-serif;
+  line-height: 1.7;
+  font-size: 16px;
+}
+
+.wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+
+a { color: var(--accent); }
+
+/* --- 헤더 · 면책 · 푸터 ------------------------------------------------- */
+
+.site-header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 18px 0; }
+.brand { font-size: 20px; text-decoration: none; color: var(--text); }
+.brand strong { color: var(--accent); }
+.brand-sub { margin: 4px 0 0; color: var(--text-muted); font-size: 14px; }
+
+/* 면책 문구는 눈에 띄되 본문을 가리지 않아야 한다. 전 페이지 상시 노출(PLAN.md 5.3). */
+.disclaimer {
+  background: #fff8e1;
+  border-bottom: 1px solid #f0e0b0;
+  font-size: 13.5px;
+  color: #6b5518;
+  padding: 10px 0;
+}
+
+main { padding: 28px 0 56px; }
+
+.site-footer {
+  border-top: 1px solid var(--border);
+  padding: 20px 0 40px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* --- 공통 요소 ---------------------------------------------------------- */
+
+h1 { font-size: 26px; margin: 0 0 8px; }
+h2 { font-size: 18px; margin: 32px 0 12px; }
+h3 { font-size: 16px; margin: 0 0 6px; }
+
+.breadcrumb { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
+.breadcrumb a { text-decoration: none; }
+
+.lead { color: var(--text-muted); margin-top: 0; }
+.section-sub { color: var(--text-muted); font-size: 14px; margin: -6px 0 12px; }
+.result-count { color: var(--text-muted); font-size: 14px; }
+.empty { color: var(--text-muted); padding: 28px; text-align: center;
+         background: var(--surface); border: 1px dashed var(--border); border-radius: 8px; }
+.dot { color: var(--border); margin: 0 2px; }
+
+.intro { background: var(--surface); border: 1px solid var(--border);
+         border-radius: 10px; padding: 24px; }
+.intro h1 { font-size: 22px; }
+.intro p { margin: 0; color: var(--text-muted); }
+
+/* --- 섹터 카드 ---------------------------------------------------------- */
+
+.sector-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+.sector-card {
+  display: block; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 18px; text-decoration: none; color: inherit;
+}
+.sector-card:hover { border-color: var(--accent); }
+.sector-desc { color: var(--text-muted); font-size: 14px; margin: 0 0 6px; }
+.sector-stat { color: var(--text-muted); font-size: 13px; margin: 0; }
+
+/* --- 공시 카드 ---------------------------------------------------------- */
+
+.card-list { display: flex; flex-direction: column; gap: 12px; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 4px solid var(--border); border-radius: 8px; padding: 16px 18px;
+}
+.card.importance-high { border-left-color: var(--high); }
+.card.importance-medium { border-left-color: var(--medium); }
+.card.importance-low { border-left-color: var(--low); }
+
+.card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+             font-size: 13px; color: var(--text-muted); margin-bottom: 8px; }
+.card-company { font-weight: 600; text-decoration: none; }
+.card-title { margin: 0 0 6px; font-size: 16px; line-height: 1.5; }
+.card-title a { color: var(--text); text-decoration: none; }
+.card-title a:hover { color: var(--accent); text-decoration: underline; }
+.card-oneline { margin: 0 0 12px; }
+.card-foot { display: flex; gap: 16px; font-size: 13.5px; }
+.link-dart { color: var(--text-muted); text-decoration: none; }
+.link-dart:hover { color: var(--accent); }
+
+/* --- 배지 --------------------------------------------------------------- */
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
+         font-size: 12px; font-weight: 600; white-space: nowrap; }
+.badge-high { background: var(--high-bg); color: var(--high); }
+.badge-medium { background: var(--medium-bg); color: var(--medium); }
+.badge-low { background: var(--low-bg); color: var(--low); }
+.badge-type { background: #eaf1fb; color: var(--accent); }
+.badge-unreviewed { background: #f0f0f0; color: #666; border: 1px dashed #bbb; }
+.badge-accuracy { background: var(--high-bg); color: var(--high); border: 1px solid #f0b8b2; }
+
+/* --- 정확성 경고 배너 ---------------------------------------------------- */
+
+/* 요약 본문보다 먼저 눈에 들어와야 한다. 원문 확인을 유도하는 것이 목적이므로
+ * 면책 문구(연한 노랑)보다 강한 색을 쓴다. */
+.accuracy-alert {
+  margin: 18px 0 0;
+  padding: 14px 18px;
+  background: var(--high-bg);
+  border: 1px solid #f0b8b2;
+  border-left: 4px solid var(--high);
+  border-radius: 8px;
+}
+.accuracy-alert h2 { margin: 0 0 6px; font-size: 15px; color: var(--high); }
+.accuracy-alert p { margin: 0; font-size: 14px; color: #7a2e26; }
+.unsupported-numbers {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  list-style: none; margin: 10px 0 0; padding: 0;
+}
+.unsupported-numbers li {
+  background: #fff; border: 1px solid #e6a9a2; border-radius: 6px;
+  padding: 3px 10px; font-size: 14px; font-weight: 600; color: var(--high);
+}
+
+/* --- 필터 · 페이지네이션 ------------------------------------------------ */
+
+.filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px;
+           background: var(--surface); border: 1px solid var(--border);
+           border-radius: 8px; padding: 14px 16px; margin: 16px 0; }
+.filters label { display: flex; flex-direction: column; font-size: 13px;
+                 color: var(--text-muted); gap: 4px; }
+.filters select { padding: 6px 8px; border: 1px solid var(--border);
+                  border-radius: 6px; font-size: 14px; background: #fff; }
+.filters button { padding: 7px 16px; border: 0; border-radius: 6px;
+                  background: var(--accent); color: #fff; font-size: 14px; cursor: pointer; }
+.filter-reset { font-size: 13px; color: var(--text-muted); align-self: center; }
+
+.pagination { display: flex; align-items: center; justify-content: center;
+              gap: 16px; margin-top: 24px; font-size: 14px; }
+.pagination .disabled { color: #b8bec8; }
+.page-status { color: var(--text-muted); }
+
+/* --- 공시 상세 ---------------------------------------------------------- */
+
+.detail { background: var(--surface); border: 1px solid var(--border);
+          border-top: 4px solid var(--border); border-radius: 10px; padding: 28px; }
+.detail.importance-high { border-top-color: var(--high); }
+.detail.importance-medium { border-top-color: var(--medium); }
+.detail.importance-low { border-top-color: var(--low); }
+
+.detail-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.detail-head h1 { font-size: 22px; line-height: 1.45; }
+.detail-meta { color: var(--text-muted); font-size: 14px; margin: 0; }
+.detail-meta a { text-decoration: none; font-weight: 600; }
+
+.block { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 20px; }
+.block h2 { margin-top: 0; }
+.block-oneline { border-top: 0; margin-top: 20px; padding-top: 0; }
+.oneline { font-size: 18px; font-weight: 600; line-height: 1.6; margin: 0; }
+
+.evidence-list { list-style: none; padding: 0; margin: 0;
+                 display: flex; flex-direction: column; gap: 14px; }
+.evidence-claim { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.evidence-list blockquote {
+  margin: 0; padding: 10px 14px; background: #f7f8fa;
+  border-left: 3px solid var(--border); border-radius: 0 6px 6px 0;
+  font-size: 14px; color: var(--text-muted); white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.btn-dart { display: inline-block; padding: 10px 18px; border-radius: 8px;
+            background: var(--accent); color: #fff; text-decoration: none; font-weight: 600; }
+.detail-foot { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 14px;
+               color: var(--text-muted); font-size: 13px; }
+.detail-foot p { margin: 0; }
+
+/* --- 기업 개황 ---------------------------------------------------------- */
+
+.company-meta { display: flex; flex-wrap: wrap; gap: 24px; margin: 8px 0 0; }
+.company-meta div { display: flex; flex-direction: column; }
+.company-meta dt { font-size: 12px; color: var(--text-muted); }
+.company-meta dd { margin: 0; font-weight: 600; }
+
+@media (max-width: 600px) {
+  h1 { font-size: 22px; }
+  .detail { padding: 20px 16px; }
+  .filters { flex-direction: column; align-items: stretch; }
+}

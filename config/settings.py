@@ -24,9 +24,12 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv(
-    'DJANGO_SECRET_KEY',
-    'django-insecure-j=n_y4g%o=1sbh_^74!(0&ofpehp++-ty+aa&!2z-#%12b#($3',
+# os.getenv의 기본값은 변수가 **없을 때만** 쓰인다. .env에 `DJANGO_SECRET_KEY=`처럼
+# 빈 값으로 적혀 있으면 ''가 그대로 들어와 요청 처리 시점에
+# ImproperlyConfigured('The SECRET_KEY setting must not be empty')로 죽는다.
+# `or`로 받아 "없음"과 "빈 값"을 같게 취급한다.
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY') or (
+    'django-insecure-j=n_y4g%o=1sbh_^74!(0&ofpehp++-ty+aa&!2z-#%12b#($3'
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!

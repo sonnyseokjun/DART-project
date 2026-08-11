@@ -120,3 +120,41 @@ class DisclosureSummary(models.Model):
         return not self.is_reviewed and (
             self.importance == self.Importance.HIGH or bool(self.review_warnings)
         )
+
+    @property
+    def accuracy_warnings(self):
+        """사실 정확성과 직접 관련된 경고만 추린다(문체 경고 제외).
+
+        화면의 '수치 확인 필요' 배너 조건이다. 문장 수 같은 문체 경고까지 배너를 띄우면
+        경고가 흔해져 사용자가 무시하게 되고, 정작 수치가 틀린 요약을 놓친다.
+        검수가 끝나면(is_reviewed=True) 배너를 걷는다 — 사람이 이미 확인했기 때문이다.
+        """
+        from .summarizer import ACCURACY_WARNING_PREFIXES
+
+        if self.is_reviewed:
+            return []
+        return [
+            warning for warning in (self.review_warnings or [])
+            if warning.startswith(ACCURACY_WARNING_PREFIXES)
+        ]
+
+    @property
+    def unsupported_numbers(self):
+        """원문 근거로 뒷받침되지 않은 수치 표기 목록. 배너에 그대로 보여준다.
+
+        "일부 수치가 확인되지 않았다"고만 하면 사용자가 어느 숫자를 의심해야 할지 모른다.
+        실제로 SK하이닉스 유상증자 요약이 39조 8,905억을 3조 9,891억으로 10배 잘못 적은
+        사례가 있었고, 그 값을 짚어주는 것과 아닌 것은 확인 난이도가 다르다.
+        """
+        from .summarizer import UNSUPPORTED_NUMBER_PREFIX, WARNING_LIST_SEPARATOR
+
+        numbers = []
+        for warning in self.accuracy_warnings:
+            if warning.startswith(UNSUPPORTED_NUMBER_PREFIX):
+                body = warning[len(UNSUPPORTED_NUMBER_PREFIX):]
+                numbers.extend(
+                    part.strip()
+                    for part in body.split(WARNING_LIST_SEPARATOR)
+                    if part.strip()
+                )
+        return numbers

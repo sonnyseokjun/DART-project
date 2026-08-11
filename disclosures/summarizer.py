@@ -715,6 +715,24 @@ def validate_summary(data, raw_text):
     }
 
 
+#: 경고 문구의 접두어. 경고의 **종류**를 문자열에서 되읽기 위한 단일 출처다.
+#: 화면(정확성 배너)과 admin이 종류별로 다르게 다뤄야 하므로 접두어를 고정한다.
+#: 문구를 바꾸면 저장된 경고와 어긋나므로 revalidate_summaries 를 다시 돌려야 한다.
+UNSUPPORTED_NUMBER_PREFIX = '인용 근거 없는 수치: '
+UNVERIFIED_QUOTE_PREFIX = '원문에서 찾지 못한 인용'
+SENTENCE_COUNT_PREFIX = '설명 길이'
+
+#: 요약의 **사실 정확성**과 직접 관련된 경고. 사용자에게 알려야 하는 종류다.
+#: 문장 수(SENTENCE_COUNT_PREFIX)는 문체 문제라 여기 넣지 않는다 —
+#: 3문장 권장을 6문장으로 쓴 것을 두고 "수치를 신뢰하지 말라"고 경고하면 오히려 해롭다.
+ACCURACY_WARNING_PREFIXES = (UNSUPPORTED_NUMBER_PREFIX, UNVERIFIED_QUOTE_PREFIX)
+
+#: 경고 문구에서 수치 여러 개를 잇는 구분자.
+#: 쉼표만으로 나누면 `3조 9,891억`이 `3조 9` + `891억`으로 쪼개진다 — 자릿수 쉼표와
+#: 구분자를 구별해야 하므로 **쉼표+공백**을 함께 쓰고, 되읽을 때도 같은 문자열로 나눈다.
+WARNING_LIST_SEPARATOR = ', '
+
+
 def build_review_warnings(result):
     """DisclosureSummary.review_warnings 에 저장할 경고 목록을 만든다.
 
@@ -724,22 +742,28 @@ def build_review_warnings(result):
 
     validate_summary 가 반환하는 `warnings` 를 그대로 쓰지 않는 이유는, 검수자가
     admin에서 바로 판단할 수 있도록 문제가 된 인용문·수치를 문구에 담기 위해서다.
+
+    각 문구는 위 접두어 상수로 시작한다. `DisclosureSummary.accuracy_warnings` 가
+    이 접두어로 정확성 경고만 골라내므로, 접두어보다 앞에 다른 말을 붙이면 안 된다.
     """
     warnings = []
     if result.get('unsupported_numbers'):
         warnings.append(
-            '인용 근거 없는 수치: ' + ', '.join(result['unsupported_numbers'])
+            UNSUPPORTED_NUMBER_PREFIX
+            + WARNING_LIST_SEPARATOR.join(result['unsupported_numbers'])
         )
     for idx, item in enumerate(result.get('evidence', [])):
         if not item.get('quote_found', True):
             quote = (item.get('quote') or '').strip()
-            warnings.append(f'evidence[{idx}] 원문에서 찾지 못한 인용: {quote[:60]}')
+            warnings.append(
+                f'{UNVERIFIED_QUOTE_PREFIX} (근거 {idx + 1}번): {quote[:60]}'
+            )
     sentences = result.get('sentence_count')
     if sentences is not None and not (
         EXPLANATION_MIN_SENTENCES <= sentences <= EXPLANATION_MAX_SENTENCES
     ):
         warnings.append(
-            f'easy_explanation이 {sentences}문장 '
+            f'{SENTENCE_COUNT_PREFIX}: 쉬운 설명이 {sentences}문장 '
             f'(권장 {EXPLANATION_MIN_SENTENCES}~{EXPLANATION_MAX_SENTENCES}문장)'
         )
     return warnings
