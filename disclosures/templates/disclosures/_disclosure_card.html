@@ -24,6 +24,13 @@
         AI 생성 · 미검수
       </span>
     {% endif %}
+    {% if disclosure.summary.was_human_edited %}
+      {# 미검수 배지(회색 점선)와 정반대 신호다. 사람이 원문과 대조해 고친 요약이라는
+         사실은 신뢰의 근거이므로 목록에서도 보여준다. #}
+      <span class="badge badge-human" title="사람이 DART 원문과 대조해 검토·수정한 요약입니다">
+        ✓ 사람이 검토·수정함
+      </span>
+    {% endif %}
     {% if disclosure.summary.accuracy_warnings %}
       {# 목록에서도 보여야 한다. 상세로 들어가야만 알 수 있으면 훑어보는 사용자가 놓친다. #}
       <span class="badge badge-accuracy" title="원문과 대조되지 않은 수치가 있습니다">

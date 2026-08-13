@@ -34,11 +34,15 @@ def published_disclosures():
     완전히 비기 때문이다. 대신 검수가 필요한 요약에는 템플릿에서 배지를 단다
     (`DisclosureSummary.needs_review`).
 
+    반대로 검수자가 숨긴 요약(`summary.is_published=False`)은 목록·상세·하이라이트
+    어디에도 내보내지 않는다. 카드만 남기고 내용을 비우면 사용자에게 "뭔가 있었는데
+    가려졌다"는 잘못된 신호가 되므로 아예 제거한다.
+
     select_related 는 목록에서 카드마다 기업·요약을 참조하므로 필수다(N+1 방지).
     """
     return (
         Disclosure.objects
-        .filter(summary__isnull=False)
+        .filter(summary__isnull=False, summary__is_published=True)
         .select_related('company', 'company__sector', 'summary')
     )
 
@@ -76,10 +80,15 @@ def sector_list(request):
         Sector.objects
         .annotate(
             company_count=Count('companies', distinct=True),
-            # 요약이 있는 공시만 세어야 화면에 보이는 수와 일치한다.
+            # 요약이 있고 숨기지 않은 공시만 세어야 화면에 보이는 수와 일치한다.
+            # 조건은 published_disclosures()의 필터와 반드시 같이 움직여야 한다
+            # (집계는 큐리셋 필터로 대체할 수 없어 여기서 한 번 더 적는다).
             summary_count=Count(
                 'companies__disclosures',
-                filter=Q(companies__disclosures__summary__isnull=False),
+                filter=Q(
+                    companies__disclosures__summary__isnull=False,
+                    companies__disclosures__summary__is_published=True,
+                ),
                 distinct=True,
             ),
         )
