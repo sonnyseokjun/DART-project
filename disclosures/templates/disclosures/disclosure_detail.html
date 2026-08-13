@@ -26,6 +26,12 @@
             AI 생성 · 미검수
           </span>
         {% endif %}
+        {% if summary.was_human_edited %}
+          {# 미검수 배지와 동시에 뜨지 않는다(was_human_edited는 is_reviewed를 포함). #}
+          <span class="badge badge-human" title="사람이 DART 원문과 대조해 검토·수정한 요약입니다">
+            ✓ 사람이 검토·수정함
+          </span>
+        {% endif %}
       </div>
       <h1>{{ disclosure.report_name }}</h1>
       <p class="detail-meta">
@@ -110,6 +116,13 @@
         이 요약은 {{ summary.created_at|date:'Y-m-d' }}에
         {% if summary.model_name %}{{ summary.model_name }} 모델로{% endif %} 생성되었습니다.
       </p>
+      {% if summary.was_human_edited %}
+        {# 배지만으로는 "무엇을 했다는 것인지"가 전달되지 않아 한 줄로 풀어 쓴다.
+           검수자 개인은 밝히지 않는다 — 서비스 차원의 검수라는 사실만 알리면 된다. #}
+        <p class="human-edited-note">
+          ✓ 이 요약은 사람이 DART 원문과 대조해 검토하고 내용을 수정했습니다.
+        </p>
+      {% endif %}
     </footer>
   </article>
 {% endblock %}

@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 
 from .selection import ExclusionReason, SelectionState
@@ -77,6 +78,10 @@ class Disclosure(models.Model):
 
 
 class DisclosureSummary(models.Model):
+    #: 사람이 검수 화면에서 직접 고칠 수 있는 요약 본문 필드.
+    #: admin의 변경 감지와 llm_original 스냅샷이 같은 목록을 봐야 하므로 여기가 단일 출처다.
+    BODY_FIELDS = ('one_line', 'easy_explanation', 'why_important')
+
     class Importance(models.TextChoices):
         HIGH = 'high', '높음'
         MEDIUM = 'medium', '보통'
@@ -101,6 +106,21 @@ class DisclosureSummary(models.Model):
     # is_reviewed 불리언만으로는 "아직 검수 안 함"과 "검수가 필요함"이 구분되지 않는다.
     review_warnings = models.JSONField('자동 검증 경고', default=list, blank=True)
     is_reviewed = models.BooleanField('검수 여부', default=False)
+    # 검수자가 "이 요약은 내보내면 안 된다"고 판단했을 때 쓰는 스위치.
+    # 요약을 지우면 재수집 시 LLM을 다시 부르게 되므로 삭제 대신 감춘다(PLAN.md 11).
+    is_published = models.BooleanField('노출 여부', default=True)
+    hidden_reason = models.CharField('숨김 사유', max_length=200, blank=True, default='')
+    edited_by_human = models.BooleanField('사람 수정 여부', default=False)
+    # 사람이 본문을 처음 고치는 순간의 LLM 출력 스냅샷.
+    # {'one_line':…, 'easy_explanation':…, 'why_important':…} 형태이며 이후 덮어쓰지 않는다.
+    # 덮어쓰면 "LLM이 원래 뭐라고 했는지"를 잃어 프롬프트 개선의 근거가 사라진다.
+    llm_original = models.JSONField('LLM 원본', default=dict, blank=True)
+    # 검수 책임 소재를 남긴다. 사용자가 지워져도 검수 사실 자체는 보존해야 하므로 SET_NULL.
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='reviewed_summaries', verbose_name='검수자',
+    )
+    reviewed_at = models.DateTimeField('검수 시각', null=True, blank=True)
     created_at = models.DateTimeField('생성 시각', auto_now_add=True)
 
     class Meta:
@@ -109,6 +129,10 @@ class DisclosureSummary(models.Model):
 
     def __str__(self):
         return f'요약: {self.disclosure}'
+
+    def body_snapshot(self):
+        """현재 요약 본문 3필드의 스냅샷. 변경 감지와 llm_original 기록이 함께 쓴다."""
+        return {field: getattr(self, field) for field in self.BODY_FIELDS}
 
     @property
     def needs_review(self):
@@ -120,6 +144,15 @@ class DisclosureSummary(models.Model):
         return not self.is_reviewed and (
             self.importance == self.Importance.HIGH or bool(self.review_warnings)
         )
+
+    @property
+    def was_human_edited(self):
+        """웹에 "사람이 검토·수정함"을 표시할지 여부.
+
+        수정만으로는 부족하고 검수 완료(is_reviewed)까지 되어야 한다. 고치다 만 상태를
+        "사람이 검토했다"고 내보내면 사용자에게 실제보다 강한 신뢰 신호를 주게 된다.
+        """
+        return self.edited_by_human and self.is_reviewed
 
     @property
     def accuracy_warnings(self):

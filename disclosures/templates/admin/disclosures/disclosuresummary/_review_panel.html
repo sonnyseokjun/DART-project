@@ -1,0 +1,190 @@
+{% comment %}
+원문 대조 패널 — change_form.html에서만 인클루드한다.
+
+컨텍스트: admin change_form 이 넘겨주는 `original`(DisclosureSummary) 하나만 쓴다.
+뷰에서 별도 컨텍스트를 주입하지 않으므로 backend 쪽 변경이 필요 없다.
+소비하는 property: unsupported_numbers · accuracy_warnings · needs_review · was_human_edited.
+
+이 패널은 DB에 이미 있는 `disclosure.raw_content`만 읽는다 — 검수 화면에서 DART API나
+LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
+{% endcomment %}
+{% load review_panel %}
+
+{% highlight_terms original.disclosure.raw_content original.unsupported_numbers 'raw' as raw_hl %}
+{% highlight_terms original.one_line original.unsupported_numbers 'one' as one_hl %}
+{% highlight_terms original.easy_explanation original.unsupported_numbers 'exp' as exp_hl %}
+{% highlight_terms original.why_important original.unsupported_numbers 'why' as why_hl %}
+
+<div class="rp" id="review-panel">
+  <div class="rp-bar">
+    <h2>원문 대조</h2>
+    <div class="rp-bar-actions">
+      <a class="rp-btn rp-btn-dart" href="{{ original.disclosure.dart_url }}"
+         target="_blank" rel="noopener noreferrer">DART 원문 열기 ↗</a>
+      <a class="rp-btn" href="#{{ opts.model_name }}_form">수정하러 가기 ↓</a>
+    </div>
+  </div>
+
+  <p class="rp-meta">
+    <strong>{{ original.disclosure.company.name }}</strong>
+    · {{ original.disclosure.report_name }}
+    · {{ original.disclosure.filed_at|date:'Y-m-d' }} 접수
+    · 접수번호 {{ original.disclosure.rcept_no }}
+  </p>
+
+  <div class="rp-status">
+    <span class="rp-badge rp-badge-{{ original.importance }}">
+      중요도 {{ original.get_importance_display }}
+    </span>
+    {% if original.is_reviewed %}
+      <span class="rp-badge rp-badge-done">검수 완료</span>
+    {% elif original.needs_review %}
+      <span class="rp-badge rp-badge-todo">검수 필요</span>
+    {% endif %}
+    {% if original.was_human_edited %}
+      <span class="rp-badge rp-badge-human">사람이 검토·수정함</span>
+    {% elif original.edited_by_human %}
+      <span class="rp-badge rp-badge-todo">사람이 수정함 · 검수 미완료</span>
+    {% endif %}
+    {% if original.is_published == False %}
+      <span class="rp-badge rp-badge-hidden">
+        웹에서 숨김{% if original.hidden_reason %} · {{ original.hidden_reason }}{% endif %}
+      </span>
+    {% endif %}
+    {% if original.reviewed_by or original.reviewed_at %}
+      <span class="rp-badge-plain">
+        {% if original.reviewed_by %}{{ original.reviewed_by }}{% endif %}
+        {% if original.reviewed_at %}{{ original.reviewed_at|date:'Y-m-d H:i' }}{% endif %}
+      </span>
+    {% endif %}
+  </div>
+
+  {% if original.review_warnings %}
+    <ul class="rp-warnings">
+      {% for warning in original.review_warnings %}<li>⚠ {{ warning }}</li>{% endfor %}
+    </ul>
+  {% endif %}
+
+  {% if original.unsupported_numbers %}
+    {# 검수자가 가장 먼저 확인해야 할 지점. 요약에는 있는데 원문 근거가 없는 수치다. #}
+    <div class="rp-flags">
+      <p class="rp-flags-title">먼저 확인할 수치 — 요약에는 있으나 인용 근거가 없습니다</p>
+      <div class="rp-chips">
+        {% for hit in raw_hl.hits %}
+          {% if hit.found %}
+            <button type="button" class="rp-chip rp-chip-found"
+                    data-term="{{ hit.term }}" data-anchor="{{ hit.anchor }}">
+              {{ hit.term }}<span class="rp-chip-note">원문 {{ hit.count }}곳</span>
+            </button>
+          {% else %}
+            <span class="rp-chip rp-chip-missing" title="원문에서 이 표기를 찾지 못했습니다">
+              {{ hit.term }}<span class="rp-chip-note">원문에 없음</span>
+            </span>
+          {% endif %}
+        {% endfor %}
+      </div>
+      <p class="rp-flags-help">
+        '원문에 없음'은 표기 방식이 달라서일 수도 있으니 오류 확정이 아니라
+        <strong>가장 먼저 눈으로 확인할 곳</strong>입니다. 버튼을 누르면 원문의 해당 위치로
+        이동하며, 다시 누르면 다음 위치로 넘어갑니다.
+      </p>
+    </div>
+  {% endif %}
+
+  <div class="rp-cols">
+    <section class="rp-col">
+      <h3 class="rp-col-title">현재 요약 <span class="rp-col-sub">(아래 폼에서 수정)</span></h3>
+      <div class="rp-scroll">
+        <div class="rp-field">
+          <h4>한 줄 요약</h4>
+          <p class="rp-oneline">{{ one_hl.html }}</p>
+        </div>
+        <div class="rp-field">
+          <h4>쉬운 설명</h4>
+          <p>{{ exp_hl.html }}</p>
+        </div>
+        <div class="rp-field">
+          <h4>왜 중요한가</h4>
+          <p>{{ why_hl.html }}</p>
+        </div>
+        {% if original.llm_original %}
+          <details class="rp-llm-original">
+            <summary>LLM 원본 보기 (사람이 수정하기 전)</summary>
+            <div class="rp-field">
+              <h4>한 줄 요약</h4>
+              <p>{{ original.llm_original.one_line }}</p>
+            </div>
+            <div class="rp-field">
+              <h4>쉬운 설명</h4>
+              <p>{{ original.llm_original.easy_explanation }}</p>
+            </div>
+            <div class="rp-field">
+              <h4>왜 중요한가</h4>
+              <p>{{ original.llm_original.why_important }}</p>
+            </div>
+          </details>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="rp-col">
+      <h3 class="rp-col-title">
+        공시 원문
+        <span class="rp-col-sub">
+          {% if original.disclosure.raw_content %}
+            {{ original.disclosure.raw_content|length }}자
+            {% if raw_hl.total %}· 하이라이트 {{ raw_hl.total }}곳{% endif %}
+          {% endif %}
+        </span>
+      </h3>
+      {% if original.disclosure.raw_content %}
+        {# 원문은 수만 자다. 스크롤 영역에 가두지 않으면 폼이 화면 밖으로 밀려난다. #}
+        <div class="rp-scroll rp-raw" id="rp-raw">{{ raw_hl.html }}</div>
+      {% else %}
+        <div class="rp-scroll rp-empty">
+          <p>
+            이 공시는 원문이 아직 확보되지 않았습니다(<code>raw_fetched=False</code>).
+            위의 <strong>DART 원문 열기</strong> 링크로 직접 확인하세요.
+          </p>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="rp-evidence">
+    <h3 class="rp-col-title">원문 근거 {{ original.evidence|length }}건</h3>
+    {% if original.evidence %}
+      <ul class="rp-evidence-list">
+        {% for item in original.evidence %}
+          <li class="rp-evidence-item">
+            <div class="rp-evidence-head">
+              <span class="rp-badge-plain">{{ item.field|evidence_field_label }}</span>
+              {% if item|has_key:'quote_found' %}
+                {% if item.quote_found %}
+                  <span class="rp-badge rp-badge-ok">인용 확인됨</span>
+                {% else %}
+                  <span class="rp-badge rp-badge-bad">인용 미발견</span>
+                {% endif %}
+              {% else %}
+                <span class="rp-badge rp-badge-todo">인용 미검증</span>
+              {% endif %}
+              {% if item|has_key:'numbers_ok' %}
+                {% if item.numbers_ok %}
+                  <span class="rp-badge rp-badge-ok">수치 대조됨</span>
+                {% else %}
+                  <span class="rp-badge rp-badge-bad">
+                    수치 미대조{% if item.missing_numbers %}: {{ item.missing_numbers|join:', ' }}{% endif %}
+                  </span>
+                {% endif %}
+              {% endif %}
+            </div>
+            {% if item.claim %}<p class="rp-evidence-claim">{{ item.claim }}</p>{% endif %}
+            <blockquote class="rp-evidence-quote">{{ item.quote }}</blockquote>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="rp-empty-line">저장된 원문 근거가 없습니다.</p>
+    {% endif %}
+  </section>
+</div>

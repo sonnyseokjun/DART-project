@@ -20,6 +20,11 @@
   --medium-bg: #fdf3e3;
   --low: #4a5568;
   --low-bg: #eef0f3;
+
+  /* 사람이 검토·수정한 요약 표시용. 경고(붉은색)·미검수(회색)와 한눈에 구분되도록
+   * 유일한 녹색 계열로 쓴다. 중요도 색과 겹치지 않는다. */
+  --verified: #1e7a46;
+  --verified-bg: #e6f4ec;
 }
 
 * { box-sizing: border-box; }
@@ -128,6 +133,8 @@ h3 { font-size: 16px; margin: 0 0 6px; }
 .badge-type { background: #eaf1fb; color: var(--accent); }
 .badge-unreviewed { background: #f0f0f0; color: #666; border: 1px dashed #bbb; }
 .badge-accuracy { background: var(--high-bg); color: var(--high); border: 1px solid #f0b8b2; }
+/* 미검수(회색 점선)와 정반대의 신호. 실선 테두리로 '확정된 상태'임을 드러낸다. */
+.badge-human { background: var(--verified-bg); color: var(--verified); border: 1px solid #9ed3b6; }
 
 /* --- 정확성 경고 배너 ---------------------------------------------------- */
 
@@ -203,6 +210,7 @@ h3 { font-size: 16px; margin: 0 0 6px; }
 .detail-foot { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 14px;
                color: var(--text-muted); font-size: 13px; }
 .detail-foot p { margin: 0; }
+.detail-foot .human-edited-note { margin-top: 6px; color: var(--verified); font-weight: 600; }
 
 /* --- 기업 개황 ---------------------------------------------------------- */
 

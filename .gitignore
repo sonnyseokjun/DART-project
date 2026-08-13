@@ -10,6 +10,10 @@ venv/
 db.sqlite3
 /staticfiles/
 
+# 테스트 커버리지 (측정할 때마다 새로 생기는 산출물)
+.coverage
+htmlcov/
+
 # IDE / OS
 .vscode/
 .idea/

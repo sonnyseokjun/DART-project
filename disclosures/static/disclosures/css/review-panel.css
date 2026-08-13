@@ -1,0 +1,144 @@
+/* AI 요약 검수 화면(admin change_form)의 원문 대조 패널 스타일.
+ *
+ * 웹 화면(style.css)과 섞이지 않게 파일을 분리하고 모든 클래스에 `rp-` 접두어를 붙인다.
+ * 두 파일이 한 페이지에 같이 실리는 일은 없지만, admin은 Django가 클래스명을 계속
+ * 늘려가는 남의 화면이라 충돌 여지를 아예 없애는 편이 낫다.
+ *
+ * 색은 웹 화면의 톤을 따르되(경고=붉은 계열, 확인=녹색, 링크=파랑), admin이 정의한
+ * CSS 변수를 우선 쓴다. 그래야 admin 다크 모드에서도 글자가 읽힌다.
+ * 외부 CDN·빌드 단계는 쓰지 않는다(프로젝트 방침). */
+
+.rp {
+  --rp-warn: #c0392b;
+  --rp-warn-bg: #fdeceb;
+  --rp-ok: #1e7a46;
+  --rp-ok-bg: #e6f4ec;
+  --rp-hit-bg: #ffe27a;
+
+  margin: 0 0 24px;
+  padding: 16px 18px;
+  background: var(--body-bg, #fff);
+  border: 1px solid var(--border-color, #e2e5ea);
+  border-radius: 8px;
+  color: var(--body-fg, #1c1f23);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.rp-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.rp-bar h2 { margin: 0; font-size: 16px; }
+.rp-bar-actions { display: flex; gap: 8px; }
+
+.rp-btn {
+  display: inline-block; padding: 5px 12px; border-radius: 6px;
+  border: 1px solid var(--border-color, #ccc);
+  text-decoration: none; font-weight: 600; font-size: 12.5px;
+  color: var(--link-fg, #1f5fbf); background: var(--body-bg, #fff);
+}
+.rp-btn-dart { background: var(--primary, #1f5fbf); border-color: var(--primary, #1f5fbf); color: #fff; }
+
+.rp-meta { margin: 8px 0 0; color: var(--body-quiet-color, #5b6472); }
+
+.rp-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+
+.rp-badge, .rp-badge-plain {
+  display: inline-block; padding: 2px 9px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap;
+}
+.rp-badge-plain { background: var(--darkened-bg, #eef0f3); color: var(--body-quiet-color, #5b6472); }
+.rp-badge-high { background: var(--rp-warn-bg); color: var(--rp-warn); }
+.rp-badge-medium { background: #fdf3e3; color: #b46a00; }
+.rp-badge-low { background: #eef0f3; color: #4a5568; }
+.rp-badge-todo { background: #f0f0f0; color: #666; border: 1px dashed #bbb; }
+.rp-badge-done { background: var(--rp-ok-bg); color: var(--rp-ok); }
+.rp-badge-human { background: var(--rp-ok-bg); color: var(--rp-ok); border: 1px solid #9ed3b6; }
+.rp-badge-hidden { background: #3a3f47; color: #fff; }
+.rp-badge-ok { background: var(--rp-ok-bg); color: var(--rp-ok); }
+.rp-badge-bad { background: var(--rp-warn-bg); color: var(--rp-warn); }
+
+.rp-warnings {
+  margin: 10px 0 0; padding: 8px 12px 8px 28px;
+  background: var(--rp-warn-bg); border-radius: 6px;
+  color: #7a2e26; font-size: 12.5px;
+}
+.rp-warnings li { margin: 2px 0; }
+
+/* --- 지목된 수치(검수 시작점) ------------------------------------------- */
+
+.rp-flags {
+  margin-top: 12px; padding: 12px 14px;
+  background: var(--rp-warn-bg); border: 1px solid #f0b8b2;
+  border-left: 4px solid var(--rp-warn); border-radius: 8px;
+}
+.rp-flags-title { margin: 0 0 8px; font-weight: 700; color: var(--rp-warn); }
+.rp-flags-help { margin: 8px 0 0; font-size: 12px; color: #7a2e26; }
+.rp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rp-chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 4px 10px; border-radius: 6px; background: #fff;
+  border: 1px solid #e6a9a2; font-size: 13px; font-weight: 700;
+  color: var(--rp-warn); font-family: inherit;
+}
+.rp-chip-found { cursor: pointer; }
+.rp-chip-found:hover { background: var(--rp-hit-bg); }
+.rp-chip-missing { border-style: dashed; opacity: .95; }
+.rp-chip-note { font-size: 11px; font-weight: 500; color: var(--body-quiet-color, #5b6472); }
+
+/* --- 요약 ↔ 원문 2단 --------------------------------------------------- */
+
+.rp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.rp-col { min-width: 0; }
+.rp-col-title { margin: 0 0 6px; font-size: 13px; font-weight: 700; }
+.rp-col-sub { font-weight: 400; color: var(--body-quiet-color, #5b6472); }
+
+/* 원문은 수만 자라 그대로 펼치면 폼이 화면 밖으로 밀려난다. 두 단의 높이를 맞춰
+ * 나란히 놓고 각자 스크롤시킨다. */
+.rp-scroll {
+  max-height: 60vh; overflow-y: auto;
+  padding: 12px 14px; border: 1px solid var(--border-color, #e2e5ea);
+  border-radius: 6px; background: var(--darkened-bg, #fafbfc);
+}
+.rp-raw {
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 12.5px; line-height: 1.75;
+}
+.rp-empty, .rp-empty-line { color: var(--body-quiet-color, #5b6472); }
+
+.rp-field + .rp-field { margin-top: 12px; }
+.rp-field h4 { margin: 0 0 3px; font-size: 12px; color: var(--body-quiet-color, #5b6472); font-weight: 700; }
+.rp-field p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.rp-oneline { font-weight: 600; font-size: 14px; }
+
+.rp-llm-original { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--border-color, #ccc); }
+.rp-llm-original summary { cursor: pointer; font-size: 12px; color: var(--body-quiet-color, #5b6472); }
+.rp-llm-original .rp-field { margin-top: 10px; }
+
+/* 하이라이트: 원문에서도 요약에서도 같은 표시를 써야 눈이 두 단을 오갈 수 있다. */
+.rp-hit {
+  background: var(--rp-hit-bg); color: #1c1f23;
+  padding: 0 2px; border-radius: 3px; font-weight: 700;
+  scroll-margin-top: 40px;
+}
+.rp-hit-active { outline: 2px solid var(--rp-warn); background: #ffca28; }
+
+/* --- 원문 근거 ---------------------------------------------------------- */
+
+.rp-evidence { margin-top: 16px; }
+.rp-evidence-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.rp-evidence-item {
+  padding: 10px 12px; border: 1px solid var(--border-color, #e2e5ea);
+  border-radius: 6px; background: var(--body-bg, #fff);
+}
+.rp-evidence-head { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-bottom: 6px; }
+.rp-evidence-claim { margin: 0 0 6px; font-weight: 600; }
+.rp-evidence-quote {
+  margin: 0; padding: 8px 12px; background: var(--darkened-bg, #f7f8fa);
+  border-left: 3px solid var(--border-color, #e2e5ea); border-radius: 0 6px 6px 0;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 12.5px; color: var(--body-quiet-color, #5b6472);
+}
+
+@media (max-width: 1024px) {
+  .rp-cols { grid-template-columns: 1fr; }
+  .rp-scroll { max-height: 44vh; }
+}

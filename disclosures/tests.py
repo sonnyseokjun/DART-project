@@ -5,12 +5,17 @@ seed_companies는 download_corp_codes를, poll_dart는 iter_disclosures를,
 fetch_documents는 fetch_document를 목으로 대체한다.
 """
 import json
+import re
+import unittest
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
+from django.contrib.admin.sites import AdminSite
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
 from disclosures.dart import (
@@ -18,8 +23,14 @@ from disclosures.dart import (
     DartApiError, dart_viewer_url, extract_key_sections, is_dart_xml,
     preprocess_document, split_date_range, strip_markup,
 )
+from disclosures.admin import (
+    DEFAULT_HIDDEN_REASON, DisclosureSummaryAdmin, DisclosureSummaryInline,
+)
 from disclosures.management.commands.seed_companies import TARGET_COMPANIES
 from disclosures.models import Company, Disclosure, DisclosureSummary, Sector
+from disclosures.templatetags.review_panel import (
+    evidence_field_label, has_key, highlight_terms,
+)
 from disclosures import summarizer, views
 from disclosures.selection import (
     ExclusionReason, SelectionState, evaluate, is_blacklisted, normalize_title,
@@ -1692,3 +1703,993 @@ class AccuracyWarningClassificationTest(TestCase):
         self.assertTrue(warnings[0].startswith(summarizer.UNSUPPORTED_NUMBER_PREFIX))
         self.assertTrue(warnings[1].startswith(summarizer.UNVERIFIED_QUOTE_PREFIX))
         self.assertTrue(warnings[2].startswith(summarizer.SENTENCE_COUNT_PREFIX))
+
+
+# ---------------------------------------------------------------------------
+# 4단계: 사람 검수 플로우 (숨김 · 검수 이력 · LLM 원본 보존 · 검수 화면)
+# ---------------------------------------------------------------------------
+
+class ReviewWorkflowTestBase(TestCase):
+    """검수 플로우 공용 픽스처 — 검수자 계정 1명과 공시/요약 생성 헬퍼."""
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+        self.reviewer = get_user_model().objects.create_superuser(
+            username='reviewer', email='reviewer@example.com', password='pw',
+        )
+        self.other_reviewer = get_user_model().objects.create_superuser(
+            username='reviewer2', email='reviewer2@example.com', password='pw',
+        )
+        self.client.force_login(self.reviewer)
+
+    def make_summary(self, seq, *, company=None, report_name=None,
+                     filed_at=None, raw_content='공시 원문 · 계약금액 | 1,234,567',
+                     **summary_kwargs):
+        """공시 1건 + 요약 1건을 만든다. seq가 접수번호·제목의 구분자다."""
+        rcept_no = f'2026070100{seq:04d}'
+        disclosure = Disclosure.objects.create(
+            company=company or self.company, rcept_no=rcept_no,
+            report_name=report_name or f'검수대상공시{seq}',
+            disclosure_type='거래소공시', filed_at=filed_at or date(2026, 7, 1),
+            dart_url=dart_viewer_url(rcept_no),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=bool(raw_content), raw_content=raw_content,
+        )
+        defaults = dict(
+            disclosure=disclosure,
+            one_line=f'{disclosure.report_name} 한 줄 요약',
+            easy_explanation='첫 문장이다. 둘째 문장이다. 셋째 문장이다.',
+            why_important='중요한 이유다.',
+            importance=DisclosureSummary.Importance.MEDIUM,
+            model_name='gpt-5.6-luna',
+        )
+        defaults.update(summary_kwargs)
+        return DisclosureSummary.objects.create(**defaults)
+
+    # --- admin 조작 헬퍼 -----------------------------------------------------
+
+    def change_url(self, summary):
+        return reverse('admin:disclosures_disclosuresummary_change', args=[summary.pk])
+
+    def post_change(self, summary, **overrides):
+        """admin 변경 화면에 실제로 POST한다(save_model을 우회하지 않는 유일한 경로).
+
+        값이 None인 override는 폼에서 뺀다 — 체크박스 해제를 표현하기 위한 것이다.
+        """
+        data = {
+            'one_line': summary.one_line,
+            'easy_explanation': summary.easy_explanation,
+            'why_important': summary.why_important,
+            'importance': summary.importance,
+            'hidden_reason': summary.hidden_reason,
+            '_continue': '저장하고 계속 편집',
+        }
+        if summary.is_reviewed:
+            data['is_reviewed'] = 'on'
+        if summary.is_published:
+            data['is_published'] = 'on'
+        data.update(overrides)
+        response = self.client.post(
+            self.change_url(summary),
+            {key: value for key, value in data.items() if value is not None},
+        )
+        summary.refresh_from_db()
+        return response
+
+    def run_action(self, action, summaries, **extra):
+        """admin 목록 화면의 일괄 액션을 실제 POST로 실행한다."""
+        data = {
+            'action': action,
+            '_selected_action': [str(summary.pk) for summary in summaries],
+        }
+        data.update(extra)
+        response = self.client.post(
+            reverse('admin:disclosures_disclosuresummary_changelist'), data, follow=True,
+        )
+        for summary in summaries:
+            summary.refresh_from_db()
+        return response
+
+
+class HiddenSummaryExposureTest(ReviewWorkflowTestBase):
+    """숨긴 요약은 웹 어디에도 남으면 안 된다.
+
+    00_input.md 2장 3번의 확정 판단 — 빈 껍데기 카드를 남기면 사용자에게 "뭔가 있었는데
+    가려졌다"는 잘못된 신호가 된다. 노출 경로가 4개(섹터 피드·기업 타임라인·메인
+    하이라이트·상세)라 한 곳만 막아도 나머지로 샌다. 네 경로를 각각 고정한다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.visible = self.make_summary(
+            1, report_name='노출되는공시', importance=DisclosureSummary.Importance.HIGH)
+        self.hidden = self.make_summary(
+            2, report_name='숨겨진공시', importance=DisclosureSummary.Importance.HIGH,
+            is_published=False, hidden_reason='금액을 10배 잘못 적음',
+        )
+
+    def _feed_urls(self):
+        return (
+            reverse('disclosures:sector_list'),
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:company_detail', args=['005930']),
+        )
+
+    def test_hidden_summary_is_absent_from_every_list(self):
+        for url in self._feed_urls():
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, '숨겨진공시')
+                self.assertNotContains(response, self.hidden.disclosure.rcept_no)
+
+    def test_hidden_summary_is_absent_from_main_highlights(self):
+        """하이라이트는 중요도 '높음'만 뽑으므로 숨긴 고중요도 공시가 새기 가장 쉽다."""
+        response = self.client.get(reverse('disclosures:sector_list'))
+        names = [item.report_name for item in response.context['highlights']]
+        self.assertIn('노출되는공시', names)
+        self.assertNotIn('숨겨진공시', names)
+
+    def test_hidden_summary_detail_returns_404(self):
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=[self.hidden.disclosure.rcept_no]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_hidden_reason_never_reaches_the_web(self):
+        """숨김 사유는 검수자 내부 메모다. 웹에 새면 내리기로 한 내용을 도로 노출한다."""
+        for url in self._feed_urls():
+            with self.subTest(url=url):
+                self.assertNotContains(self.client.get(url), '금액을 10배 잘못 적음')
+
+    def test_restoring_brings_the_summary_back(self):
+        """숨김은 삭제가 아니다 — 복구하면 같은 URL이 다시 살아나야 한다."""
+        self.run_action('restore_summaries', [self.hidden])
+
+        self.assertTrue(self.hidden.is_published)
+        self.assertEqual(
+            self.client.get(reverse('disclosures:disclosure_detail',
+                                    args=[self.hidden.disclosure.rcept_no])).status_code,
+            200,
+        )
+        self.assertContains(
+            self.client.get(reverse('disclosures:sector_detail', args=['semiconductor'])),
+            '숨겨진공시')
+
+    def test_published_disclosures_is_the_only_gate(self):
+        """노출 정책의 단일 출처(00_input.md 3.3) — 큐리셋 자체가 숨김을 걸러야 한다."""
+        self.assertNotIn(
+            self.hidden.disclosure, list(views.published_disclosures()))
+        self.assertIn(self.visible.disclosure, list(views.published_disclosures()))
+
+
+class SectorCardCountConsistencyTest(ReviewWorkflowTestBase):
+    """섹터 카드의 건수 ↔ 실제 목록 건수.
+
+    backend가 스스로 지목한 구조적 중복이다. `sector_list()`의 summary_count는
+    `published_disclosures()`와 별개로 조건을 한 번 더 적었기 때문에, 한쪽만 고치면
+    "카드에 12건인데 들어가면 11건"인 불일치가 조용히 생긴다. 두 수를 같은 테스트에서
+    비교해 못 박는다.
+    """
+
+    def _counts(self):
+        card = self.client.get(reverse('disclosures:sector_list')) \
+            .context['sectors'][0].summary_count
+        feed = self.client.get(reverse('disclosures:sector_detail', args=['semiconductor']))
+        return card, feed.context['total_count'], len(feed.context['page_obj'])
+
+    def test_counts_agree_when_nothing_is_hidden(self):
+        for seq in range(1, 4):
+            self.make_summary(seq)
+
+        card, total, rendered = self._counts()
+        self.assertEqual((card, total, rendered), (3, 3, 3))
+
+    def test_hidden_summary_drops_out_of_the_card_count_too(self):
+        for seq in range(1, 4):
+            self.make_summary(seq)
+        hidden = self.make_summary(4, report_name='숨길공시')
+
+        self.run_action('hide_summaries', [hidden])
+
+        card, total, rendered = self._counts()
+        self.assertEqual((card, total, rendered), (3, 3, 3))
+
+    def test_unsummarized_disclosure_is_counted_by_neither(self):
+        self.make_summary(1)
+        Disclosure.objects.create(
+            company=self.company, rcept_no='20260701009999', report_name='요약없는공시',
+            disclosure_type='지분공시', filed_at=date(2026, 7, 1),
+            dart_url=dart_viewer_url('20260701009999'),
+        )
+
+        card, total, rendered = self._counts()
+        self.assertEqual((card, total, rendered), (1, 1, 1))
+
+
+class HumanEditedBadgeTest(ReviewWorkflowTestBase):
+    """'사람이 검토·수정함' 표시와 '미검수' 배지·정확성 배너의 전환.
+
+    검수의 목적이 배너를 걷는 것이므로, 검수 완료가 화면에 반영되지 않으면 4단계 전체가
+    무의미해진다. 카드와 상세 두 곳을 모두 확인한다(한 곳만 고쳐지는 일이 잦다).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.summary = self.make_summary(
+            1, importance=DisclosureSummary.Importance.HIGH,
+            review_warnings=[summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억'],
+        )
+        self.detail_url = reverse(
+            'disclosures:disclosure_detail', args=[self.summary.disclosure.rcept_no])
+        self.feed_url = reverse('disclosures:sector_detail', args=['semiconductor'])
+
+    def test_unreviewed_summary_shows_badge_and_banner(self):
+        for url in (self.detail_url, self.feed_url):
+            with self.subTest(url=url):
+                self.assertContains(self.client.get(url), '미검수')
+        self.assertContains(self.client.get(self.detail_url), '원문과 대조되지 않았습니다')
+        self.assertContains(self.client.get(self.feed_url), '수치 확인 필요')
+
+    def test_review_removes_badge_and_banner_from_both_screens(self):
+        self.run_action('mark_reviewed', [self.summary])
+
+        for url in (self.detail_url, self.feed_url):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertNotContains(response, '미검수')
+                self.assertNotContains(response, '수치 확인 필요')
+        self.assertNotContains(
+            self.client.get(self.detail_url), '원문과 대조되지 않았습니다')
+
+    def test_disclaimer_survives_review(self):
+        """배너가 걷혀도 면책 문구는 남아야 한다(PLAN.md 1.4 · 상시 노출)."""
+        self.run_action('mark_reviewed', [self.summary])
+
+        self.assertContains(self.client.get(self.detail_url), '투자 자문이 아니며')
+
+    def test_human_badge_needs_both_edit_and_review(self):
+        """수정만 하고 검수 전이면 표시하지 않는다 — 고치다 만 상태를 '검토함'으로
+        내보내면 실제보다 강한 신뢰 신호가 된다(00_input.md 3.2)."""
+        DisclosureSummary.objects.filter(pk=self.summary.pk).update(edited_by_human=True)
+
+        for url in (self.detail_url, self.feed_url):
+            with self.subTest(url=url):
+                self.assertNotContains(self.client.get(url), '사람이 검토·수정함')
+
+        DisclosureSummary.objects.filter(pk=self.summary.pk).update(is_reviewed=True)
+        for url in (self.detail_url, self.feed_url):
+            with self.subTest(url=url):
+                self.assertContains(self.client.get(url), '사람이 검토·수정함')
+
+    def test_human_badge_and_unreviewed_badge_never_coexist(self):
+        """was_human_edited가 is_reviewed를 포함하므로 상호배타여야 한다."""
+        DisclosureSummary.objects.filter(pk=self.summary.pk).update(
+            edited_by_human=True, is_reviewed=True)
+
+        body = self.client.get(self.detail_url).content.decode()
+        self.assertIn('사람이 검토·수정함', body)
+        self.assertNotIn('badge-unreviewed', body)
+
+    def test_review_alone_does_not_claim_human_editing(self):
+        """검수만 하고 본문을 안 고쳤으면 '수정함'이라고 말하면 안 된다."""
+        self.run_action('mark_reviewed', [self.summary])
+
+        self.assertNotContains(self.client.get(self.detail_url), '사람이 검토·수정함')
+
+
+class AdminHumanEditTrackingTest(ReviewWorkflowTestBase):
+    """`save_model`의 사람 수정 감지와 `llm_original` 1회 기록.
+
+    llm_original은 프롬프트 개선의 유일한 근거다(LLM이 원래 뭐라고 했는지). 두 번째
+    수정에서 덮어쓰면 사람이 고친 문장을 'LLM 원본'으로 오인하게 되어 값이 무의미해진다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.summary = self.make_summary(1)
+        self.llm_text = self.summary.body_snapshot()
+
+    def test_first_body_edit_snapshots_the_llm_output(self):
+        self.post_change(self.summary, one_line='사람이 고친 한 줄')
+
+        self.assertTrue(self.summary.edited_by_human)
+        self.assertEqual(self.summary.llm_original, self.llm_text)
+        self.assertEqual(self.summary.one_line, '사람이 고친 한 줄')
+
+    def test_second_edit_keeps_the_first_snapshot(self):
+        self.post_change(self.summary, one_line='1차 수정')
+        self.post_change(self.summary, one_line='2차 수정', why_important='이유도 수정')
+
+        self.assertEqual(self.summary.llm_original, self.llm_text)
+        self.assertNotIn('1차 수정', self.summary.llm_original.values())
+
+    def test_stale_audit_flags_do_not_resnapshot_human_text(self):
+        """가드가 `previous`(DB 값) 기준이어야 하는 이유를 재현한다.
+
+        저장하려는 객체의 `edited_by_human`·`llm_original`이 어떤 경로로든 초기화된 채
+        들어와도, 이미 사람 손이 닿은 본문을 'LLM 원본'으로 다시 스냅샷하면 안 된다.
+        `obj` 기준으로 판정하면 여기서 1차 수정본이 LLM 원본으로 둔갑한다.
+        """
+        self.post_change(self.summary, one_line='1차 수정')
+
+        model_admin = DisclosureSummaryAdmin(DisclosureSummary, AdminSite())
+        request = RequestFactory().post('/')
+        request.user = self.reviewer
+        incoming = DisclosureSummary.objects.get(pk=self.summary.pk)
+        incoming.one_line = '2차 수정'
+        incoming.edited_by_human = False       # 감사 플래그가 초기화된 채 들어온 상황
+        model_admin.save_model(request, incoming, None, True)
+
+        self.summary.refresh_from_db()
+        self.assertNotEqual(self.summary.llm_original.get('one_line'), '1차 수정')
+        self.assertTrue(self.summary.edited_by_human)
+
+    def test_readonly_audit_fields_ignore_posted_values(self):
+        """감사 기록을 폼으로 덮어쓸 수 있으면 기록이 아니다."""
+        self.post_change(self.summary, one_line='1차 수정')
+
+        self.post_change(
+            self.summary, one_line='2차 수정',
+            llm_original='{}', edited_by_human='', reviewed_by='', reviewed_at='',
+        )
+
+        self.assertEqual(self.summary.llm_original, self.llm_text)
+        self.assertTrue(self.summary.edited_by_human)
+
+    def test_non_body_change_is_not_a_human_edit(self):
+        """중요도만 바꾼 저장을 '사람이 본문을 고쳤다'로 세면 표시가 거짓이 된다."""
+        self.post_change(self.summary, importance=DisclosureSummary.Importance.HIGH)
+
+        self.assertFalse(self.summary.edited_by_human)
+        self.assertEqual(self.summary.llm_original, {})
+        self.assertEqual(self.summary.importance, DisclosureSummary.Importance.HIGH)
+
+    def test_saving_unchanged_body_is_not_a_human_edit(self):
+        self.post_change(self.summary)
+
+        self.assertFalse(self.summary.edited_by_human)
+        self.assertEqual(self.summary.llm_original, {})
+
+    def test_all_three_body_fields_are_watched(self):
+        """BODY_FIELDS 중 하나라도 감지에서 빠지면 그 필드는 몰래 고칠 수 있게 된다."""
+        for index, field in enumerate(DisclosureSummary.BODY_FIELDS, start=10):
+            with self.subTest(field=field):
+                summary = self.make_summary(index)
+                before = summary.body_snapshot()
+                self.post_change(summary, **{field: f'{field} 수정본'})
+                self.assertTrue(summary.edited_by_human)
+                self.assertEqual(summary.llm_original, before)
+
+    def test_marking_reviewed_in_the_form_records_the_reviewer(self):
+        self.post_change(self.summary, is_reviewed='on')
+
+        self.assertTrue(self.summary.is_reviewed)
+        self.assertEqual(self.summary.reviewed_by, self.reviewer)
+        self.assertIsNotNone(self.summary.reviewed_at)
+
+    def test_unmarking_reviewed_clears_the_record(self):
+        """검수를 되돌렸는데 검수자가 남아 있으면 '누가 검수했다'는 거짓 이력이 된다."""
+        self.post_change(self.summary, is_reviewed='on')
+        self.post_change(self.summary, is_reviewed=None)
+
+        self.assertFalse(self.summary.is_reviewed)
+        self.assertIsNone(self.summary.reviewed_by)
+        self.assertIsNone(self.summary.reviewed_at)
+
+    def test_editing_a_reviewed_summary_keeps_the_original_reviewer(self):
+        """검수 상태가 그대로면 검수 시각을 다시 찍지 않는다(재검수와 구분)."""
+        self.post_change(self.summary, is_reviewed='on')
+        first_reviewed_at = self.summary.reviewed_at
+
+        self.post_change(self.summary, one_line='오탈자 수정')
+
+        self.assertEqual(self.summary.reviewed_at, first_reviewed_at)
+        self.assertEqual(self.summary.reviewed_by, self.reviewer)
+
+
+class AdminBulkActionTest(ReviewWorkflowTestBase):
+    """일괄 액션 3종이 남기는 상태와 이력."""
+
+    def setUp(self):
+        super().setUp()
+        self.first = self.make_summary(
+            1, importance=DisclosureSummary.Importance.HIGH,
+            review_warnings=[summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억'])
+        self.second = self.make_summary(2)
+
+    def test_mark_reviewed_stamps_requesting_user_and_time(self):
+        self.run_action('mark_reviewed', [self.first, self.second])
+
+        for summary in (self.first, self.second):
+            with self.subTest(pk=summary.pk):
+                self.assertTrue(summary.is_reviewed)
+                self.assertEqual(summary.reviewed_by, self.reviewer)
+                self.assertIsNotNone(summary.reviewed_at)
+                self.assertFalse(summary.needs_review)
+
+    def test_re_reviewing_records_the_latest_reviewer(self):
+        """다시 도장을 찍는 것은 '지금 이 사람이 다시 확인했다'는 뜻이다."""
+        self.run_action('mark_reviewed', [self.first])
+        first_at = self.first.reviewed_at
+
+        self.client.force_login(self.other_reviewer)
+        self.run_action('mark_reviewed', [self.first])
+
+        self.assertEqual(self.first.reviewed_by, self.other_reviewer)
+        self.assertGreaterEqual(self.first.reviewed_at, first_at)
+
+    def test_mark_reviewed_does_not_claim_human_editing(self):
+        """일괄 검수는 본문을 고친 것이 아니므로 edited_by_human은 그대로여야 한다."""
+        self.run_action('mark_reviewed', [self.first])
+
+        self.assertFalse(self.first.edited_by_human)
+        self.assertFalse(self.first.was_human_edited)
+
+    def test_hide_fills_only_a_blank_reason(self):
+        DisclosureSummary.objects.filter(pk=self.second.pk).update(
+            hidden_reason='기존에 적어둔 사유')
+
+        self.run_action('hide_summaries', [self.first, self.second])
+
+        self.assertFalse(self.first.is_published)
+        self.assertEqual(self.first.hidden_reason, DEFAULT_HIDDEN_REASON)
+        self.second.refresh_from_db()
+        self.assertFalse(self.second.is_published)
+        self.assertEqual(self.second.hidden_reason, '기존에 적어둔 사유')
+
+    def test_restore_clears_the_reason(self):
+        """노출 중인 요약에 숨김 사유가 남아 있으면 다음 검수자가 상태를 오해한다."""
+        self.run_action('hide_summaries', [self.first])
+        self.run_action('restore_summaries', [self.first])
+
+        self.assertTrue(self.first.is_published)
+        self.assertEqual(self.first.hidden_reason, '')
+
+    def test_hide_and_restore_do_not_touch_the_review_record(self):
+        """노출 스위치와 검수 이력은 별개다 — 숨겼다고 검수 사실이 사라지면 안 된다."""
+        self.run_action('mark_reviewed', [self.first])
+        reviewed_at = self.first.reviewed_at
+
+        self.run_action('hide_summaries', [self.first])
+        self.run_action('restore_summaries', [self.first])
+
+        self.assertTrue(self.first.is_reviewed)
+        self.assertEqual(self.first.reviewed_by, self.reviewer)
+        self.assertEqual(self.first.reviewed_at, reviewed_at)
+
+    def test_actions_work_with_select_across(self):
+        """'모두 선택'은 정렬식이 걸린 전체 큐리셋에 update를 건다 — 정렬 구현이
+        `Case(...)` 식이라 여기서 깨질 수 있어 별도로 고정한다."""
+        response = self.run_action(
+            'hide_summaries', [self.first], select_across='1', index='0')
+
+        self.assertEqual(response.status_code, 200)
+        self.second.refresh_from_db()
+        self.assertFalse(self.first.is_published)
+        self.assertFalse(self.second.is_published)
+
+    def test_hidden_by_action_disappears_from_the_web(self):
+        """액션 → 화면까지 이어지는 경로를 한 번은 끝까지 확인한다."""
+        self.run_action('hide_summaries', [self.first])
+
+        self.assertEqual(
+            self.client.get(reverse('disclosures:disclosure_detail',
+                                    args=[self.first.disclosure.rcept_no])).status_code,
+            404,
+        )
+
+
+class NeedsReviewFilterParityTest(ReviewWorkflowTestBase):
+    """admin `NeedsReviewFilter`의 SQL 조건 ↔ 모델 `needs_review` property.
+
+    property는 list_filter에 못 올려서 조건을 SQL로 한 번 더 적었다(backend 산출물 7.3).
+    한쪽만 고치면 검수 큐가 조용히 어긋난다 — 검수 담당자는 필터 결과를 믿고 일하므로
+    큐에서 빠진 요약은 영원히 검수되지 않는다. 두 구현을 전수 대조한다.
+    """
+
+    #: (is_reviewed, importance, review_warnings) 전 조합 — 경계 케이스를 모두 포함한다.
+    COMBINATIONS = [
+        (reviewed, importance, warnings)
+        for reviewed in (False, True)
+        for importance in DisclosureSummary.Importance.values
+        for warnings in ([], ['경고 1건'], ['경고 1건', '경고 2건'])
+    ]
+
+    def setUp(self):
+        super().setUp()
+        for seq, (reviewed, importance, warnings) in enumerate(self.COMBINATIONS, start=1):
+            self.make_summary(
+                seq, is_reviewed=reviewed, importance=importance,
+                review_warnings=warnings,
+            )
+
+    def _filtered_pks(self, value):
+        response = self.client.get(
+            reverse('admin:disclosures_disclosuresummary_changelist'),
+            {'needs_review': value},
+        )
+        self.assertEqual(response.status_code, 200)
+        return set(response.context['cl'].queryset.values_list('pk', flat=True))
+
+    def _property_pks(self):
+        return {
+            summary.pk for summary in DisclosureSummary.objects.all()
+            if summary.needs_review
+        }
+
+    def test_filter_yes_equals_the_property(self):
+        self.assertEqual(self._filtered_pks('yes'), self._property_pks())
+
+    def test_filter_no_is_the_exact_complement(self):
+        every_pk = set(DisclosureSummary.objects.values_list('pk', flat=True))
+        yes, no = self._filtered_pks('yes'), self._filtered_pks('no')
+
+        self.assertEqual(yes | no, every_pk)     # 어느 쪽에도 안 들어가는 요약이 없어야
+        self.assertEqual(yes & no, set())        # 양쪽에 겹치는 요약도 없어야
+
+    def test_boundary_cases_are_classified_the_same_way(self):
+        """말로 옮긴 경계 3가지 — 조건식이 바뀌면 여기가 먼저 깨진다."""
+        expectations = {
+            # 중요도 높음 + 검수 완료 → 검수 불필요
+            (True, DisclosureSummary.Importance.HIGH, 0): False,
+            # 경고만 있고 미검수 → 검수 필요
+            (False, DisclosureSummary.Importance.LOW, 1): True,
+            # 중요도 높음 + 미검수 + 경고 없음 → 검수 필요
+            (False, DisclosureSummary.Importance.HIGH, 0): True,
+            # 둘 다 아님 → 검수 불필요
+            (False, DisclosureSummary.Importance.MEDIUM, 0): False,
+            # 검수 완료 + 경고 있음 → 검수 불필요(경고는 남지만 사람이 이미 봤다)
+            (True, DisclosureSummary.Importance.LOW, 1): False,
+        }
+        yes = self._filtered_pks('yes')
+        for (reviewed, importance, warning_count), expected in expectations.items():
+            summary = DisclosureSummary.objects.filter(
+                is_reviewed=reviewed, importance=importance,
+            ).exclude(review_warnings=[]).first() if warning_count else \
+                DisclosureSummary.objects.filter(
+                    is_reviewed=reviewed, importance=importance, review_warnings=[]).first()
+            with self.subTest(reviewed=reviewed, importance=importance,
+                              warnings=warning_count):
+                self.assertIsNotNone(summary)
+                self.assertEqual(summary.needs_review, expected)
+                self.assertEqual(summary.pk in yes, expected)
+
+    def test_has_warnings_filter_matches_stored_warnings(self):
+        with_warnings = {
+            summary.pk for summary in DisclosureSummary.objects.all()
+            if summary.review_warnings
+        }
+        response = self.client.get(
+            reverse('admin:disclosures_disclosuresummary_changelist'),
+            {'has_warnings': 'yes'})
+        self.assertEqual(
+            set(response.context['cl'].queryset.values_list('pk', flat=True)),
+            with_warnings,
+        )
+
+
+class AdminReviewScreenTest(ReviewWorkflowTestBase):
+    """검수 화면(변경 폼 + 원문 대조 패널)이 실제로 뜨고 필요한 것을 보여주는지."""
+
+    def setUp(self):
+        super().setUp()
+        self.summary = self.make_summary(
+            1, importance=DisclosureSummary.Importance.HIGH,
+            raw_content='유상증자 결정\n납입금액 | 3조 9,891억\n비율 | 12.34%',
+            review_warnings=[
+                summarizer.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억, 4,000억'],
+            evidence=[{'field': 'one_line', 'claim': '납입금액 3조 9,891억',
+                       'quote': '납입금액 | 3조 9,891억', 'quote_found': True,
+                       'numbers_ok': True, 'missing_numbers': []}],
+        )
+
+    def test_change_form_renders_the_comparison_panel(self):
+        response = self.client.get(self.change_url(self.summary))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="review-panel"')
+        self.assertContains(response, '원문 대조')
+        self.assertContains(response, self.summary.disclosure.dart_url)
+        self.assertContains(response, '납입금액')          # 원문이 패널에 실린다
+        self.assertContains(response, 'rp-hit')            # 지목 수치가 하이라이트된다
+
+    def test_panel_flags_numbers_absent_from_the_raw_text(self):
+        """'원문에 없음' 칩이 검수의 핵심 신호다 — 4,000억은 원문에 없다."""
+        response = self.client.get(self.change_url(self.summary))
+
+        self.assertContains(response, 'rp-chip-missing')
+        self.assertContains(response, '원문에 없음')
+
+    def test_panel_shows_evidence_verdicts(self):
+        response = self.client.get(self.change_url(self.summary))
+
+        self.assertContains(response, '인용 확인됨')
+        self.assertContains(response, '한 줄 요약')       # field 라벨 변환
+
+    def test_review_screen_never_calls_dart_or_openai(self):
+        """검수 화면에서 '최신 원문을 가져오자'는 코드가 들어가면 안 된다(PLAN.md 12.1)."""
+        with patch.object(summarizer, '_call_openai') as mock_llm, \
+                patch('disclosures.dart.requests.get') as mock_dart:
+            self.client.get(self.change_url(self.summary))
+            self.client.get(reverse('admin:disclosures_disclosuresummary_changelist'))
+        mock_llm.assert_not_called()
+        mock_dart.assert_not_called()
+
+    def test_changelist_shows_the_dart_link(self):
+        response = self.client.get(
+            reverse('admin:disclosures_disclosuresummary_changelist'))
+
+        self.assertContains(response, self.summary.disclosure.dart_url)
+        self.assertContains(response, 'target="_blank"')
+
+    def test_queue_is_ordered_by_review_priority(self):
+        """중요도 높음 → 경고 있음 → 접수일 최신. 큐가 56건일 때 정렬이 곧 작업 순서다."""
+        warned = self.make_summary(
+            2, review_warnings=['경고'], filed_at=date(2026, 7, 1))
+        recent = self.make_summary(3, filed_at=date(2026, 7, 5))
+        older = self.make_summary(4, filed_at=date(2026, 7, 3))
+
+        response = self.client.get(
+            reverse('admin:disclosures_disclosuresummary_changelist'))
+
+        self.assertEqual(
+            list(response.context['cl'].queryset.values_list('pk', flat=True)),
+            [self.summary.pk, warned.pk, recent.pk, older.pk],
+        )
+
+    def test_dart_link_column_degrades_when_the_url_is_missing(self):
+        """링크가 없는 공시에서 목록이 깨지면 검수 큐 전체를 못 연다."""
+        blank = self.make_summary(6)
+        Disclosure.objects.filter(pk=blank.disclosure_id).update(dart_url='')
+        blank.refresh_from_db()
+
+        model_admin = DisclosureSummaryAdmin(DisclosureSummary, AdminSite())
+        self.assertEqual(model_admin.dart_link(blank), '-')
+        self.assertEqual(
+            self.client.get(
+                reverse('admin:disclosures_disclosuresummary_changelist')).status_code,
+            200,
+        )
+
+    def test_has_warnings_no_filter_selects_clean_summaries(self):
+        clean = self.make_summary(7)
+
+        response = self.client.get(
+            reverse('admin:disclosures_disclosuresummary_changelist'),
+            {'has_warnings': 'no'})
+
+        pks = set(response.context['cl'].queryset.values_list('pk', flat=True))
+        self.assertEqual(pks, {clean.pk})       # 경고가 붙은 self.summary는 빠진다
+
+    def test_summary_without_raw_content_still_renders(self):
+        """원문 미확보 공시에서 패널이 깨지면 검수 화면 자체를 못 연다."""
+        bare = self.make_summary(5, raw_content='')
+
+        response = self.client.get(self.change_url(bare))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '원문이 아직 확보되지 않았습니다')
+
+    def test_summary_cannot_be_added_by_hand(self):
+        """요약은 요약 파이프라인만 만든다(PLAN.md 11) — 추가 경로 자체가 없어야 한다.
+
+        회귀 배경: `disclosure`가 readonly_fields에 들어가면서 추가 폼에서 빠졌는데 추가
+        권한은 열려 있어, 저장을 누르면 disclosure_id가 NULL이라 IntegrityError로 500이
+        났다. 권한을 닫아 경로를 없앤 것이 수정이므로 GET·POST 양쪽을 고정한다.
+        """
+        add_url = reverse('admin:disclosures_disclosuresummary_add')
+        self.client.raise_request_exception = False
+
+        self.assertEqual(self.client.get(add_url).status_code, 403)
+        self.assertEqual(
+            self.client.post(add_url, {
+                'one_line': '수동 생성', 'easy_explanation': '설명',
+                'why_important': '이유', 'importance': 'medium',
+                'hidden_reason': '', '_save': '저장',
+            }).status_code,
+            403,
+        )
+        self.assertFalse(DisclosureSummary.objects.filter(one_line='수동 생성').exists())
+
+    def test_changelist_offers_no_add_button(self):
+        """권한만 닫고 버튼을 남기면 검수자가 누를 때마다 403을 만난다.
+
+        `addlink` 클래스 자체를 찾으면 안 된다 — 사이드바에 다른 모델(공시·기업·
+        섹터·사용자)의 추가 링크가 같은 클래스로 늘 함께 렌더되기 때문에, 요약의
+        버튼을 지워도 실패한다. 이 화면이 요약 추가 URL을 어디에도 걸지 않았는지만 본다.
+        """
+        response = self.client.get(
+            reverse('admin:disclosures_disclosuresummary_changelist'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(
+            response, reverse('admin:disclosures_disclosuresummary_add'))
+
+    def test_disclosure_screen_also_refuses_to_add_a_summary(self):
+        """인라인과 'AI 요약' 화면의 추가 정책이 같아야 한다 — 한쪽만 막으면 우회로가 된다."""
+        model_admin = DisclosureSummaryAdmin(DisclosureSummary, AdminSite())
+        inline = DisclosureSummaryInline(Disclosure, AdminSite())
+        request = RequestFactory().get('/')
+        request.user = self.reviewer
+
+        self.assertFalse(model_admin.has_add_permission(request))
+        self.assertFalse(inline.has_add_permission(request))
+
+
+class HighlightTermsSecurityTest(TestCase):
+    """`highlight_terms`의 이스케이프 — 원문은 DART에서 온 외부 데이터다.
+
+    태그를 끼워 넣는 태그이므로 순서를 한 번만 뒤집어도(이스케이프 후 검색, 또는
+    조각을 그대로 이어붙임) 원문의 마크업이 admin 페이지에서 그대로 실행된다.
+    """
+
+    def test_markup_in_the_raw_text_is_escaped(self):
+        result = highlight_terms(
+            '<script>alert(1)</script> 납입금액 3조 9,891억 <b>굵게</b>',
+            ['3조 9,891억'], 'raw')
+        html = str(result['html'])
+
+        self.assertNotIn('<script>', html)
+        self.assertIn('&lt;script&gt;', html)
+        self.assertNotIn('<b>', html)
+        self.assertIn('&lt;b&gt;', html)
+        self.assertIn('<mark class="rp-hit"', html)   # 우리가 넣은 마크업만 살아남는다
+
+    def test_ampersand_and_quotes_are_escaped(self):
+        html = str(highlight_terms('A & B "인용" \'작은따옴표\'', [], 'raw')['html'])
+
+        self.assertIn('&amp;', html)
+        self.assertIn('&quot;', html)
+        self.assertNotIn('B "인용"', html)
+
+    def test_escaping_survives_inside_a_highlight(self):
+        """매칭된 조각도 이스케이프해야 한다 — <mark> 안이라고 안전한 게 아니다."""
+        html = str(highlight_terms('값 <b>1,000</b> 원', ['<b>1,000</b>'], 'raw')['html'])
+
+        self.assertNotIn('<b>', html)
+        self.assertIn('&lt;b&gt;1,000&lt;/b&gt;', html)
+
+    def test_search_term_is_escaped_in_the_data_attribute(self):
+        """검색어도 결국 경고 문자열에서 온 값이다. 속성에 그대로 박으면 탈출당한다."""
+        html = str(highlight_terms('a"onload="alert(1)', ['a"onload="alert(1)'], 'raw')['html'])
+
+        self.assertNotIn('data-term="a"onload=', html)
+        self.assertIn('&quot;', html)
+
+    def test_term_broken_by_markup_is_reported_missing_not_mismatched(self):
+        """수치가 태그 경계에 걸치면 매칭되지 않아야 하고, 마크업도 깨지면 안 된다."""
+        result = highlight_terms('값은 <b>3조</b> 9,891억', ['3조 9,891억'], 'raw')
+        html = str(result['html'])
+
+        self.assertEqual(result['total'], 0)
+        self.assertEqual(result['missing'], ['3조 9,891억'])
+        self.assertNotIn('<mark', html)
+        self.assertEqual(html.count('&lt;b&gt;'), 1)   # 원문 조각이 유실되지 않았다
+
+    def test_separator_differences_are_tolerated(self):
+        """요약은 `3조 9,891억`, 원문(표 추출)은 `3조9891억`으로 적히는 일이 흔하다."""
+        for source in ('3조9891억', '3조 9,891억', '3조  9891 억'.replace(' 억', '억')):
+            with self.subTest(source=source):
+                self.assertEqual(
+                    highlight_terms(source, ['3조 9,891억'], 'raw')['total'], 1)
+
+    def test_unit_characters_are_not_relaxed(self):
+        """단위까지 느슨하게 풀면 엉뚱한 곳이 걸려 검수자가 헛걸음한다."""
+        result = highlight_terms('3조 9,891만', ['3조 9,891억'], 'raw')
+
+        self.assertEqual(result['total'], 0)
+        self.assertEqual(result['missing'], ['3조 9,891억'])
+
+    def test_longer_term_wins_over_its_substring(self):
+        """`3조 9,891억`이 `891`에 먼저 먹히면 하이라이트가 엉뚱한 자리에 붙는다."""
+        result = highlight_terms('납입금액 3조 9,891억', ['891', '3조 9,891억'], 'raw')
+
+        self.assertEqual(result['total'], 1)
+        self.assertIn('>3조 9,891억<', str(result['html']))
+
+    def test_repeated_term_gets_distinct_anchors(self):
+        html = str(highlight_terms('1,000억 그리고 1,000억', ['1,000억'], 'raw')['html'])
+
+        self.assertIn('id="raw-0-1"', html)
+        self.assertIn('id="raw-0-2"', html)
+
+    def test_separator_only_and_empty_terms_are_ignored(self):
+        """구분자만으로 된 검색어는 빈 매칭으로 무한 분할을 일으킨다."""
+        result = highlight_terms('본문 1,234', [' ', ',', '', '  ,  '], 'raw')
+
+        self.assertEqual(result['total'], 0)
+        self.assertEqual(str(result['html']), '본문 1,234')
+
+    def test_regex_metacharacters_in_terms_are_literal(self):
+        result = highlight_terms('비율 12.34%', ['12.34%'], 'raw')
+        self.assertEqual(result['total'], 1)
+        # 정규식으로 해석되면 `12934%` 같은 문자열도 걸린다
+        self.assertEqual(highlight_terms('비율 12934%', ['12.34%'], 'raw')['total'], 0)
+
+    def test_empty_source_is_handled(self):
+        for source in ('', None):
+            with self.subTest(source=source):
+                result = highlight_terms(source, ['3조'], 'raw')
+                self.assertEqual(str(result['html']), '')
+                self.assertEqual(result['missing'], ['3조'])
+
+    def test_duplicate_terms_are_collapsed(self):
+        result = highlight_terms('1,000억', ['1,000억', '1,000억'], 'raw')
+        self.assertEqual(len(result['hits']), 1)
+
+
+class ReviewPanelFilterTest(TestCase):
+    """패널 보조 필터 — 잘못 표시하면 검수자가 멀쩡한 근거를 의심하게 된다."""
+
+    def test_has_key_separates_missing_key_from_falsy_value(self):
+        """`quote_found`가 없는 옛 근거를 '인용 미발견'으로 표시하면 안 된다.
+
+        옛 근거는 판정을 안 한 것이지 실패한 것이 아니다 — '인용 미검증'으로 가야 한다.
+        """
+        self.assertTrue(has_key({'quote_found': False}, 'quote_found'))
+        self.assertTrue(has_key({'quote_found': True}, 'quote_found'))
+        self.assertFalse(has_key({'quote': '구절'}, 'quote_found'))
+
+    def test_has_key_rejects_every_non_dict_value(self):
+        """dict가 아닌 입력에는 "키가 있는가"라는 물음 자체가 성립하지 않는다 → False.
+
+        `in`을 그냥 쓰면 컨테이너마다 뜻이 달라진다. 문자열이면 부분 문자열 검사가 되어
+        `'quote_found 를 담은 문자열'`이 True가 되고, 리스트면 원소 검사가 되어 값이 아닌
+        키 이름이 원소로 들어 있기만 해도 True가 된다. 둘 다 '인용 미검증'으로 가야 할
+        옛 형식 근거를 '인용 확인됨/미발견'으로 잘못 단정하는 길이다.
+        """
+        for value in (
+            None, 42, 3.5, True,
+            'quote_found 를 담은 문자열', 'quote_found',
+            ['quote_found'], ('quote_found',), {'quote_found'},
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(has_key(value, 'quote_found'))
+
+    def test_evidence_field_label_translates_model_field_names(self):
+        self.assertEqual(evidence_field_label('one_line'), '한 줄 요약')
+        self.assertEqual(evidence_field_label('easy_explanation'), '쉬운 설명')
+        self.assertEqual(evidence_field_label('why_important'), '왜 중요한가')
+
+    def test_evidence_field_label_falls_back_instead_of_blanking(self):
+        self.assertEqual(evidence_field_label(''), '요약')
+        self.assertEqual(evidence_field_label(None), '요약')
+        self.assertEqual(evidence_field_label('unknown_field'), 'unknown_field')
+
+    def test_field_labels_cover_every_body_field(self):
+        """모델의 본문 필드가 늘면 라벨도 늘어야 한다 — 안 그러면 원시 필드명이 뜬다."""
+        for field in DisclosureSummary.BODY_FIELDS:
+            with self.subTest(field=field):
+                self.assertNotEqual(evidence_field_label(field), field)
+
+
+class ReviewContractConsistencyTest(TestCase):
+    """00_input.md 3장 인터페이스 계약이 모델·admin·템플릿에서 같은 이름으로 살아 있는지.
+
+    Django 템플릿은 없는 속성을 조용히 빈 문자열로 처리한다. 필드 이름이 바뀌면 예외 없이
+    화면에서 표시만 사라지므로, 경계면을 테스트로 고정하는 것 말고 방어 수단이 없다.
+    """
+
+    TEMPLATE_ROOT = Path(__file__).resolve().parent / 'templates'
+
+    def test_new_fields_match_the_contract_table(self):
+        expected = {
+            'is_published': ('BooleanField', '노출 여부', True),
+            'hidden_reason': ('CharField', '숨김 사유', ''),
+            'edited_by_human': ('BooleanField', '사람 수정 여부', False),
+            'llm_original': ('JSONField', 'LLM 원본', dict),
+        }
+        for name, (field_type, verbose_name, default) in expected.items():
+            with self.subTest(field=name):
+                field = DisclosureSummary._meta.get_field(name)
+                self.assertEqual(field.get_internal_type(), field_type)
+                self.assertEqual(field.verbose_name, verbose_name)
+                self.assertEqual(field.default, default)
+
+    def test_reviewed_at_is_nullable_with_the_contract_label(self):
+        """검수 전에는 '시각 없음'이어야 한다 — 기본값을 주면 미검수와 구분이 사라진다."""
+        field = DisclosureSummary._meta.get_field('reviewed_at')
+        self.assertEqual(field.get_internal_type(), 'DateTimeField')
+        self.assertEqual(field.verbose_name, '검수 시각')
+        self.assertTrue(field.null)
+        self.assertTrue(field.blank)
+
+    def test_hidden_reason_length_matches_the_contract(self):
+        self.assertEqual(
+            DisclosureSummary._meta.get_field('hidden_reason').max_length, 200)
+
+    def test_reviewed_by_survives_user_deletion(self):
+        """검수자 계정이 지워져도 '검수는 되었다'는 사실은 남아야 한다."""
+        from django.db.models import SET_NULL
+
+        field = DisclosureSummary._meta.get_field('reviewed_by')
+        self.assertEqual(field.verbose_name, '검수자')
+        self.assertIs(field.remote_field.on_delete, SET_NULL)
+        self.assertTrue(field.null)
+
+    def test_was_human_edited_is_edit_and_review(self):
+        """정의가 세 곳(모델·산출물 문서·템플릿)에 흩어져 있어 진리표로 고정한다."""
+        summary = DisclosureSummary(one_line='x', easy_explanation='y', why_important='z')
+        for edited in (False, True):
+            for reviewed in (False, True):
+                with self.subTest(edited=edited, reviewed=reviewed):
+                    summary.edited_by_human = edited
+                    summary.is_reviewed = reviewed
+                    self.assertEqual(summary.was_human_edited, edited and reviewed)
+
+    def test_body_snapshot_covers_exactly_the_body_fields(self):
+        summary = DisclosureSummary(
+            one_line='한 줄', easy_explanation='설명', why_important='이유')
+
+        self.assertEqual(
+            summary.body_snapshot(),
+            {'one_line': '한 줄', 'easy_explanation': '설명', 'why_important': '이유'},
+        )
+        self.assertEqual(
+            set(summary.body_snapshot()), set(DisclosureSummary.BODY_FIELDS))
+
+    def test_llm_original_uses_the_body_field_keys(self):
+        """패널이 `llm_original.one_line` 식으로 직접 읽으므로 키 이름이 계약이다."""
+        panel = (self.TEMPLATE_ROOT
+                 / 'admin/disclosures/disclosuresummary/_review_panel.html'
+                 ).read_text(encoding='utf-8')
+        for field in DisclosureSummary.BODY_FIELDS:
+            with self.subTest(field=field):
+                self.assertIn(f'llm_original.{field}', panel)
+
+    def test_templates_only_reference_existing_summary_attributes(self):
+        """템플릿이 `summary.`·`original.`로 읽는 이름이 모델에 실제로 있는지 전수 확인."""
+        pattern = re.compile(r'\b(?:summary|original)\.([a-z_][a-z0-9_]*)')
+        referenced = set()
+        for path in self.TEMPLATE_ROOT.rglob('*.html'):
+            referenced.update(pattern.findall(path.read_text(encoding='utf-8')))
+
+        self.assertIn('was_human_edited', referenced)   # 스캔이 실제로 동작하는지
+        missing = sorted(
+            name for name in referenced if not hasattr(DisclosureSummary, name))
+        self.assertEqual(missing, [])
+
+    def test_admin_actions_keep_their_contract_names(self):
+        """산출물 문서와 운영 안내가 메서드 이름으로 액션을 지목한다."""
+        model_admin = DisclosureSummaryAdmin(DisclosureSummary, AdminSite())
+        self.assertEqual(
+            list(model_admin.actions),
+            ['mark_reviewed', 'hide_summaries', 'restore_summaries'],
+        )
+
+    def test_audit_fields_are_read_only_in_admin(self):
+        model_admin = DisclosureSummaryAdmin(DisclosureSummary, AdminSite())
+        for field in ('edited_by_human', 'llm_original', 'reviewed_by', 'reviewed_at',
+                      'evidence', 'review_warnings'):
+            with self.subTest(field=field):
+                self.assertIn(field, model_admin.readonly_fields)
+
+    def test_body_fields_are_editable_in_admin(self):
+        """4단계의 목적 자체 — 검수자가 본문을 고칠 수 없으면 큐가 소진되지 않는다."""
+        model_admin = DisclosureSummaryAdmin(DisclosureSummary, AdminSite())
+        for field in DisclosureSummary.BODY_FIELDS:
+            with self.subTest(field=field):
+                self.assertNotIn(field, model_admin.readonly_fields)
+
+    def test_summary_inline_cannot_be_used_to_bypass_save_model(self):
+        """인라인 저장은 DisclosureSummaryAdmin.save_model을 타지 않는다.
+
+        여기서 본문을 고칠 수 있으면 사람 수정 감지(edited_by_human·llm_original)가
+        통째로 우회되어 감사 기록이 빈다.
+        """
+        request = RequestFactory().get('/')
+        request.user = get_user_model()(is_superuser=True, is_staff=True, is_active=True)
+        inline = DisclosureSummaryInline(Disclosure, AdminSite())
+
+        self.assertFalse(inline.has_add_permission(request))
+        editable = {
+            field.name for field in DisclosureSummary._meta.get_fields()
+            if getattr(field, 'editable', False) and not field.auto_created
+        }
+        # 부모 링크(disclosure)를 뺀 모든 편집 가능 필드가 읽기 전용이어야 한다.
+        self.assertEqual(
+            sorted(editable - set(inline.readonly_fields) - {'disclosure'}), [])

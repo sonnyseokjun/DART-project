@@ -1,0 +1,25 @@
+{% extends "admin/change_form.html" %}
+{% comment %}
+AI 요약 검수 화면 — 기본 change_form 위에 '원문 대조 패널'을 얹는다.
+
+별도 스태프 화면을 만들지 않는 이유(00_input.md 2장): 인증·권한·목록·필터를 Django admin이
+이미 준다. 검수자에게 부족한 것은 화면 자체가 아니라 **요약과 원문을 한 화면에서 대조하는
+수단**이므로, 그것만 폼 위에 얹는다.
+
+패널을 폼 위에 두는 이유: 검수자가 가장 먼저 봐야 하는 것은 "무엇이 의심스러운가"이고,
+그 판단이 끝난 뒤에 아래 폼에서 고친다. 패널 안의 '수정하러 가기' 링크가 폼으로 데려간다.
+{% endcomment %}
+{% load static %}
+
+{% block extrahead %}{{ block.super }}
+  {# 웹 화면 스타일(style.css)과 섞이지 않게 admin 전용 파일을 따로 둔다. #}
+  <link rel="stylesheet" href="{% static 'disclosures/css/review-panel.css' %}">
+  <script src="{% static 'disclosures/js/review-panel.js' %}" defer></script>
+{% endblock %}
+
+{% block content %}
+  {% if not add and original %}
+    {% include "admin/disclosures/disclosuresummary/_review_panel.html" %}
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
