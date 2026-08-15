@@ -1,134 +1,179 @@
-# 4단계 작업 입력 — 사람 검수 플로우 구축
+# 5단계 입력 명세 — 요약 파이프라인 자동 교정
 
-- **로드맵 단계**: PLAN.md 9장 4단계 (품질·검증)
-- **브랜치**: `feature/stage4-review-workflow` (기준 커밋 `f840359`)
-- **투입 에이전트**: backend · frontend · qa (analyst·ai-prompt는 범위 밖)
-- **실행 모드**: 서브 에이전트 (팀 도구 미가용)
+브랜치: `feature/stage5-auto-correction` (base: `main` @ 84a5902, PR #9 머지 직후)
+로드맵: PLAN.md 9장 2단계(AI 요약) · 4단계(품질·검증)
 
----
+## 1. 왜 하는가
 
-## 1. 문제
+4단계에서 사람 검수 **도구**는 만들었지만 검수 **부담**은 줄이지 못했다.
+요약 140건 중 56건(40%)이 검수 대기다. 이 상태로 데이터가 10배 늘면 사람 몫도 10배 는다.
+사용자의 지적이 이 작업의 출발점이다 — *"이러면 AI를 활용한 의미가 없어집니다."*
 
-검수가 필요한 요약이 **56건인데 검수 완료가 0건**이다. admin에 요약을 검수할 *수단*이
-없어 큐가 전혀 소진되지 않고, 그 결과 웹의 정확성 경고 배너 **29건이 영구히 사라지지 않는다.**
+목표는 **사람이 볼 건을 한 자릿수로 줄이는 것**이다.
 
-실제 사례: SK하이닉스 유상증자 요약(`20260715800045`)이 금액을 10배 잘못 적었다
-(39조 8,905억 → 3조 9,891억). 자동 검증은 정확히 잡아냈지만 **고칠 방법이 없어**
-배너를 단 채 노출 중이다.
+## 2. 확정된 진단 (추측 아님, 실데이터로 확인)
 
-### 현황 (2026-08-11)
+### 2.1 진짜 오류 — 전부 같은 원인
+
+| 요약 id | 원문 | AI 출력 | 실제 값 |
+|---|---|---|---|
+| 128 | `39,890,534,790,000` | 3조 9,891억 | **39조 8,905억** |
+| 81 | `45,453,450,000,000` | 4조 5,453억 | **45조 4,534억** |
+| 107 | `43,140,750,000,000` | 4조 3,140억 | **43조 1,407억** |
+
+전부 정확히 10배. **콤마는 3자리로 끊고 만·억·조는 4자리로 끊는데 AI가 콤마 기준으로 잘랐다.**
+`45,453,...` → 앞 두 덩어리 `45453`을 "4조 5,453억"으로 읽음. 4자리로 끊으면 `45 / 4534` = 45조 4,534억.
+
+**숫자 자체는 한 자리도 안 틀렸다. 자릿수 끊기에서만 무너진다.** 코드가 하면 영원히 안 틀린다.
+
+### 2.2 검증기 오탐 — 표 헤더 단위 미인식
+
+요약 id 8(삼성전자 특수관계인에대한출자)은 **AI가 맞았는데 경고가 붙었다.**
+원문 표 머리에 `(단위 : 억원)`이 있고 값은 `4,000`인데 AI는 `4,000억원`으로 정확히 읽었다.
+검증기가 헤더 단위 선언을 반영하지 않아 오탐.
+
+→ **수치 경고 19건 안에 진짜 오류와 오탐이 섞여 있다. 전수 분류가 작업의 일부다.**
+
+### 2.3 검증이 게시를 막지 않는다
+
+id 128(39조→3조)이 경고가 붙은 채 웹에 그대로 노출돼 있었다. 검증 결과가 노출에 영향을 안 준다.
+
+### 2.4 검수 대상을 AI의 중요도 판단으로 정한다
+
+검수 대기 56건 = 경고로 걸린 18건 + **"중요도 높음은 무조건" 규칙 38건**.
+그 '높음'은 AI가 매겼다. **AI를 못 믿어서 검수하는데 검수 대상 선정은 AI에 맡기고 있다.**
+
+### 2.5 현재 경고 분포 (140건 기준)
+
+수치 19 · 인용 14 · 문체 4 = 총 33건
+
+## 3. 목표 파이프라인
 
 ```
-요약 140건 / 검수 필요 56건 / 검수 완료 0건 / 정확성 경고 29건
-사유별:  중요도 높음만 24건 · 경고만 18건 · 둘 다 14건
-경고:    근거 없는 수치 19건 · 인용 미발견 14건 · 문장 수(문체) 4건
+LLM 요약 (원문 숫자를 그대로 인용, 환산은 하지 않는다)
+  → 단위 환산·파생 수치를 코드가 계산
+  → 검증 (표 헤더 단위 반영)
+      ├ 통과        → 자동 게시                    ← 대다수가 여기여야 한다
+      ├ 수치 불일치 → 미게시 + 경고를 되먹여 1회 재생성
+      │                재생성도 실패 → 사람 검수 큐
+      └ 인용 형식   → 게시하되 표시만 (사실 오류 아님)
 ```
 
-### 이미 되어 있는 것 (다시 만들지 말 것)
+## 4. 파일 소유권 — 병렬 충돌 방지
 
-- 숫자 대조 검증 — `summarizer.validate_summary` / `verify_evidence`
-- 경고 종류 구분 — `summarizer.ACCURACY_WARNING_PREFIXES`
-- 면책 문구 — `templates/disclosures/base.html` 전 페이지 상시 노출
-- admin 기초 — `HasWarningsFilter`, `검수 필요` 컬럼, 경고 수 표시, evidence 읽기 전용
-- 재검증 명령 — `manage.py revalidate_summaries` (LLM 미호출·멱등)
-
----
-
-## 2. 확정된 설계 판단 (사용자 승인 완료 · 재검토 금지)
-
-1. **검수 화면은 Django admin 커스텀**으로 만든다. `change_form` 템플릿 오버라이드 방식.
-   별도 스태프 화면을 새로 짜지 않는다 — 인증·권한·목록·필터를 Django가 이미 준다.
-2. **사람이 수정한 요약은 웹에 밝힌다.** "사람이 검토·수정함" 표시.
-3. **숨김 처리한 공시는 웹 목록에서 완전히 제거한다.** 빈 껍데기 카드를 남기지 않는다.
-4. 검수 조치는 **(a) 직접 수정 + (c) 노출 숨김** 두 가지뿐.
-   **LLM 재생성은 채택하지 않는다** — 같은 프롬프트로 다시 뽑아도 같은 오류가 날 수 있고
-   "공시당 1회" 원칙(PLAN.md 11)과 충돌한다.
-
----
-
-## 3. 인터페이스 계약 (backend·frontend 공통 · 변경 시 즉시 SendMessage)
-
-### 3.1 `DisclosureSummary` 신규 필드 — backend가 소유
-
-| 필드 | 타입 | 기본값 | verbose_name | 의미 |
-|---|---|---|---|---|
-| `is_published` | BooleanField | `True` | `노출 여부` | False면 웹에서 완전히 감춘다 |
-| `hidden_reason` | CharField(200) | `''` blank | `숨김 사유` | 검수자가 남기는 메모 |
-| `edited_by_human` | BooleanField | `False` | `사람 수정 여부` | 본문을 사람이 고쳤는지 |
-| `llm_original` | JSONField | `dict` blank | `LLM 원본` | 첫 사람 수정 시점의 LLM 출력 스냅샷 |
-| `reviewed_by` | FK(settings.AUTH_USER_MODEL) | `null=True, blank=True` | `검수자` | `on_delete=SET_NULL` |
-| `reviewed_at` | DateTimeField | `null=True, blank=True` | `검수 시각` | |
-
-`llm_original`은 `{'one_line':…, 'easy_explanation':…, 'why_important':…}` 형태.
-**사람이 처음 수정할 때만 채우고 이후 덮어쓰지 않는다** — 원본 추적이 목적이므로
-두 번째 수정 때 덮어쓰면 LLM이 실제로 뭐라고 했는지 잃는다.
-
-### 3.2 신규 property — backend가 소유, frontend가 소비
-
-```python
-DisclosureSummary.was_human_edited  # edited_by_human and is_reviewed
-```
-
-기존 `needs_review` / `accuracy_warnings` / `unsupported_numbers` 의미는 **바꾸지 않는다.**
-(`accuracy_warnings`는 이미 `is_reviewed`면 빈 리스트를 돌려준다 — 검수 완료 시
-웹 배너가 자동으로 사라지는 근거다.)
-
-### 3.3 노출 정책 — backend가 소유
-
-`disclosures/views.py`의 `published_disclosures()`에 `summary__is_published=True` 추가.
-**노출 정책은 이 함수 하나가 단일 출처다.** 템플릿이나 다른 뷰에서 따로 거르지 말 것.
-
-### 3.4 파일 소유권 (충돌 방지 · 남의 파일을 고치지 말 것)
+**같은 파일을 두 에이전트가 동시에 고치지 않는다.** 남의 파일이 필요하면 소유자에게 요청한다.
 
 | 에이전트 | 소유 파일 |
 |---|---|
-| backend | `disclosures/models.py`, `disclosures/admin.py`, `disclosures/views.py`, `disclosures/migrations/*` |
-| frontend | `disclosures/templates/**`, `disclosures/static/**` |
-| qa | `disclosures/tests.py` |
+| analyst | `_workspace/10_analyst_*.md` (코드 수정 없음, **읽기 전용 조사**) |
+| backend | `units.py`(신규) · `verification.py`(신규) · `models.py` · `admin.py` · `views.py` · `migrations/` · `management/commands/**` |
+| ai-prompt | `summarizer.py` (**Phase B 리팩터 완료 후에만**) |
+| frontend | `templates/**` · `static/**` · `templatetags/**` |
+| qa | `tests.py` |
 
-상대 파일에 변경이 필요하면 직접 고치지 말고 **SendMessage로 요청**한다.
+### 4.1 `summarizer.py` 분리 — 소유권 충돌의 해소책
 
----
+현재 `summarizer.py`(955행)에 프롬프트·검증·비용추정이 한 파일에 있어 backend와 ai-prompt가
+동시에 필요하다. **Phase B에서 backend가 먼저 기계적으로 분리**한 뒤 ai-prompt가 넘겨받는다.
 
-## 4. 완료 조건
+| 이동 대상 | 현재 위치 | 이동 후 | 소유 |
+|---|---|---|---|
+| 검증 로직 (`_normalize`~`build_review_warnings`) | `summarizer.py` L400–775 | **`verification.py`(신규)** | backend |
+| 한국 단위 환산 | 없음 (신규) | **`units.py`(신규)** | backend |
+| 프롬프트·스키마·클라이언트·비용추정 | `summarizer.py` | `summarizer.py` 잔류 | ai-prompt |
 
-### backend
-- [ ] 3.1 필드 추가 + 마이그레이션 생성
-- [ ] admin에서 요약 본문 3필드(`one_line`·`easy_explanation`·`why_important`) 수정 가능
-- [ ] 사람이 본문을 수정하면 `edited_by_human=True`, `llm_original` 최초 1회 기록
-      (`ModelAdmin.save_model`에서 변경 감지)
-- [ ] 일괄 액션: **검수 완료 처리** / **노출 숨김** / **노출 복구**
-- [ ] 검수 완료 시 `reviewed_by`(요청 사용자)·`reviewed_at` 기록
-- [ ] 검수 대기 우선순위 정렬 (중요도 높음 → 경고 있음 → 접수일 최신)
-- [ ] `published_disclosures()`가 숨김 요약을 제외
-- [ ] admin 목록에 DART 원문 링크 컬럼
+분리는 **동작 변경 없는 순수 이동**이어야 한다. 기존 import 경로(`from .summarizer import ...`)를
+쓰는 곳이 있으므로 `summarizer.py`에서 재수출(re-export)해 하위 호환을 유지한다.
+(`models.py`가 `ACCURACY_WARNING_PREFIXES` 등을 import한다 — 반드시 확인할 것)
 
-### frontend
-- [ ] admin `change_form` 오버라이드로 **원문 대조 패널** 추가
-      (요약 ↔ `disclosure.raw_content` 병렬 표시)
-- [ ] 경고가 지목한 수치(`summary.unsupported_numbers`)를 원문에서 **하이라이트**
-- [ ] `evidence`를 JSON이 아닌 읽기 좋은 형태로 표시 (claim + quote 쌍, 검증 결과 배지)
-- [ ] 웹 상세·카드에 "사람이 검토·수정함" 표시 (`was_human_edited`)
-- [ ] 검수 완료 시 '미검수' 배지와 정확성 배너가 사라지는지 확인 (기존 로직으로 자동)
+## 5. 절대 제약
 
-### qa
-- [ ] 숨김 요약이 웹 목록·상세·메인 하이라이트 어디에도 노출되지 않는지
-- [ ] 검수 완료 시 배지·배너가 사라지는지
-- [ ] `llm_original`이 두 번째 수정에서 덮어써지지 않는지
-- [ ] 일괄 액션이 `reviewed_by`·`reviewed_at`를 올바로 남기는지
-- [ ] `coverage.py`로 커버리지 측정, 결과를 `_workspace/`에 기록
-- [ ] `manage.py check` + `manage.py test disclosures` 전체 통과
+1. **LLM을 실제로 호출하지 마라.** `summarize_disclosures` 실행 금지.
+   사용자 돈이 나가는 유일한 경로이고, 언제 쓸지는 사용자가 정한다.
+   프롬프트 변경 효과는 **코드·테스트로만** 검증하고, 실호출이 필요하면 리더에게 보고만 한다.
+   `revalidate_summaries`는 LLM 호출이 없으므로 **자유롭게 써도 된다** — 검증기 수정 효과 측정에 쓸 것.
+2. **`git push` 금지 · `.env` 수정 금지 · `rm` 사용 금지.** 커밋도 리더가 한다.
+3. **`db.sqlite3`를 손상시키지 마라.** 읽기는 자유. 쓰기가 필요하면 인메모리 테스트 DB를 쓴다.
+   `revalidate_summaries`는 실 DB를 쓰지만 멱등이므로 허용.
+4. **PLAN.md 12.1** — 사용자 요청 경로(views)에서 DART·LLM을 호출하지 않는다. 기존 테스트로 고정돼 있다.
+5. 모델 필드·admin에 한국어 `verbose_name`. 주석·docstring도 한국어.
 
----
+## 6. 에이전트별 완료 조건
 
-## 5. 제약
+### analyst (Phase A, 단독 선행)
+- [ ] **수치 경고 19건 전수 분류** — 각 건이 `진짜 오류` / `검증기 오탐` / `판정 불가` 중 무엇인지,
+      근거(원문의 해당 구절)와 함께. 이게 이후 모든 작업의 기준선이 된다
+- [ ] **원문의 단위 표기 실태 조사** — `raw_content` 140건 전수에서 `(단위 : 억원)` 류 헤더가
+      어떤 변형으로 나타나는지 (공백·콜론·괄호·`단위:백만원`·`(단위: 천원)` 등) 정규식 후보 제시
+- [ ] 헤더 단위의 **적용 범위** 판단 근거 — 표 전체인가, 특정 열인가, 문서 전체인가.
+      실제 사례로 답할 것. 잘못 적용하면 오탐을 오탐으로 바꿀 뿐이다
+- [ ] **파생 수치(증감률 등) 실태** — AI가 계산한 `11.0`, `2.44`, `3.01` 류가 원문에 있는 값인지
+      AI가 만든 값인지. 있다면 코드가 계산할 수 있는 형태인지
+- [ ] 인용 경고 14건도 훑고, 3단계에서 정리한 "조각 이어붙이기" 외 새 패턴이 있는지 확인
 
-- **뷰·검수 화면에서 DART API나 LLM을 호출하지 않는다** (PLAN.md 12.1).
-  원문은 이미 `raw_content`에 있다. "검수 화면에서 최신 원문을 가져오자"는 코드 금지.
-  `disclosures/views.py`가 `dart`·`summarizer`를 import하지 않는지 확인하는 테스트가
-  이미 있다(`ViewsDoNotCallExternalApisTest`) — 깨뜨리지 말 것.
-- 사람의 요약 수정은 "공시당 1회" 원칙을 어기지 않는다 (LLM 호출이 아니라 교정).
-- 모델 필드·admin에 한국어 `verbose_name`. 주석·docstring·커밋 메시지도 한국어.
-- SQLite 단일 파일이므로 마이그레이션과 대량 작업을 동시에 돌리지 않는다.
-- 기존 테스트 130개를 깨뜨리지 않는다.
-- `.env`는 수정 금지 (권한 정책).
+### backend (Phase B → C)
+**Phase B (단독, 선행)**
+- [ ] `summarizer.py` → `verification.py` 분리 (동작 변경 0). 재수출로 하위 호환 유지.
+      `manage.py test disclosures` 209건이 **그대로 통과**해야 한다
+- [ ] `units.py` 신규 — 원 단위 정수 → 한국어 표기 순수 함수.
+      경계값 테스트 가능하도록 부작용 없는 함수로. Django 의존 금지
+- [ ] `verification.py`에 표 헤더 단위 인식 추가 (analyst의 정규식·적용범위 판단 기반)
+- [ ] `revalidate_summaries`로 140건 재검증 → **경고가 몇 건에서 몇 건으로 줄었는지 보고**
+
+**Phase C (병렬)**
+- [ ] 검증 실패 시 `is_published=False`로 생성 (자동 미게시). 사유를 `hidden_reason`에 남긴다
+- [ ] 수치 경고 시 경고를 프롬프트에 되먹여 **1회 재생성**. **재시도 상한 필수**(무한 루프 방지).
+      재생성 시도 이력을 남길 것(필드 추가 시 마이그레이션 포함)
+- [ ] 재생성도 실패하면 사람 검수 큐로
+- [ ] 검수 게이트를 AI의 `importance`가 아니라 **공시 유형** 기준으로 변경.
+      유형 목록은 근거를 대고 정할 것(유상증자·합병·감사의견 등). `selection.py`의 기존 분류 재사용 검토
+- [ ] 재생성 경로는 **코드로만 구현하고 실행하지 마라** (제약 1)
+
+### ai-prompt (Phase C, backend Phase B 완료 후)
+- [ ] 프롬프트에서 **단위 환산을 금지**한다. 원문 숫자를 그대로 인용하게 한다
+- [ ] 파생 수치(증감률 등) 계산도 요구하지 않도록 정리 (analyst 조사 결과 반영)
+- [ ] **재생성용 프롬프트** 설계 — 어떤 경고를 어떤 형태로 되먹일 때 교정률이 높은지.
+      원 프롬프트에 경고를 덧붙이는 방식인지 별도 교정 프롬프트인지 판단하고 근거를 대라
+- [ ] `PROMPT_VERSION`을 올린다 (현재 `v2`). 기존 요약과 구분 가능해야 한다
+- [ ] 출력 스키마 변경이 필요하면 backend·frontend에 **먼저** 알린다
+- [ ] 실호출 없이 검증 — 프롬프트 문자열·스키마 단위 테스트는 qa와 협의
+
+### frontend (Phase C, 소규모)
+- [ ] 검수 화면(`_review_panel.html`)에 **자동 미게시 사유·재생성 이력** 표시
+- [ ] 코드가 환산한 값과 AI 원문 인용을 구분해 보여줄지 판단 (backend 스키마 확정 후)
+- [ ] 웹 화면은 변경 불필요할 가능성이 높다 — `published_disclosures()`가 이미 거른다.
+      불필요하면 **불필요하다고 보고하고 손대지 마라**
+
+### qa (Phase D)
+- [ ] `units.py` 경계값 — 9,999 / 10,000 / 1억 / 1조 / 10조 + **위 3건의 실제 값**(39,890,534,790,000 등)
+- [ ] 표 헤더 단위 인식이 **id 8의 오탐을 없애면서 진짜 오류를 계속 잡는지** (양방향)
+- [ ] 재생성 루프의 **상한이 실제로 걸리는지** — 무한 재시도는 곧 무한 비용이다
+- [ ] 검수 게이트 유형 기준이 기존 `importance` 기준과 어떻게 달라지는지 실데이터로 비교
+- [ ] `summarize_disclosures.py` 테스트 추가 (현재 커버리지 **0%**, 비용 발생 경로)
+- [ ] 회귀: `manage.py test disclosures` 전건 통과 · `check` 0 issues · `makemigrations --check` 무변경
+- [ ] **LLM 실호출 없이** 검증할 것 (제약 1). 모킹으로 처리한다
+
+## 7. 최종 측정 (리더가 확인)
+
+이 작업의 성패는 하나의 숫자로 판정한다:
+
+> `revalidate_summaries` 재실행 후 **사람 검수가 필요한 건수**
+
+- 현재: **56건 / 140건 (40%)**
+- 목표: **한 자릿수**
+- 여전히 수십 건이면 → 요약 대상 범위 자체를 재검토해야 한다 (별도 논의)
+
+검증기 수정 효과는 LLM 비용 없이 지금 측정 가능하다. 프롬프트 수정 효과는 사용자가
+실호출을 승인한 뒤에야 측정 가능하므로, **그 전까지는 "예상"으로만 보고할 것.**
+
+## 8. 산출물
+
+| 에이전트 | 파일 |
+|---|---|
+| analyst | `_workspace/10_analyst_number_triage.md` |
+| backend | `_workspace/21_backend_units_verification.md` (Phase B) · `_workspace/22_backend_pipeline.md` (Phase C) |
+| ai-prompt | `_workspace/23_ai-prompt_no_arithmetic.md` |
+| frontend | `_workspace/24_frontend_review_panel.md` |
+| qa | `_workspace/30_qa_verification.md` |
+
+보고서에는 **판단이 갈렸던 지점과 그 이유**를 반드시 남긴다. 결론만 적힌 보고서는 쓸모가 없다.

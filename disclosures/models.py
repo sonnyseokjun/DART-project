@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 
+from .review_policy import ReviewCategory
 from .selection import ExclusionReason, SelectionState
 
 
@@ -55,6 +56,15 @@ class Disclosure(models.Model):
         '제외 사유', max_length=20,
         choices=ExclusionReason.choices, blank=True, default='',
     )
+    # 사람 검수 게이트 대상 여부를 **공시 제목**으로 판정한 결과. 빈 문자열이면 비대상.
+    # AI가 매긴 중요도로 게이트를 걸면 "AI를 못 믿어서 하는 검수"의 대상 선정을 AI에게
+    # 맡기게 된다. 정책은 disclosures/review_policy.py가 단일 출처이며,
+    # selection_state와 같은 이유로 판정 결과를 DB에 남긴다 — 제목 정규식을 SQL로 옮겨
+    # 적으면 모델과 admin 필터가 조용히 어긋난다.
+    review_category = models.CharField(
+        '검수 필수 유형', max_length=20,
+        choices=ReviewCategory.choices, blank=True, default='',
+    )
     raw_fetched = models.BooleanField('원문 확보 여부', default=False)
     raw_content = models.TextField('원문 본문(전처리)', blank=True)
     created_at = models.DateTimeField('수집 시각', auto_now_add=True)
@@ -87,6 +97,12 @@ class DisclosureSummary(models.Model):
         MEDIUM = 'medium', '보통'
         LOW = 'low', '낮음'
 
+    class HiddenBy(models.TextChoices):
+        """미게시 상태를 **누가 만들었는지**. 게시 중이면 빈 문자열이다."""
+
+        AUTO = 'auto', '자동 미게시(검증 실패)'
+        HUMAN = 'human', '검수자가 내림'
+
     disclosure = models.OneToOneField(
         Disclosure, on_delete=models.CASCADE, related_name='summary', verbose_name='공시'
     )
@@ -110,6 +126,21 @@ class DisclosureSummary(models.Model):
     # 요약을 지우면 재수집 시 LLM을 다시 부르게 되므로 삭제 대신 감춘다(PLAN.md 11).
     is_published = models.BooleanField('노출 여부', default=True)
     hidden_reason = models.CharField('숨김 사유', max_length=200, blank=True, default='')
+    # 내려간 요약을 **자동 검증이 막은 것**과 **사람이 판단해 내린 것**으로 가른다.
+    # is_published=False 하나만으로는 둘이 구분되지 않는데, 검수자가 할 일이 정반대다:
+    # 자동 미게시는 "고쳐서 올릴 것"이고 사람이 내린 것은 "이미 결론이 난 것"이다.
+    # hidden_reason 문구로 구분하지 않는 이유는 그 필드가 사람이 자유롭게 고치는
+    # 자유 문자열이라, 검수자가 한 번 고쳐 쓰면 기계 판정이 무너지기 때문이다.
+    hidden_by = models.CharField(
+        '미게시 주체', max_length=10,
+        choices=HiddenBy.choices, blank=True, default='',
+    )
+    # 검증 실패로 다시 생성한 횟수. review_policy.MAX_REGENERATION_ATTEMPTS 가 상한이며,
+    # 이 값이 상한에 닿으면 더 부르지 않고 사람 검수 큐로 넘긴다(무한 재시도 = 무한 비용).
+    regeneration_count = models.PositiveSmallIntegerField('재생성 시도 횟수', default=0)
+    # 시도별 이력. [{'attempt', 'at', 'reason', 'warnings', 'model', 'cost_usd'}, ...]
+    # 횟수만 남기면 "무엇을 고치려다 실패했는지"를 잃어 프롬프트 개선의 근거가 사라진다.
+    regeneration_history = models.JSONField('재생성 이력', default=list, blank=True)
     edited_by_human = models.BooleanField('사람 수정 여부', default=False)
     # 사람이 본문을 처음 고치는 순간의 LLM 출력 스냅샷.
     # {'one_line':…, 'easy_explanation':…, 'why_important':…} 형태이며 이후 덮어쓰지 않는다.
@@ -138,12 +169,36 @@ class DisclosureSummary(models.Model):
     def needs_review(self):
         """사람 검수가 필요한 요약인지.
 
-        중요도 '높음'은 PLAN.md 11의 검수 게이트 대상이고, 자동 검증 경고가 붙은 요약은
-        근거 대조에서 걸린 것이므로 게시 전에 사람이 봐야 한다.
+        두 갈래다.
+          - **공시 유형 게이트**: DART 제목으로 판정한 고위험 유형(`review_policy.py`).
+            경고가 하나도 없어도 사람이 본다.
+          - **자동 검증 경고**: 근거 대조에서 걸린 요약은 유형과 무관하게 본다.
+
+        게이트를 AI의 `importance == 'high'` 에서 공시 유형으로 옮긴 이력이 있다.
+        AI 요약을 믿지 못해 하는 검수인데 그 대상 선정을 같은 AI에게 맡기고 있었고,
+        AI가 중요도를 낮게 잘못 매기면 가장 위험한 요약이 큐에 아예 안 떴다.
+
+        admin의 `NeedsReviewFilter` 가 같은 조건을 SQL로 한 번 더 적는다. 한쪽만 고치면
+        검수 큐가 조용히 어긋나므로 반드시 함께 고친다(테스트로 고정되어 있다).
         """
         return not self.is_reviewed and (
-            self.importance == self.Importance.HIGH or bool(self.review_warnings)
+            bool(self.disclosure.review_category) or bool(self.review_warnings)
         )
+
+    @property
+    def auto_hidden(self):
+        """자동 검증이 막아 내려간 요약인지. 검수 화면이 사람 판단과 구분해 표시한다."""
+        return not self.is_published and self.hidden_by == self.HiddenBy.AUTO
+
+    @property
+    def regeneration_exhausted(self):
+        """재생성 상한을 다 써서 더는 자동으로 고칠 수 없는 요약인지.
+
+        사람 검수 큐에서 우선순위가 가장 높은 무리다 — 코드가 두 번 시도해 실패했다.
+        """
+        from .review_policy import MAX_REGENERATION_ATTEMPTS
+
+        return self.regeneration_count >= MAX_REGENERATION_ATTEMPTS
 
     @property
     def was_human_edited(self):
@@ -162,7 +217,7 @@ class DisclosureSummary(models.Model):
         경고가 흔해져 사용자가 무시하게 되고, 정작 수치가 틀린 요약을 놓친다.
         검수가 끝나면(is_reviewed=True) 배너를 걷는다 — 사람이 이미 확인했기 때문이다.
         """
-        from .summarizer import ACCURACY_WARNING_PREFIXES
+        from .verification import ACCURACY_WARNING_PREFIXES
 
         if self.is_reviewed:
             return []
@@ -179,7 +234,7 @@ class DisclosureSummary(models.Model):
         실제로 SK하이닉스 유상증자 요약이 39조 8,905억을 3조 9,891억으로 10배 잘못 적은
         사례가 있었고, 그 값을 짚어주는 것과 아닌 것은 확인 난이도가 다르다.
         """
-        from .summarizer import UNSUPPORTED_NUMBER_PREFIX, WARNING_LIST_SEPARATOR
+        from .verification import UNSUPPORTED_NUMBER_PREFIX, WARNING_LIST_SEPARATOR
 
         numbers = []
         for warning in self.accuracy_warnings:

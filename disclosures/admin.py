@@ -36,7 +36,8 @@ class DisclosureSummaryInline(admin.StackedInline):
     readonly_fields = (
         'one_line', 'easy_explanation', 'why_important', 'importance',
         'model_name', 'evidence', 'review_warnings',
-        'is_reviewed', 'is_published', 'hidden_reason',
+        'is_reviewed', 'is_published', 'hidden_by', 'hidden_reason',
+        'regeneration_count', 'regeneration_history',
         'edited_by_human', 'llm_original', 'reviewed_by', 'reviewed_at', 'created_at',
     )
 
@@ -49,12 +50,13 @@ class DisclosureSummaryInline(admin.StackedInline):
 class DisclosureAdmin(admin.ModelAdmin):
     list_display = (
         'rcept_no', 'company', 'disclosure_type', 'report_name', 'filed_at',
-        'selection_state', 'exclusion_reason', 'raw_fetched',
+        'selection_state', 'exclusion_reason', 'review_category', 'raw_fetched',
     )
     # 선별 상태·제외 사유로 걸러 봐야 "왜 이 공시는 요약이 없나"를 화면에서 확인할 수 있다.
+    # 검수 필수 유형도 같이 건다 — 정책을 고친 뒤 어떤 공시가 게이트에 걸렸는지 확인한다.
     list_filter = (
         'company', 'disclosure_type', 'filed_at',
-        'selection_state', 'exclusion_reason', 'raw_fetched',
+        'selection_state', 'exclusion_reason', 'review_category', 'raw_fetched',
     )
     search_fields = ('rcept_no', 'report_name')
     date_hierarchy = 'filed_at'
@@ -86,7 +88,13 @@ class NeedsReviewFilter(admin.SimpleListFilter):
     """검수 대기 큐를 그대로 뽑는 필터.
 
     `DisclosureSummary.needs_review`는 property라 list_filter에 못 올린다. 조건을 SQL로
-    한 번 더 적되 의미는 모델과 동일하게 유지한다(미검수 && (중요도 높음 || 경고 있음)).
+    한 번 더 적되 의미는 모델과 동일하게 유지한다
+    (미검수 && (공시 유형 게이트 || 경고 있음)).
+
+    게이트를 제목 정규식으로 판정하면서도 여기서 정규식을 쓰지 않는 이유는, 판정 결과를
+    `Disclosure.review_category` 에 미리 남기기 때문이다. SQL에 정규식을 옮겨 적으면
+    `normalize_title`(공백 제거·`[기재정정]` 태그 제거)까지 SQL로 재현해야 하고,
+    그 순간 두 구현이 갈린다.
     """
 
     title = '검수 필요'
@@ -97,7 +105,7 @@ class NeedsReviewFilter(admin.SimpleListFilter):
 
     def queryset(self, request, queryset):
         condition = Q(is_reviewed=False) & (
-            Q(importance=DisclosureSummary.Importance.HIGH) | ~Q(review_warnings=[])
+            ~Q(disclosure__review_category='') | ~Q(review_warnings=[])
         )
         if self.value() == 'yes':
             return queryset.filter(condition)
@@ -109,28 +117,30 @@ class NeedsReviewFilter(admin.SimpleListFilter):
 @admin.register(DisclosureSummary)
 class DisclosureSummaryAdmin(admin.ModelAdmin):
     list_display = (
-        'disclosure', 'importance', 'warning_count', 'needs_review',
-        'is_reviewed', 'is_published', 'edited_by_human', 'reviewed_by',
-        'dart_link', 'created_at',
+        'disclosure', 'review_category', 'importance', 'warning_count', 'needs_review',
+        'is_reviewed', 'is_published', 'hidden_by', 'regeneration_count',
+        'edited_by_human', 'reviewed_by', 'dart_link', 'created_at',
     )
     list_filter = (
-        'importance', 'is_reviewed', 'is_published', 'edited_by_human',
-        NeedsReviewFilter, HasWarningsFilter,
+        'disclosure__review_category', 'importance', 'is_reviewed', 'is_published',
+        'hidden_by', 'edited_by_human', NeedsReviewFilter, HasWarningsFilter,
     )
     search_fields = ('disclosure__report_name', 'one_line')
     # 본문 3필드는 검수자가 직접 고친다(4단계의 핵심). 자동 검증 산출물과 감사 기록은
     # 손으로 못 고치게 막는다 — 경고를 지워 문제를 덮거나 LLM 원본을 잃으면 안 된다.
     readonly_fields = (
-        'disclosure', 'dart_link', 'evidence', 'review_warnings',
+        'disclosure', 'dart_link', 'review_category', 'evidence', 'review_warnings',
+        'hidden_by', 'regeneration_count', 'regeneration_history',
         'edited_by_human', 'llm_original', 'reviewed_by', 'reviewed_at', 'created_at',
     )
     fieldsets = (
-        ('공시', {'fields': ('disclosure', 'dart_link')}),
+        ('공시', {'fields': ('disclosure', 'dart_link', 'review_category')}),
         ('요약 본문 (검수자가 직접 수정)', {
             'fields': ('one_line', 'easy_explanation', 'why_important', 'importance'),
         }),
         ('자동 검증', {'fields': ('review_warnings', 'evidence')}),
-        ('검수', {'fields': ('is_reviewed', 'is_published', 'hidden_reason')}),
+        ('검수', {'fields': ('is_reviewed', 'is_published', 'hidden_by', 'hidden_reason')}),
+        ('자동 재생성', {'fields': ('regeneration_count', 'regeneration_history')}),
         ('기록', {
             'fields': ('edited_by_human', 'llm_original', 'reviewed_by', 'reviewed_at',
                        'model_name', 'created_at'),
@@ -154,10 +164,18 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
         )
 
     def get_ordering(self, request):
-        """검수 대기 우선순위: 중요도 높음 → 경고 있음 → 접수일 최신.
+        """검수 대기 우선순위: 자동 미게시 → 검수 필수 유형 → 경고 있음 → 접수일 최신.
 
-        검수 큐가 56건 쌓여 있는 상태에서 기본 정렬이 생성 시각이면 담당자가 매번
+        검수 큐가 수십 건 쌓여 있는 상태에서 기본 정렬이 생성 시각이면 담당자가 매번
         "무엇부터 볼지"를 스스로 고르게 된다. 위험이 큰 것부터 위로 올린다.
+
+        맨 앞이 자동 미게시인 이유: 그 요약들은 **지금 사용자에게 안 보이고 있다.**
+        검수가 늦어지는 만큼 서비스에 구멍이 나 있으므로 가장 급하다.
+
+        1순위 정렬 키를 AI의 `importance` 에서 공시 유형 게이트로 바꿨다. 큐에 들어오는
+        기준이 유형으로 바뀌었는데 정렬만 중요도로 두면 큐 맨 위가 큐의 이유와 어긋난다.
+        (중요도는 사람이 훑을 때의 참고값으로 목록에 그대로 남아 있다 — 정렬을 틀리면
+        보는 순서가 바뀔 뿐이지만, 게이트를 틀리면 아예 안 보게 된다는 것이 차이다.)
 
         `ordering` 속성이나 주석(annotate) 대신 정렬식을 직접 돌려주는 이유:
         ModelAdmin.get_queryset()이 **주석을 붙일 틈 없이** 먼저 order_by를 적용하므로
@@ -165,8 +183,13 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
         """
         return (
             Case(
-                When(importance=DisclosureSummary.Importance.HIGH, then=0),
+                When(is_published=False,
+                     hidden_by=DisclosureSummary.HiddenBy.AUTO, then=0),
                 default=1, output_field=IntegerField(),
+            ).asc(),
+            Case(
+                When(disclosure__review_category='', then=1),
+                default=0, output_field=IntegerField(),
             ).asc(),
             Case(
                 When(review_warnings=[], then=1),
@@ -174,6 +197,17 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
             ).asc(),
             '-disclosure__filed_at',
         )
+
+    @admin.display(description='검수 필수 유형', ordering='disclosure__review_category')
+    def review_category(self, obj):
+        """게이트 사유. 필드는 Disclosure 쪽에 있으므로 표시용으로 끌어온다.
+
+        검수자가 "왜 이게 큐에 있나"를 목록에서 바로 알아야 한다. 경고가 하나도 없는데
+        큐에 있는 요약은 전부 이 열 때문에 들어온 것이다.
+        """
+        if not obj.disclosure_id or not obj.disclosure.review_category:
+            return '-'
+        return obj.disclosure.get_review_category_display()
 
     @admin.display(description='경고 수', ordering='review_warnings')
     def warning_count(self, obj):
@@ -239,6 +273,16 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
                 obj.reviewed_by = None
                 obj.reviewed_at = None
 
+            # 노출을 되살렸으면 미게시 기록도 함께 지운다.
+            # `restore_summaries` 액션이 셋을 한꺼번에 지우는 것과 같은 결과를 폼 저장에서도
+            # 내야 한다. hidden_by는 읽기 전용이라 검수자가 폼으로 지울 수 없어서, 여기서
+            # 지우지 않으면 **게시 중인 요약에 '미게시 주체: 자동 미게시'가 남는다.**
+            # 다음 검수자가 현재 상태를 오해하고, 같은 일을 하는 두 경로(액션·폼)가 다른
+            # 결과를 낸다.
+            if obj.is_published and not previous.is_published:
+                obj.hidden_by = ''
+                obj.hidden_reason = ''
+
         super().save_model(request, obj, form, change)
 
     @admin.action(description='선택한 요약을 검수 완료 처리')
@@ -261,9 +305,13 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
 
         사유는 이미 적혀 있으면 보존하고 비어 있을 때만 기본 문구를 채운다.
         """
-        updated = queryset.update(is_published=False)
         blank_filled = queryset.filter(hidden_reason='').update(
             hidden_reason=DEFAULT_HIDDEN_REASON
+        )
+        # hidden_by 를 함께 덮어써 "자동 미게시"였던 건이 사람 판단으로 바뀐 사실을 남긴다.
+        # 검수자가 자동 미게시 건을 확인하고 그대로 내려두기로 했다면 그건 사람의 결정이다.
+        updated = queryset.update(
+            is_published=False, hidden_by=DisclosureSummary.HiddenBy.HUMAN
         )
         self.message_user(
             request,
@@ -275,5 +323,5 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
         """숨김 해제. 사유도 함께 지운다 — 노출 중인 요약에 숨김 사유가 남아 있으면
         다음 검수자가 현재 상태를 오해한다.
         """
-        updated = queryset.update(is_published=True, hidden_reason='')
+        updated = queryset.update(is_published=True, hidden_reason='', hidden_by='')
         self.message_user(request, f'{updated}건의 노출을 복구했습니다.')

@@ -10,12 +10,20 @@
   python manage.py summarize_disclosures --type 거래소공시    # 특정 유형만
   python manage.py summarize_disclosures                    # 대상 전체
 
+검증에 실패한(수치 경고가 붙은) 요약은 **자동으로 미게시 상태로 저장**한다. 검증 결과가
+노출에 아무 영향을 주지 않던 탓에, 39조를 3조로 적은 요약이 경고를 단 채 웹에 그대로
+떠 있던 일이 있었다. 무엇이 게시를 막는지는 verification.blocking_warnings 가 정한다.
+
 추후 Celery 태스크로 옮길 때는 _summarize_one()을 그대로 태스크 본문으로 쓰면 된다.
 """
+import inspect
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from django.utils import timezone
 
 from disclosures.models import Disclosure, DisclosureSummary
+from disclosures.review_policy import MAX_REGENERATION_ATTEMPTS, should_regenerate
 from disclosures.selection import SelectionState
 from disclosures.summarizer import (
     DEFAULT_MODEL,
@@ -25,6 +33,32 @@ from disclosures.summarizer import (
     estimate_summary_cost,
     summarize_disclosure,
 )
+from disclosures.verification import AUTO_HIDDEN_REASON, blocking_warnings
+
+#: 재생성을 요청할 때 summarize_disclosure 에 넘길 키워드 이름.
+#: 이 키워드가 시그니처에 있어야 재생성 경로가 살아난다(아래 _regeneration_supported 참고).
+CORRECTION_KWARG = 'correction_warnings'
+
+#: 직전 요약을 되돌려 줄 키워드. summarizer 문서상 **함께 넘기는 것이 강하게 권장**된다 —
+#: 없으면 모델이 "인용 근거 없는 수치: 3조 9,891억"이라는 지적을 받고도 자기가 그 값을
+#: 어디에 썼는지 몰라 교정이 아니라 재작성을 한다. 있으면 넘기고 없으면 생략한다.
+PREVIOUS_KWARG = 'correction_previous'
+
+
+def _regeneration_supported():
+    """summarizer 가 교정 재생성을 받을 준비가 됐는지.
+
+    `summarize_disclosure` 시그니처에 CORRECTION_KWARG 가 있는지만 본다.
+    try/except TypeError 로 떠보지 않는 이유는, 그러면 **LLM을 이미 한 번 부른 뒤에**
+    실패를 알게 되어 돈이 나가기 때문이다. 호출 전에 값싸게 판정한다.
+    """
+    parameters = inspect.signature(summarize_disclosure).parameters
+    return CORRECTION_KWARG in parameters
+
+
+def _previous_supported():
+    """직전 요약을 되먹일 수 있는지. 없으면 경고만 넘기고 재생성은 그대로 진행한다."""
+    return PREVIOUS_KWARG in inspect.signature(summarize_disclosure).parameters
 
 
 class Command(BaseCommand):
@@ -56,6 +90,12 @@ class Command(BaseCommand):
             help='이미 요약이 있어도 다시 생성한다 (기존 요약을 덮어씀). '
                  '비용이 다시 발생하므로 프롬프트를 고쳤을 때만 사용한다',
         )
+        parser.add_argument(
+            '--regenerate', action='store_true',
+            help=f'검증에 실패한 요약을 경고를 되먹여 최대 {MAX_REGENERATION_ATTEMPTS}회 '
+                 '다시 생성한다. 건당 LLM을 한 번 더 부르므로 비용이 늘어난다. '
+                 '기본값은 꺼짐 — 비용이 드는 동작은 명시적으로 켤 때만 돈다',
+        )
 
     def handle(self, *args, **options):
         if options['limit'] is not None and options['limit'] < 1:
@@ -76,7 +116,14 @@ class Command(BaseCommand):
             self._report_estimate(targets, model)
             return
 
-        self._run(targets, model, options['resummarize'])
+        if options['regenerate'] and not _regeneration_supported():
+            self.stdout.write(self.style.WARNING(
+                '--regenerate를 켰지만 summarizer가 아직 교정 재생성을 지원하지 않습니다'
+                f'(summarize_disclosure에 {CORRECTION_KWARG} 키워드 없음). '
+                '재생성 없이 진행합니다.'
+            ))
+
+        self._run(targets, model, options['resummarize'], options['regenerate'])
 
     # --- 대상 선정 -------------------------------------------------------
 
@@ -135,17 +182,18 @@ class Command(BaseCommand):
 
     # --- 실행 -----------------------------------------------------------
 
-    def _run(self, targets, model, resummarize):
+    def _run(self, targets, model, resummarize, regenerate=False):
         ok = failed = 0
         cost = 0.0
         tokens_in = tokens_out = cached = 0
         flagged = []
+        hidden = []
         failures = []
 
         for idx, d in enumerate(targets, start=1):
             label = f'[{idx}/{len(targets)}] {d.company.name} {d.report_name[:40]}'
             try:
-                result = self._summarize_one(d, model, resummarize)
+                result = self._summarize_one(d, model, resummarize, regenerate)
             except SummarizerError as exc:
                 # 건별 실패는 예외로 죽지 않고 기록 후 계속 진행한다.
                 failed += 1
@@ -165,18 +213,27 @@ class Command(BaseCommand):
             ]
             if warn:
                 flagged.append(d.rcept_no)
+            if result.get('auto_hidden'):
+                hidden.append(d.rcept_no)
             mark = ' ⚠' if warn else ''
+            mark += ' [미게시]' if result.get('auto_hidden') else ''
+            retried = result.get('regeneration_count', 0)
+            mark += f' [재생성 {retried}회]' if retried else ''
             self.stdout.write(
                 f'{label} → {result["importance"]}{mark} '
                 f'(입력 {usage["input_tokens"]:,} / 출력 {usage["output_tokens"]:,} / '
                 f'${result["cost_usd"]:.4f})'
             )
 
-        self._report_run(ok, failed, cost, tokens_in, tokens_out, cached, flagged, failures)
+        self._report_run(ok, failed, cost, tokens_in, tokens_out, cached, flagged,
+                         hidden, failures)
 
-    def _summarize_one(self, disclosure, model, resummarize):
-        """공시 1건을 요약해 저장하고 결과 dict를 반환한다."""
-        result = summarize_disclosure(
+    def _summarize_one(self, disclosure, model, resummarize, regenerate=False):
+        """공시 1건을 요약해 저장하고 결과 dict를 반환한다.
+
+        흐름: 생성 → 검증 → (막히면) 재생성 1회 → 그래도 막히면 미게시로 저장.
+        """
+        call = dict(
             company_name=disclosure.company.name,
             report_name=disclosure.report_name,
             filed_at=disclosure.filed_at,
@@ -185,10 +242,21 @@ class Command(BaseCommand):
             disclosure_type=disclosure.disclosure_type,
             model=model,
         )
+        result = summarize_disclosure(**call)
 
-        # 경고 문구는 summarizer.build_review_warnings 가 단일 출처다
+        # 경고 문구는 build_review_warnings 가 단일 출처다
         # (재검증 명령과 판정이 어긋나지 않게 한다).
         warnings = build_review_warnings(result)
+        blocking = blocking_warnings(warnings)
+
+        history = []
+        attempts = 0
+        total_cost = result['cost_usd']
+        if regenerate:
+            result, warnings, blocking, history, attempts, extra_cost = self._regenerate(
+                call, result, warnings, blocking,
+            )
+            total_cost += extra_cost
 
         fields = {
             'one_line': result['one_line'],
@@ -198,9 +266,16 @@ class Command(BaseCommand):
             'model_name': result['model_name'][:50],
             'evidence': result.get('evidence', []),
             'review_warnings': warnings,
-            # 중요도 '높음'은 사람 검수 게이트를 거친다(PLAN.md 5.3).
-            # 경고가 붙은 요약도 중요도와 무관하게 검수 대상이다.
+            # 검수 게이트는 공시 유형(Disclosure.review_category)과 경고가 정한다.
+            # 요약을 만드는 쪽에서 검수 여부를 미리 정하지 않는다.
             'is_reviewed': False,
+            # 검증에 막힌 요약은 **처음부터 비공개로** 저장한다. 사람이 확인해 풀기 전까지
+            # 웹에 내보내지 않는다 — 검증 결과가 노출에 영향을 주게 만드는 지점이다.
+            'is_published': not blocking,
+            'hidden_by': DisclosureSummary.HiddenBy.AUTO if blocking else '',
+            'hidden_reason': AUTO_HIDDEN_REASON if blocking else '',
+            'regeneration_count': attempts,
+            'regeneration_history': history,
         }
         with transaction.atomic():
             if resummarize:
@@ -209,11 +284,86 @@ class Command(BaseCommand):
                 )
             else:
                 DisclosureSummary.objects.create(disclosure=disclosure, **fields)
+
+        result = dict(result)
+        result['auto_hidden'] = bool(blocking)
+        result['regeneration_count'] = attempts
+        result['cost_usd'] = total_cost
         return result
+
+    # --- 재생성 -----------------------------------------------------------
+
+    def _regenerate(self, call, result, warnings, blocking):
+        """검증에 막힌 요약을 경고를 되먹여 다시 생성한다.
+
+        반환: (결과, 경고, 막는 경고, 이력, 시도 횟수, 추가 비용)
+
+        ## 상한이 이 함수의 존재 이유다
+
+        재생성 여부는 검증 결과가 정하는데, 검증은 계속 실패할 수 있다. 상한이 없으면
+        한 건이 LLM을 무한히 부른다. 그래서 `review_policy.should_regenerate` 가
+        **매 회차마다** 상한을 다시 확인하고, 이 루프는 그 판정에만 따른다.
+        상한 판정을 여기 인라인으로 적지 않은 이유는, 호출부가 늘어날 때 한 곳만
+        빠뜨려도 비용이 새기 때문이다.
+
+        ## ai-prompt 와의 접합면
+
+        교정 프롬프트는 ai-prompt 소유다(`summarizer.py`). 이 함수는 `summarize_disclosure`
+        에 `correction_warnings=[...]` 키워드를 넘기는 것까지만 한다. 원 프롬프트에 경고를
+        덧붙이든 별도 교정 프롬프트를 쓰든, 그 선택은 summarizer 안에서 하면 되고
+        여기는 바뀌지 않는다.
+
+        그 키워드가 아직 없으면 재생성을 **건너뛴다**. 없는 기능을 흉내 내 빈 요약을
+        만들면 비용만 쓰고 결과가 나빠진다.
+        """
+        history = []
+        attempts = 0
+        extra_cost = 0.0
+        if not _regeneration_supported():
+            return result, warnings, blocking, history, attempts, extra_cost
+
+        while should_regenerate(blocking, attempts):
+            attempts += 1
+            entry = {
+                'attempt': attempts,
+                'at': timezone.now().isoformat(),
+                'reason': 'blocking_warnings',
+                'warnings': list(blocking),
+            }
+            correction = {CORRECTION_KWARG: blocking}
+            if _previous_supported():
+                correction[PREVIOUS_KWARG] = result
+            try:
+                retried = summarize_disclosure(**call, **correction)
+            except SummarizerError as exc:
+                # 재생성 실패는 최초 요약까지 버릴 이유가 못 된다. 이력만 남기고
+                # 처음 결과를 그대로 쓴다(미게시 상태로 사람에게 넘어간다).
+                entry['error'] = f'{type(exc).__name__}: {exc}'
+                history.append(entry)
+                break
+
+            extra_cost += retried['cost_usd']
+            retried_warnings = build_review_warnings(retried)
+            retried_blocking = blocking_warnings(retried_warnings)
+            entry['model'] = retried.get('model_name', '')
+            entry['cost_usd'] = retried['cost_usd']
+            entry['resolved'] = not retried_blocking
+            entry['remaining_warnings'] = list(retried_blocking)
+            history.append(entry)
+
+            # 교정 결과가 더 나쁘면 되돌린다 — 재생성이 요약을 망가뜨리면 안 된다.
+            if len(retried_blocking) > len(blocking):
+                entry['rolled_back'] = True
+                break
+
+            result, warnings, blocking = retried, retried_warnings, retried_blocking
+
+        return result, warnings, blocking, history, attempts, extra_cost
 
     # --- 보고 -----------------------------------------------------------
 
-    def _report_run(self, ok, failed, cost, tokens_in, tokens_out, cached, flagged, failures):
+    def _report_run(self, ok, failed, cost, tokens_in, tokens_out, cached, flagged,
+                    hidden, failures):
         self.stdout.write('')
         if failures:
             self.stdout.write(self.style.ERROR(f'실패 {len(failures)}건:'))
@@ -223,6 +373,11 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f'자동 검증 경고 {len(flagged)}건 — admin에서 검수 필요: '
                 + ', '.join(flagged[:10]) + (' 외' if len(flagged) > 10 else '')
+            ))
+        if hidden:
+            self.stdout.write(self.style.ERROR(
+                f'자동 미게시 {len(hidden)}건 — 검증 실패로 웹에 노출하지 않습니다: '
+                + ', '.join(hidden[:10]) + (' 외' if len(hidden) > 10 else '')
             ))
         cache_pct = (cached / tokens_in * 100) if tokens_in else 0
         self.stdout.write(self.style.SUCCESS(
