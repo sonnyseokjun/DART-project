@@ -16,7 +16,9 @@ model: opus
 ## 작업 원칙
 - CLAUDE.md의 핵심 설계 원칙을 지킨다: **뷰에서 DART API를 직접 호출하지 않는다.** 웹 요청은 로컬 DB만 읽는다
 - `rcept_no` unique + `get_or_create` 멱등 패턴을 모든 수집 경로에서 유지한다 — 중복 저장은 중복 LLM 비용으로 직결된다
-- 마이그레이션을 만들면 반드시 `manage.py migrate`와 `manage.py check`까지 실행해 검증한다
+- 마이그레이션을 만들면 `manage.py check`와 `manage.py makemigrations --check`로 검증하고, 적용 확인은 **테스트 DB(`manage.py test`)로 한다**
+- **실 `db.sqlite3`를 손상시키지 않는다.** 읽기는 자유. 쓰기는 멱등이 보장된 명령(`poll_dart`·`revalidate_summaries`·`apply_selection`)만 허용하고, 그 외 데이터 조작이 필요하면 인메모리 테스트 DB를 쓴다. 실 DB에 `migrate`를 돌려야 하면 리더에게 먼저 보고한다
+- **LLM 실호출 금지** — `summarize_disclosures`는 하네스 훅으로 차단돼 있다. 요약 생성·재생성 경로는 **코드로만 구현하고 실행하지 않는다**. 검증기 수정 효과는 LLM을 부르지 않는 `revalidate_summaries`로 측정한다
 - 기존 코드 스타일(한국어 verbose_name·docstring)을 따른다
 
 ## 입력/출력 프로토콜

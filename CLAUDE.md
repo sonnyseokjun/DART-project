@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 
-DART 전자공시를 AI가 일반인 친화적으로 요약해 보여주는 Django 웹서비스. **`PLAN.md`가 전체 기획의 단일 출처**이며, 아키텍처 결정(스키마, 폴링 전략, 확장 설계, 로드맵)은 반드시 PLAN.md와 일치시켜야 한다. 현재 로드맵 1단계(데이터 수집) 진행 중이며, LLM 요약(2단계)·웹 화면(3단계)·Celery 비동기 처리는 아직 미구현이다.
+DART 전자공시를 AI가 일반인 친화적으로 요약해 보여주는 Django 웹서비스. **`PLAN.md`가 전체 기획의 단일 출처**이며, 아키텍처 결정(스키마, 폴링 전략, 확장 설계, 로드맵)은 반드시 PLAN.md와 일치시켜야 한다.
+
+**진행 상황 (PLAN.md 9장 기준):** 0단계 셋업 · 1단계 수집 · 2단계 AI 요약 · 3단계 웹 조회 · 4단계 검수 워크플로우 완료(PR #9까지 머지). 현재 **요약 파이프라인 자동 교정** 작업 중(2·4단계 심화) — 단위 환산을 코드로 옮기고, 검증 실패를 자동 미게시로 연결해 사람 검수 건수를 줄이는 것이 목표. **미착수:** 배포(5단계, Docker·AWS), 준실시간화(6단계), Celery/Redis 비동기 처리 — 수집·요약은 아직 관리 명령을 수동 실행한다.
 
 ## 명령어
 
@@ -18,7 +20,14 @@ DART 전자공시를 AI가 일반인 친화적으로 요약해 보여주는 Djan
 .\venv\Scripts\python.exe manage.py seed_companies   # 반도체 10개 기업 시드 + corpCode.xml로 corp_code 매핑
 .\venv\Scripts\python.exe manage.py poll_dart --days 3  # DART 공시 폴링·적재 (멱등)
 .\venv\Scripts\python.exe manage.py poll_dart --bgn 20260101 --end 20260630  # 임의 구간 백필 (89일 창으로 자동 분할)
+.\venv\Scripts\python.exe manage.py apply_selection --dry-run   # 요약 대상 선별 정책 적용
+.\venv\Scripts\python.exe manage.py fetch_documents --limit 5   # 선별 대상 원문 확보·전처리 (원문은 크다, --limit 먼저)
+.\venv\Scripts\python.exe manage.py revalidate_summaries        # 저장된 요약 재검증 (LLM 미호출, 멱등)
 ```
+
+파이프라인 순서: `poll_dart` → `apply_selection` → `fetch_documents` → `summarize_disclosures` → (`revalidate_summaries`).
+
+**⚠ `summarize_disclosures`는 비용이 발생하는 유일한 명령이며, 에이전트 실행이 훅으로 차단된다** (`.claude/hooks/block_llm_calls.py`). 실행은 사용자가 직접 판단해 수행한다. 요약 품질·검증기 수정 효과는 LLM을 부르지 않는 `revalidate_summaries`로 측정한다.
 
 `DART_API_KEY`는 `.env`에서 로드된다(`settings.DART_API_KEY`). 키가 없으면 DART 호출 명령은 `DartApiError`로 실패한다.
 
@@ -35,12 +44,19 @@ poll_dart (관리 명령, 추후 Celery 태스크로 이전 예정)
   → dart.py: list.json을 corp_code 없이 날짜 범위로 전체 조회 (페이지네이션)
   → 로컬에서 추적 기업(Company.is_active)만 필터링   ← 기업 수가 늘어도 호출 수 불변 (PLAN.md 12.2)
   → Disclosure.get_or_create(rcept_no=...)          ← rcept_no unique가 멱등성·중복 요약 방지의 근간
-  → (미구현) document.xml 원문 확보 → LLM 요약 → DisclosureSummary
+apply_selection  → 요약 대상 선별 (selection.py)
+fetch_documents  → document.xml 원문 확보·전처리 (대형 서식은 KEY_SECTIONS_BY_TYPE로 섹션 추출)
+summarize_disclosures → LLM 요약 → DisclosureSummary   ← 비용 발생 지점, 공시당 1회
+revalidate_summaries  → 원문 대조 재검증 (LLM 미호출)
 ```
 
 ### 모델 체인 (disclosures/models.py)
 
-`Sector → Company → Disclosure → DisclosureSummary(OneToOne)`. 요약은 공시당 정확히 1회 생성 후 영구 재사용하는 것이 LLM 비용 통제의 핵심(PLAN.md 11). `DisclosureSummary.is_reviewed`는 중요도 '높음' 공시의 사람 검수 게이트(Django admin에서 수행)를 위한 필드다.
+`Sector → Company → Disclosure → DisclosureSummary(OneToOne)`. 요약은 공시당 정확히 1회 생성 후 영구 재사용하는 것이 LLM 비용 통제의 핵심(PLAN.md 11). 요약을 **삭제하지 않고 감추는**(`is_published`/`hidden_reason`) 이유도 같다 — 지우면 재수집 시 LLM을 다시 부른다.
+
+검수는 Django admin에서 수행하며, `templates/admin/disclosures/disclosuresummary/`의 `change_form.html`·`_review_panel.html`이 검수 패널을 얹는다. `is_reviewed`가 게이트이고, `review_warnings`(자동 검증 경고)·`llm_original`(사람 수정 전 LLM 원본 스냅샷)이 검수 판단 근거다.
+
+**숫자 표기 주의:** 한국어 수 단위(만·억·조)는 4자리로 끊고 콤마는 3자리로 끊는다. 이 어긋남이 실제 요약 오류의 원인이었으므로, **단위 환산은 LLM이 아니라 코드가 한다**.
 
 ### DART 클라이언트 (disclosures/dart.py)
 
@@ -56,6 +72,11 @@ Django 독립적인 얇은 함수 모음. 오류는 `DartApiError(status, messag
 | 날짜 | 변경 내용 | 대상 | 사유 |
 |------|----------|------|------|
 | 2026-07-23 | 초기 구성 (에이전트 5 + 스킬 3) | 전체 | PLAN.md 8장 파이프라인 패턴 |
+| 2026-07-27 | DART 실측 지식 축적 (인코딩·토큰량·89일 제한) | skills/dart-api-know-how | 2단계 실행 중 문서만으로는 모르는 함정 발견 |
+| 2026-07-27 | 권한 정책 추가 (`rm`·`git push`·`.env` deny) | settings.json | 에이전트 사고 방지 |
+| 2026-08-14 | **하네스 감사 및 4개 항목 보완** | settings.json · hooks · agents 3 · skills 2 · CLAUDE.md | 아래 참조 |
+
+2026-08-14 감사에서 확인된 것 — 3·4단계 실행 중에는 하네스가 한 번도 갱신되지 않았고, 그 사이 절대 제약·파일 소유권·Phase 구조가 매 실행 `_workspace/00_input.md`에 수작업으로 재작성되고 있었다. 반복되는 규칙을 하네스로 승격하고, 비용 발생 경로(`summarize_disclosures`)에 실행 훅 가드를 추가했다.
 
 ## 컨벤션
 
