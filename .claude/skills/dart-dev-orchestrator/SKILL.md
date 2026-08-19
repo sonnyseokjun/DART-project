@@ -16,13 +16,36 @@ DART 공시 쉬운 요약 웹서비스의 개발 에이전트 팀을 조율하�
 
 | 팀원 | 에이전트 타입 | 역할 | 참조 스킬 | 출력 |
 |------|-------------|------|----------|------|
-| analyst | analyst (커스텀) | DART API 스펙·공시 구조 분석 | dart-api-know-how | `_workspace/{phase}_analyst_*.md` |
-| backend | backend (커스텀) | Django 모델·수집·API 구현 | dart-api-know-how | 코드 + `_workspace/{phase}_backend_*.md` |
-| ai-prompt | ai-prompt (커스텀) | 요약 프롬프트·출력 스키마 | summary-standards | 코드 + `_workspace/{phase}_ai-prompt_*.md` |
-| frontend | frontend (커스텀) | 템플릿·카드 UI | — | 코드 + `_workspace/{phase}_frontend_*.md` |
-| qa | qa (커스텀) | 정확성·정합성 검증 | summary-standards | `_workspace/{phase}_qa_*.md` |
+| analyst | analyst (커스텀) | DART API 스펙·공시 구조 분석 | dart-api-know-how | `_workspace/1*_analyst_*.md` |
+| backend | backend (커스텀) | Django 모델·수집·API 구현 | dart-api-know-how | 코드 + `_workspace/2*_backend_*.md` |
+| ai-prompt | ai-prompt (커스텀) | 요약 프롬프트·출력 스키마 | summary-standards | 코드 + `_workspace/2*_ai-prompt_*.md` |
+| frontend | frontend (커스텀) | 템플릿·카드 UI | — | 코드 + `_workspace/2*_frontend_*.md` |
+| qa | qa (커스텀) | 정확성·정합성 검증 | summary-standards | `_workspace/3*_qa_*.md` |
 
 모든 Agent 호출에 `model: "opus"`를 명시한다.
+
+## 산출물 번호 규칙
+
+`_workspace/{번호}_{에이전트}_{주제}.md` — 번호 앞자리가 Phase다. 파일 목록만 봐도 실행 흐름이 읽혀야 한다.
+
+| 번호대 | Phase | 예시 |
+|---|---|---|
+| `00` | 리더의 입력 명세 | `00_input.md` |
+| `1*` | 3-A 분석 | `10_analyst_number_triage.md` |
+| `2*` | 3-B/3-C 구현 | `21_backend_units.md` · `23_ai-prompt_no_arithmetic.md` |
+| `3*` | 4 검증 | `30_qa_verification.md` |
+
+## 절대 제약 (매 실행 공통)
+
+입력 명세에 매번 다시 적지 않는다. 이건 상시 규칙이다.
+
+1. **LLM 실호출 금지** — `summarize_disclosures`는 훅(`.claude/hooks/block_llm_calls.py`)으로 차단. 사용자 비용이 나가는 유일한 경로이고 실행 시점은 사용자가 정한다. 필요하면 리더에게 보고만 한다. LLM을 부르지 않는 `revalidate_summaries`는 자유롭게 쓴다
+2. **`git push` 금지 · `.env` 수정 금지 · `rm` 금지** (settings.json deny). **커밋도 리더가 한다**
+3. **실 `db.sqlite3`를 손상시키지 않는다** — 읽기는 자유, 쓰기는 멱등 명령만. 그 외는 인메모리 테스트 DB
+4. **뷰(사용자 요청 경로)에서 DART·LLM을 호출하지 않는다** (PLAN.md 12.1, 기존 테스트로 고정)
+5. 모델 필드·admin에 한국어 `verbose_name`. 주석·docstring도 한국어
+
+입력 명세(`00_input.md`)에는 **이번 작업 고유의 내용만** 적는다 — 왜 하는가, 확정된 진단, 목표, 에이전트별 완료 조건, 성공 측정 지표.
 
 ## 워크플로우
 
@@ -39,16 +62,44 @@ DART 공시 쉬운 요약 웹서비스의 개발 에이전트 팀을 조율하�
 2. `_workspace/` 생성, 요청 요약을 `_workspace/00_input.md`에 저장
 3. 팀 규모 결정 — 이번 요청에 불필요한 에이전트는 팀에서 제외한다 (예: 수집 파이프라인 작업에 frontend 불필요)
 
-### Phase 2: 팀 구성
+### Phase 2: 팀 구성 + 파일 소유권 확정
 1. `TeamCreate(team_name: "dart-dev", members: [필요 에이전트만, 각 model: "opus"])`
-2. `TaskCreate`로 작업 등록 — 의존 관계 명시:
-   - 분석 작업(analyst) → 구현 작업(backend/ai-prompt/frontend, `depends_on` 분석) → 검증 작업(qa, 모듈별)
+2. **파일 소유권 표를 확정해 `_workspace/00_input.md`에 기록한다.** 병렬 구현에서 같은 파일을 두 에이전트가 동시에 고치면 작업이 서로를 덮어쓴다. 남의 파일이 필요하면 소유자에게 SendMessage로 요청한다
+
+   기본 소유권 (이번 작업 범위에 맞게 조정):
+
+   | 에이전트 | 소유 파일 |
+   |---|---|
+   | analyst | `_workspace/1*_analyst_*.md` (**코드 수정 없음, 읽기 전용 조사**) |
+   | backend | `models.py` · `admin.py` · `views.py` · `dart.py` · `verification.py` · `selection.py` · `migrations/**` · `management/commands/**` |
+   | ai-prompt | `summarizer.py` (프롬프트·스키마·클라이언트) |
+   | frontend | `templates/**` · `static/**` · `templatetags/**` (admin 템플릿 확장 포함) |
+   | qa | `tests.py` |
+
+   **한 파일을 두 에이전트가 필요로 하면 파일을 먼저 쪼갠다** — 소유자가 동작 변경 없는 순수 이동으로 분리하고(재수출로 하위 호환 유지), 그 뒤에 넘긴다. 이 분리는 Phase 3-B의 선행 단독 작업으로 잡는다
+
+3. `TaskCreate`로 작업 등록 — 의존 관계 명시:
+   - 분석(analyst) → 선행 단독 작업 → 병렬 구현(`depends_on`) → 검증(qa, 모듈별)
    - 팀원당 3~6개 작업 유지
 
 ### Phase 3: 분석 → 구현 (팀원 자체 조율)
-- analyst가 명세를 확정하면 backend·ai-prompt·frontend가 병렬 구현
+
+작업 규모에 따라 A→C 3단, 또는 선행 리팩터가 필요하면 A→B→C 4단으로 운영한다.
+
+**3-A. 분석 (analyst 단독 선행)**
+- 이후 모든 작업의 기준선을 만든다. 실데이터 조사가 필요하면 전수로 하고, 각 건의 판정 근거를 남긴다
+- 결론만 적힌 보고서는 쓸모없다 — **판단이 갈렸던 지점과 그 이유**를 반드시 남긴다
+
+**3-B. 선행 단독 작업 (필요 시)**
+- 소유권이 겹치는 파일의 분리, 공용 모듈 신설 등 **다른 에이전트가 기다려야 하는 작업**을 한 명이 먼저 끝낸다
+- 리팩터는 **동작 변경 0**이어야 한다 — 기존 테스트가 그대로 통과하는지로 확인한다
+- 완료 즉시 대기 중인 에이전트에게 SendMessage
+
+**3-C. 병렬 구현**
+- backend·ai-prompt·frontend가 각자 소유 파일에서 병렬 작업
 - 통신 규칙은 각 에이전트 정의의 "팀 통신 프로토콜"을 따른다. 핵심: 인터페이스(스키마·컨텍스트 shape) 변경은 소비자에게 즉시 SendMessage
 - 리더는 TaskGet으로 진행 모니터링, 막힌 팀원에게 개입
+- **불필요한 작업은 하지 않는 것이 정답이다** — 담당 영역에 변경이 필요 없으면 "불필요하다"고 보고하고 손대지 않는다
 
 ### Phase 4: 점진적 QA
 - 각 구현 에이전트는 모듈 완성 즉시 qa에게 검증을 요청한다 (전체 완성 대기 금지)

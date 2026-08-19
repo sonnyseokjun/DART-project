@@ -52,7 +52,15 @@
 .rp-badge-todo { background: #f0f0f0; color: #666; border: 1px dashed #bbb; }
 .rp-badge-done { background: var(--rp-ok-bg); color: var(--rp-ok); }
 .rp-badge-human { background: var(--rp-ok-bg); color: var(--rp-ok); border: 1px solid #9ed3b6; }
+/* 미게시 배지 두 종은 **한눈에 달라야** 한다. 검수자가 할 일이 정반대이기 때문이다.
+ * 새 색을 늘리지 않고 기존 두 톤의 역할을 나눠 쓴다:
+ *   자동 미게시 = 경고색을 채운 배지 → "지금 구멍이 나 있다, 손이 필요하다"
+ *   사람이 내림 = 무채색 배지      → "이미 결론이 난 상태" */
 .rp-badge-hidden { background: #3a3f47; color: #fff; }
+.rp-badge-auto { background: var(--rp-warn); color: #fff; }
+.rp-badge-exhausted {
+  background: var(--rp-warn-bg); color: var(--rp-warn); border: 1px solid #e6a9a2;
+}
 .rp-badge-ok { background: var(--rp-ok-bg); color: var(--rp-ok); }
 .rp-badge-bad { background: var(--rp-warn-bg); color: var(--rp-warn); }
 
@@ -62,6 +70,41 @@
   color: #7a2e26; font-size: 12.5px;
 }
 .rp-warnings li { margin: 2px 0; }
+
+/* --- 자동 미게시 · 재생성 이력 ------------------------------------------ */
+
+/* .rp-flags(지목된 수치)와 같은 형태를 의도적으로 재사용한다. 검수자가 "붉은 왼쪽 테두리
+ * 블록 = 지금 손봐야 할 것"이라는 한 가지 규칙만 익히면 되게 한다. */
+.rp-auto {
+  margin-top: 12px; padding: 12px 14px;
+  background: var(--rp-warn-bg); border: 1px solid #f0b8b2;
+  border-left: 4px solid var(--rp-warn); border-radius: 8px;
+}
+.rp-auto-title { margin: 0 0 6px; font-weight: 700; color: var(--rp-warn); }
+.rp-auto-body { margin: 0; color: #7a2e26; }
+.rp-auto-note { margin: 6px 0 0; font-size: 12px; color: #7a2e26; }
+.rp-auto-help { margin: 8px 0 0; font-size: 12px; color: #7a2e26; }
+
+.rp-regen {
+  margin-top: 12px; padding: 10px 14px;
+  border: 1px solid var(--border-color, #e2e5ea); border-radius: 8px;
+  background: var(--darkened-bg, #fafbfc);
+}
+.rp-regen-summary { cursor: pointer; font-weight: 700; }
+.rp-regen-list { margin: 10px 0 0; padding-left: 0; list-style: none; }
+.rp-regen-item {
+  padding: 10px 12px; border: 1px solid var(--border-color, #e2e5ea);
+  border-radius: 6px; background: var(--body-bg, #fff);
+}
+.rp-regen-item + .rp-regen-item { margin-top: 8px; }
+.rp-regen-head { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.rp-regen-label {
+  margin: 8px 0 2px; font-size: 12px; font-weight: 700;
+  color: var(--body-quiet-color, #5b6472);
+}
+.rp-regen-warnings { margin: 0; padding-left: 20px; font-size: 12.5px; }
+.rp-regen-warnings li { overflow-wrap: anywhere; }
+.rp-regen-error { margin: 8px 0 0; font-size: 12.5px; color: var(--rp-warn); }
 
 /* --- 지목된 수치(검수 시작점) ------------------------------------------- */
 

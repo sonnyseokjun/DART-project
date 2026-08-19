@@ -27,6 +27,36 @@ import re
 
 from django.conf import settings
 
+from .units import format_korean_amount, format_korean_usd, format_korean_won
+
+# 검증 로직은 disclosures/verification.py 로 분리했다(소유권 분리, 동작은 동일).
+# 아래 이름들은 **하위 호환을 위한 재수출**이다 — `from .summarizer import validate_summary`
+# 같은 기존 import 경로가 그대로 동작해야 한다. 새 코드는 verification 에서 직접 가져오라.
+from .verification import (  # noqa: F401
+    ACCURACY_WARNING_PREFIXES,
+    APPROX_TOLERANCE,
+    EXPLANATION_MAX_SENTENCES,
+    EXPLANATION_MIN_SENTENCES,
+    MIN_FRAGMENT_CHARS,
+    ONE_LINE_MAX_CHARS,
+    ORDINAL_MAX,
+    SCALE_TOLERANCE,
+    SENTENCE_COUNT_PREFIX,
+    UNSUPPORTED_NUMBER_PREFIX,
+    UNVERIFIED_QUOTE_PREFIX,
+    WARNING_LIST_SEPARATOR,
+    _value_supported,
+    build_review_warnings,
+    count_sentences,
+    extract_comparable_numbers,
+    extract_numbers,
+    is_reference_number,
+    quote_fragments,
+    validate_summary,
+    verify_evidence,
+    verify_quote,
+)
+
 # ---------------------------------------------------------------------------
 # 모델·단가
 # ---------------------------------------------------------------------------
@@ -69,13 +99,24 @@ MAX_INPUT_TOKENS = 300_000
 MAX_RETRIES = 2
 
 #: 프롬프트 버전. 시스템 프롬프트를 고치면 반드시 올린다(캐시 키·재현성).
-#: v2: 인용문이 원문의 연속된 한 구간이어야 한다는 규칙을 §4에 추가.
-PROMPT_VERSION = 'v2'
+#: v2: 인용문이 원문의 연속된 한 구간이어야 한다는 규칙을 추가.
+#: v3: **단위 환산·파생 계산 금지**(§2 신설). v2의 "금액은 읽기 쉬운 단위로 환산해
+#:     병기한다"가 10배 오류 3건의 직접 원인이었다. 읽기 쉬운 표기는 코드가 만든다
+#:     (`annotate_amounts`). 이 변경으로 §2 이하 절 번호가 하나씩 밀렸다.
+PROMPT_VERSION = 'v3'
 
-#: 길이 제약. DisclosureSummary.one_line 의 max_length=200 과 일치해야 한다.
-ONE_LINE_MAX_CHARS = 200
-EXPLANATION_MIN_SENTENCES = 3
-EXPLANATION_MAX_SENTENCES = 5
+#: 재생성 횟수 상한은 여기 두지 않는다. `review_policy.MAX_REGENERATION_ATTEMPTS` 가
+#: 유일한 출처이고 `summarize_disclosures` 의 루프가 그것만 본다. 같은 상한을 두 곳에
+#: 적으면 한쪽만 고쳤을 때 조용히 어긋나는데, 어긋나는 방향이 비용 초과다.
+#: 이 모듈은 "한 번의 교정 요청을 어떻게 만들 것인가"만 안다.
+
+#: 금액 표기를 코드가 병기하기 시작하는 하한. 1억(10^8) 미만은 쉼표만으로 읽힌다.
+#: `254,500원`은 그대로 읽히지만 `322,755,945,000원`은 자릿수를 세지 않으면 못 읽는다.
+#: 실측 기준으로 사람이 쉼표 표기를 한눈에 읽는 한계가 백만 단위(7자리)여서 그 위로 잡았다.
+AMOUNT_NOTATION_MIN = 10 ** 8
+
+#: 길이·문장 수 제약(ONE_LINE_MAX_CHARS 등)은 verification.py 로 옮겼다.
+#: 스키마가 참조하는 ONE_LINE_MAX_CHARS 는 위 재수출로 이 모듈에서도 그대로 쓸 수 있다.
 
 
 # ---------------------------------------------------------------------------
@@ -134,14 +175,16 @@ SUMMARY_JSON_SCHEMA = {
             'maxLength': ONE_LINE_MAX_CHARS,
             'description': (
                 '공시 내용을 한 문장으로 압축한 요약. 200자 이내. '
-                '수치를 넣었다면 반드시 evidence에 원문 근거를 남긴다.'
+                '수치를 넣었다면 반드시 evidence에 원문 근거를 남긴다. '
+                '숫자는 원문에 인쇄된 표기 그대로 쓴다(만·억·조로 바꾸지 않는다).'
             ),
         },
         'easy_explanation': {
             'type': 'string',
             'description': (
                 '회계를 모르는 일반인에게 설명하는 글. 3~5문장. '
-                '전문 용어는 첫 등장 시 괄호로 풀어 쓴다.'
+                '전문 용어는 첫 등장 시 괄호로 풀어 쓴다. '
+                '숫자는 원문 표기 그대로 쓰고, 계산으로 만든 값은 넣지 않는다.'
             ),
         },
         'why_important': {
@@ -167,7 +210,8 @@ SUMMARY_JSON_SCHEMA = {
             'maxItems': 8,
             'description': (
                 '요약에 등장한 모든 수치(금액·비율·주식수·날짜)와 핵심 주장의 원문 근거. '
-                '수치를 쓴 만큼 반드시 항목을 만든다.'
+                '수치를 쓴 만큼 반드시 항목을 만든다. '
+                '요약 본문의 숫자는 어느 quote엔가 문자 그대로 들어 있어야 한다.'
             ),
             'items': {
                 'type': 'object',
@@ -190,7 +234,8 @@ SUMMARY_JSON_SCHEMA = {
                         'type': 'string',
                         'description': (
                             '위 주장의 근거가 되는 원문 구절을 **한 글자도 바꾸지 말고** '
-                            '그대로 복사한다. 요약·의역·재작성 금지. 200자 이내.'
+                            '그대로 복사한다. 요약·의역·재작성 금지. 200자 이내. '
+                            '원문에 없는 기호(%, 원, 주)를 덧붙이지 않는다.'
                         ),
                     },
                 },
@@ -216,10 +261,40 @@ SYSTEM_PROMPT = """\
   예: "유상증자(회사가 새 주식을 찍어 팔아 돈을 마련하는 것)",
       "전환사채(나중에 주식으로 바꿀 수 있는 빚문서)",
       "자기주식 취득(회사가 자기 회사 주식을 사들이는 것)".
-- 금액은 읽기 쉬운 단위로 환산해 병기한다. 예: "1,500억 원(약 1조 원의 15%)".
 - 한 문장은 짧게 쓴다. 문어체 종결어미(~다)를 쓰고, 존댓말·구어체는 쓰지 않는다.
 
-## 2. 과장·투자 권유 절대 금지
+## 2. 숫자는 원문에 인쇄된 그대로 옮긴다 — 환산도 계산도 하지 않는다
+이 문서에서 가장 강한 규칙이다. 예외가 없다.
+
+금지하는 것은 **긴 숫자를 만·억·조로 쪼개 다시 쓰는 일**이다.
+금지하지 않는 것은 **원문이 이미 말해 준 단위를 그대로 반영하는 일**이다.
+이 둘을 헷갈리지 마라. 아래 두 항목이 그 경계다.
+
+- **(금지) 자릿수를 다시 끊지 마라.** 원문에 `45,453,450,000,000` 이라고 적혀 있으면
+  요약에도 `45,453,450,000,000` 이라고 쓴다. 쉼표 위치까지 원문 그대로다.
+  이것을 `45조 4,534억` 이나 `4조 5,453억` 으로 묶어 쓰는 일이 없어야 한다.
+  쉼표는 세 자리로 끊고 만·억·조는 네 자리로 끊는다. 이 둘을 섞으면 열 배가 틀린다.
+  읽기 쉬운 단위 표기는 이 요약을 받는 프로그램이 따로 만들어 붙인다. 네 몫이 아니다.
+- **(허용, 오히려 필수) 표 머리글의 단위는 값에 붙여 쓴다.**
+  값이 `4,000` 이고 표 머리에 `(단위 : 억원)` 이 있으면 그 값은 `4,000억원` 이다.
+  머리글을 무시하고 `4,000` 이라고만 쓰면 4천 원인지 4천억 원인지 알 수 없어 **틀린 값이 된다.**
+  이건 자릿수를 다시 끊는 일이 아니라 원문을 읽는 일이다. 숫자 `4,000` 은 그대로 남는다.
+  **이때 머리글 구절을 quote 에 함께 담아라.**
+  같은 규칙이 `(단위 : 천원)` · `(단위 : 백만원)` 에도 적용된다.
+- **(금지) 사칙연산을 하지 마라.** 증감액·증감률·지분 희석률·비중·환율·평균을 직접 계산하지 마라.
+  두 숫자를 빼거나 더하거나 나눈 결과는 원문에 없는 숫자다.
+  원문이 그 값을 따로 인쇄해 두었으면 그 숫자를 옮기고, 인쇄해 두지 않았으면 쓰지 않는다.
+  예: 원문에 `이번 보고서 2,709,958` 과 `증 감 1,312,415` 만 있고 직전 보유량은 없다면,
+  빼서 `1,397,543` 을 구하지 말고 직전 보유량을 아예 언급하지 않는다.
+- 금액에는 숫자 뒤에 `원` 을 붙인다(`45,453,450,000,000원`). 주식 수에는 `주`,
+  비율에는 `%` 를 붙인다. **원문에 그 단위가 명시돼 있을 때만** 붙인다.
+  이 단위 표시는 프로그램이 금액과 주식 수를 구별하는 근거이므로 빠뜨리면 안 된다.
+- 외화는 원문에 적힌 통화로 그대로 쓴다. 원화로 바꾸지 마라. 원문이 원화 환산액을
+  따로 적어 두었으면 그 숫자를 옮긴다.
+- 숫자가 사라져 설명이 밋밋해지는 것보다 틀린 숫자가 하나 들어가는 것이 훨씬 나쁘다.
+  확신이 서지 않는 숫자는 쓰지 않는다.
+
+## 3. 과장·투자 권유 절대 금지
 너는 투자 자문을 하지 않는다. 사실과 그 의미만 전달한다.
 - 금지 표현: "호재", "악재", "매수 기회", "매도 시점", "주가 상승이 기대된다",
   "긍정적 신호", "실적 개선이 예상된다", "저평가", "성장 동력 확보", "수혜",
@@ -228,17 +303,21 @@ SYSTEM_PROMPT = """\
 - 좋고 나쁨을 평가하지 않는다. "이 계약은 회사 연매출의 12%에 해당한다"는 되지만
   "이 계약은 회사에 큰 도움이 된다"는 안 된다.
 
-## 3. 불확실한 내용을 단정하지 않는다
+## 4. 불확실한 내용을 단정하지 않는다
 - 원문에 없는 사실·수치·배경·전망을 만들어 내지 않는다. 아는 지식으로 보충하지 않는다.
 - 원문에 없으면 쓰지 않는다. 빈칸을 추측으로 채우지 말고 그냥 언급하지 않는다.
 - 원문이 조건부·잠정이면 그 사실을 그대로 옮긴다.
   예: "이사회에서 결정했으며 주주총회 승인이 남아 있다", "잠정 수치다".
 - 원문 정보가 부족해 설명이 짧아지는 것은 정상이다. 억지로 늘리지 마라.
 
-## 4. 모든 수치·핵심 주장에 원문 근거를 붙인다
+## 5. 모든 수치·핵심 주장에 원문 근거를 붙인다
 요약에 쓴 금액·비율·주식수·날짜·기간은 하나도 빠짐없이 evidence 배열에 근거를 남긴다.
+- **요약 본문에 쓴 숫자는 evidence 의 quote 중 적어도 하나에 문자 그대로 들어 있어야 한다.**
+  quote 에 없는 숫자를 본문에 쓰면 검증에서 걸린다. 이 규칙이 §2의 실질적 강제 장치다.
 - quote 에는 원문 구절을 **한 글자도 바꾸지 말고 그대로 복사**한다.
   숫자의 쉼표·단위·띄어쓰기까지 원문 그대로여야 한다. 요약·의역·재작성은 위반이다.
+- 원문에 없는 기호를 quote 에 덧붙이지 마라. 원문이 `17.33` 이면 `17.33%` 로 쓰지 않는다.
+  단위 기호는 요약 본문(claim)에 붙이고, quote 는 원문 그대로 둔다.
 - quote 는 원문의 **연속된 한 구간**이어야 한다. 떨어져 있는 두 곳(예: 표의 2행과 5행,
   항목 4번과 항목 6번)을 하나의 quote 로 이어 붙이지 마라.
   두 곳이 모두 필요하면 **evidence 항목을 두 개로 나눈다**.
@@ -246,7 +325,7 @@ SYSTEM_PROMPT = """\
 - claim 에는 요약문에 실제로 쓴 표현을 그대로 옮긴다. 요약문에 없는 내용을 넣지 않는다.
 - 근거는 요약문에 등장한 순서대로 담는다.
 
-## 5. 중요도 판정
+## 6. 중요도 판정
 - high: 주가에 직접 영향이 큰 사안. 대규모 단일판매·공급계약, 유상증자·전환사채 발행,
   합병·분할·영업양수도, 대규모 시설투자·자산 처분, 실적의 급격한 변동,
   중대한 소송·행정제재, 최대주주 변경, 상장폐지·관리종목 관련.
@@ -257,7 +336,8 @@ SYSTEM_PROMPT = """\
 
 ## 형식
 - 모든 출력은 한국어로 쓴다.
-- one_line 은 200자 이내의 한 문장이다.
+- one_line 은 200자 이내의 한 문장이다. 긴 금액은 프로그램이 읽기 쉬운 표기를 덧붙여
+  더 길어지므로, one_line 에는 금액을 하나만 넣고 나머지는 easy_explanation 으로 넘긴다.
 - easy_explanation 은 3문장 이상 5문장 이하다.
 - why_important 는 1~3문장이며, 사실이 갖는 의미만 쓴다. 행동을 권하지 않는다.
 - 마크다운 서식(**, #, - 등)을 쓰지 않는다. 평문으로 쓴다.
@@ -286,6 +366,226 @@ def build_user_message(*, company_name, report_name, filed_at, rcept_no,
         '[공시 정보]\n' + '\n'.join(meta) + '\n\n'
         '[공시 원문]\n' + raw_text
     )
+
+
+# ---------------------------------------------------------------------------
+# 읽기 쉬운 금액 표기 병기 — LLM이 하던 환산을 코드가 대신한다
+# ---------------------------------------------------------------------------
+# 프롬프트 §2가 LLM에게 환산을 금지시키므로, 요약 본문에는 `45,453,450,000,000원` 처럼
+# 원문 표기가 그대로 남는다. 회계를 모르는 일반인은 이 자릿수를 읽지 못한다(PLAN.md 1.4).
+# 그 간극을 여기서 메운다.
+#
+# ## 왜 자유로운 정규식이 아니라 '단위 명사 앵커'인가
+#
+# 본문의 긴 숫자를 모두 환산하면 날짜(`20260713`)·사업자등록번호(`104-81-26688`)·
+# 접수번호까지 금액으로 바꿔 버린다. 그래서 **`원`·`주` 로 끝나는 숫자만** 건드린다.
+# 프롬프트 §2가 "금액에는 `원`, 주식 수에는 `주` 를 붙인다"를 요구하는 것과 한 쌍이다.
+# 프롬프트가 앵커를 만들고 코드가 그 앵커만 신뢰한다 — 둘 중 하나만 바꾸면 안 된다.
+#
+# ## 왜 검증 이후에 붙이는가
+#
+# `validate_summary` 는 요약 본문의 수치를 evidence 인용문과 대조한다. 두 쪽 모두
+# 원문 표기 그대로일 때 대조가 가장 정확하다. 병기는 판정이 끝난 뒤의 표시 단계다.
+# 병기된 표기(`약 45조 4,534억`)를 나중에 `revalidate_summaries` 가 다시 읽어도,
+# 절사 오차가 APPROX_TOLERANCE(5%) 안이라 판정이 뒤집히지 않는다.
+
+#: 본문에서 금액·주식 수를 찾는 앵커. 4자리 이상의 수 또는 쉼표 세 자리 묶음 표기가
+#: 곧바로 `원`/`주`/`USD`/`달러` 로 이어질 때만 잡는다.
+#:
+#: 외화를 넣은 이유. v3 첫 실측(2026-08-19, DR발행결정)에서 모델이 `26,507,100,000 USD`
+#: 라고만 적었다. 오탐은 사라졌지만 **일반인이 읽을 수 없는 표기**가 남았다 —
+#: 원화에서 고친 것과 똑같은 문제(3자리 쉼표 vs 4자리 단위)가 통화만 바꿔 재발한 것이다.
+#: 환율을 곱하지는 않는다. 원화 환산은 원문에 없을 수도 있는 환율을 끌어와야 하므로
+#: 코드가 임의로 하면 그 자체가 근거 없는 수치가 된다. 달러는 달러로 읽기 쉽게 만든다.
+#:
+#: **이미 한국 단위가 붙은 표기는 건드리지 않는다.** 두 경로로 막힌다.
+#:   1. `4,000억원` — 숫자 바로 뒤가 `억` 이라 앵커(`원`/`주`) 자체가 안 맞는다.
+#:      표 머리글을 반영한 이 표기는 프롬프트 §2가 허용·요구하는 정상 출력이고,
+#:      잡으면 `4,000억원(약 4,000억 원)` 이라는 동어반복이 된다.
+#:   2. `2,882억 1,539만 6,500원` — 꼬리 `6,500원` 은 숫자 뒤가 `원` 이라 앵커에 걸린다.
+#:      이건 금액 전체가 아니라 복합 표기의 **마지막 항**이므로 병기하면 안 된다.
+#:      앞에 오는 단위를 lookbehind 로 막는다.
+#:
+#: 방어 장치별 이유. 하나라도 빼면 오염이 생기므로 각각 남긴다.
+#:   `(?<![\d,.])`      숫자 중간에서 잘라 읽지 않는다.
+#:   `(?<![경조억만천])`   위 2번 — `1,539만6,500원` 처럼 붙여 쓴 복합 표기의 꼬리를 막는다.
+#:   `(?<![경조억만천] )`  위 2번 — `1,539만 6,500원` 처럼 띄어 쓴 경우.
+#:                      파이썬 lookbehind 는 고정 폭이라 폭 1과 폭 2를 둘로 나눠 적는다.
+#:   `(?!식)`           `1,132,477주식수` 를 주식 수로 오인하지 않는다.
+#: 멱등성(이미 병기된 표기를 다시 병기하지 않기)은 lookahead 가 아니라 아래
+#: `_ALREADY_ANNOTATED` 로 처리한다 — 이유는 그쪽 주석에 적었다.
+_AMOUNT_IN_TEXT = re.compile(
+    r'(?<![\d,.])(?<![경조억만천])(?<![경조억만천] )'
+    r'(\d{1,3}(?:,\d{3})+|\d{4,})\s*(원|주(?!식)|USD|달러)'
+)
+
+#: 바로 뒤에 이미 병기 괄호가 붙어 있는지 보는 패턴.
+#:
+#: 예전에는 앵커 정규식에 `(?!\s*\(약)` 을 달아 막았는데, 그건 **절사가 일어난 표기만**
+#: 걸러낸다. `약` 은 버린 자리가 있을 때만 붙기 때문이다. `26,507,100,000 USD(265억 710만
+#: 달러)` 처럼 딱 떨어지는 금액은 `약` 이 없어 그 lookahead 를 통과했고, 두 번 돌리면
+#: 괄호가 중첩됐다(qa 가 `test_exact_amounts_are_annotated_twice_when_applied_twice` 로
+#: 기록해 둔 결함이다). 외화 병기는 `265억 710만 달러` 처럼 절사 없이 떨어지는 경우가
+#: 흔해서 이 결함이 예외가 아니라 기본 동작이 된다. 그래서 `약` 유무와 무관하게
+#: "괄호 안이 한국 단위 표기인가" 로 판정한다.
+_ALREADY_ANNOTATED = re.compile(r'\s*\((?:약\s*)?-?[\d,]+\s*[경조억만]')
+
+#: 앵커로 잡은 단위 → 병기에 쓸 표기 함수. `주` 처럼 통화가 아닌 단위는 여기 없고
+#: 아래에서 숫자 표기 뒤에 단위를 그대로 붙인다.
+_CURRENCY_FORMATTERS = {
+    '원': format_korean_won,
+    'USD': format_korean_usd,
+    '달러': format_korean_usd,
+}
+
+
+def _amount_replacement(match):
+    """`45,453,450,000,000원` → `45,453,450,000,000원(약 45조 4,534억 원)`.
+
+    `26,507,100,000 USD` → `26,507,100,000 USD(265억 710만 달러)`.
+    """
+    if _ALREADY_ANNOTATED.match(match.string, match.end()):
+        return match.group(0)
+    value = int(match.group(1).replace(',', ''))
+    if value < AMOUNT_NOTATION_MIN:
+        return match.group(0)  # 쉼표만으로 읽히는 크기다. 괄호를 붙이면 오히려 지저분하다.
+    unit = match.group(2)
+    formatter = _CURRENCY_FORMATTERS.get(unit)
+    notation = (
+        formatter(value) if formatter
+        else f'{format_korean_amount(value)} {unit}'
+    )
+    return f'{match.group(0)}({notation})'
+
+
+def annotate_amounts(result):
+    """검증을 마친 요약 dict의 본문 3필드에 읽기 쉬운 금액 표기를 병기한 새 dict를 만든다.
+
+    원본 dict는 건드리지 않는다. 호출자는 반환값을 저장한다.
+
+    one_line 만 예외를 둔다. 병기로 200자(ONE_LINE_MAX_CHARS)를 넘기면 모델 필드
+    max_length 를 초과해 저장이 깨지므로, 그 경우 one_line 은 병기하지 않고 원문 표기로
+    남긴다. **읽기 편함보다 저장 성공이 우선**이다 — 그 문장의 금액은 easy_explanation
+    에서 다시 병기되어 나온다.
+    """
+    annotated = dict(result)
+    for field in ('one_line', 'easy_explanation', 'why_important'):
+        text = annotated.get(field) or ''
+        replaced = _AMOUNT_IN_TEXT.sub(_amount_replacement, text)
+        if field == 'one_line' and len(replaced) > ONE_LINE_MAX_CHARS:
+            continue
+        annotated[field] = replaced
+    return annotated
+
+
+# ---------------------------------------------------------------------------
+# 재생성(자동 교정) 프롬프트 — 검증 경고를 되먹인다
+# ---------------------------------------------------------------------------
+# ## 왜 별도 프롬프트가 아니라 같은 대화의 연장인가
+#
+# 비용이 결정했다. 교정 요청은 (시스템 프롬프트 + 원문을 담은 user 메시지)를 **바이트
+# 단위로 동일하게** 유지한 뒤 assistant·user 턴만 덧붙인다. 그래야 프롬프트 캐시가
+# 접두사 전체에 적중한다(캐시 입력 단가는 미캐시의 1/10). 시스템 프롬프트를 갈아 끼운
+# 별도 교정 프롬프트를 쓰면 접두사가 깨져 원문 토큰 값을 통째로 다시 낸다
+# — 사업보고서(약 21만 토큰) 기준 건당 $0.21 대 $0.021 의 차이다.
+# 덧붙는 것은 직전 출력(약 700토큰)과 아래 지시문뿐이라 재생성의 실질 증분은 작다.
+#
+# ## 직전 출력을 보여 주는 것의 득실
+#
+# 보여 준다. 경고 문구(`인용 근거 없는 수치: 3조 9,891억`)만으로는 모델이 자기가 어디에
+# 그 값을 썼는지 알 수 없다. 오답에 끌려갈 위험은 있지만, 여기서는 오히려 **최소 수정**이
+# 목표다 — 맞게 쓴 문장까지 다시 쓰면 새 오류가 생긴다. 그래서 지시문이 "지적된 곳만
+# 고치고 나머지는 그대로 두라"고 못 박고, 동시에 "지적된 부분의 표현은 반복하지 말라"고
+# 따로 경계한다. 끌려가면 안 되는 범위를 좁혀서 지정하는 것이다.
+#
+# ## 경고를 그대로 넣지 않는 이유
+#
+# 저장된 경고는 **진단문**이지 **지시문**이 아니다. "인용 근거 없는 수치: 3조 9,891억"은
+# 무엇이 틀렸는지는 말하지만 무엇을 하라는 말이 없다. 경고 종류(접두어)마다 조치문을
+# 짝지어 붙인다. 접두어는 verification.py 가 이미 상수로 고정해 둔 단일 출처라
+# 문자열 매칭이 아니라 그 상수로 잇는다.
+
+#: 경고 접두어별 조치문. 키는 verification.py 의 접두어 상수를 그대로 쓴다.
+CORRECTION_ACTIONS = {
+    UNSUPPORTED_NUMBER_PREFIX: (
+        '이 수치가 요약 본문에 있으나 evidence 의 quote 어디에도 같은 값이 없다. '
+        '원인은 대개 둘 중 하나다. '
+        '(가) 원문 숫자의 자릿수를 만·억·조로 다시 끊어 썼다 — 원문에 인쇄된 표기 그대로 '
+        '되돌리고, 그 표기를 담은 quote 를 붙여라. '
+        '(나) 원문에 없는 값을 계산해 만들었다(증감액·증감률·비중·환율 등) '
+        '— 그 수치와, 그 수치에만 기대는 문장을 지워라.'
+    ),
+    UNVERIFIED_QUOTE_PREFIX: (
+        '이 quote 를 원문에서 찾지 못했다. 원문의 **연속된 한 구간**을 다시 찾아 '
+        '한 글자도 바꾸지 말고 복사하라. 떨어진 두 곳을 이어 붙였다면 evidence 항목을 '
+        '둘로 나눠라. 원문에 없는 기호(%, 원, 주)를 덧붙였다면 지워라. '
+        '그래도 못 찾으면 그 근거와 그 근거에만 기대는 문장을 삭제하라.'
+    ),
+    SENTENCE_COUNT_PREFIX: (
+        'easy_explanation 의 문장 수만 맞춰라. 내용을 새로 지어내 늘리지 말고, '
+        '길면 문장을 합치고 짧으면 원문에 이미 있는 사실로만 채워라.'
+    ),
+}
+
+#: 접두어가 어느 것과도 안 맞는 경고에 붙일 기본 조치문.
+DEFAULT_CORRECTION_ACTION = (
+    '지적된 내용을 원문에 맞게 고쳐라. 원문으로 뒷받침할 수 없으면 해당 부분을 삭제하라.'
+)
+
+CORRECTION_HEADER = """\
+직전 출력이 자동 검증을 통과하지 못했다. 아래 지적 사항만 고쳐 전체 JSON을 다시 출력하라.
+
+- 지적되지 않은 문장과 근거는 한 글자도 바꾸지 마라. 다시 쓰지 말고 그대로 옮겨라.
+- 지적된 부분은 직전 표현을 반복하지 말고 원문을 다시 읽어 고쳐라.
+- 원문으로 고칠 방법이 없으면 그 수치와 문장을 **지워라**. 숫자가 빠진 요약은 통과하지만
+  틀린 숫자가 든 요약은 통과하지 못한다.
+- 출력 형식은 직전과 동일한 JSON 스키마다.
+
+[지적 사항]
+"""
+
+
+def build_correction_message(warnings):
+    """검증 경고 목록 → 재생성 요청 user 메시지.
+
+    각 경고에 접두어로 찾은 조치문을 짝지어 붙인다. 경고가 비어 있으면 None 을 돌려
+    호출자가 재생성 자체를 건너뛰게 한다(고칠 것이 없는데 호출하면 비용만 나간다).
+    """
+    items = [warning for warning in (warnings or []) if warning and warning.strip()]
+    if not items:
+        return None
+    lines = [CORRECTION_HEADER]
+    for idx, warning in enumerate(items, 1):
+        action = next(
+            (act for prefix, act in CORRECTION_ACTIONS.items() if warning.startswith(prefix)),
+            DEFAULT_CORRECTION_ACTION,
+        )
+        lines.append(f'{idx}. {warning}\n   조치: {action}')
+    return '\n'.join(lines)
+
+
+def schema_only(data):
+    """모델에게 되돌려 줄 직전 출력에서 스키마 밖 필드를 걷어낸다.
+
+    `validate_summary` 결과에는 `quote_found` · `numbers_ok` · `warnings` 처럼 우리가
+    덧붙인 진단 필드가 섞여 있다. 그대로 되먹이면 모델이 그 형태를 따라 출력하려 해
+    strict 스키마와 어긋난다. 직전 턴은 **스키마에 정확히 맞는 모양**이어야 다음 출력도
+    같은 모양으로 나온다.
+    """
+    return {
+        'one_line': data.get('one_line', ''),
+        'easy_explanation': data.get('easy_explanation', ''),
+        'why_important': data.get('why_important', ''),
+        'importance': data.get('importance', ''),
+        'evidence': [
+            {
+                'field': item.get('field', ''),
+                'claim': item.get('claim', ''),
+                'quote': item.get('quote', ''),
+            }
+            for item in (data.get('evidence') or [])
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -394,382 +694,6 @@ def estimate_batch_cost(raw_texts, model=DEFAULT_MODEL, expected_output_tokens=7
 
 
 # ---------------------------------------------------------------------------
-# 검증
-# ---------------------------------------------------------------------------
-
-_SENTENCE_END = re.compile(r'[.!?]+(?=\s|$)')
-_WHITESPACE = re.compile(r'\s+')
-
-#: 금액·비율·주식수·날짜 등 대조 대상 수치. 뒤에 붙은 한국어 단위(조·억·만·천)까지 잡는다.
-#: 앞뒤가 영문자면 식별자(예: 'P&T7', 'Fab2')의 일부이므로 대조 대상에서 뺀다.
-_NUMBER = re.compile(r'(?<![A-Za-z0-9])(\d[\d,]*(?:\.\d+)?)\s*([조억만천])?(?![A-Za-z])')
-
-#: 한국어 수 단위 배수.
-_UNIT_MULTIPLIER = {'조': 10 ** 12, '억': 10 ** 8, '만': 10 ** 4, '천': 10 ** 3}
-
-#: 근사 표현. 있으면 단위 환산 오차를 허용한다.
-_APPROX = re.compile(r'약|가량|여|안팎|상당')
-
-#: 근사 표현이 있을 때 허용하는 상대 오차.
-APPROX_TOLERANCE = 0.05
-
-#: 연도 표기(1900~2099). 금액이 아니므로 대조 대상에서 뺀다.
-_YEAR = re.compile(r'^(19|20)\d{2}$')
-
-#: 이 값 이하의 맨 정수는 항목번호·순번·일자로 본다(`1. 거래상대방`, `제3자배정`, `5월`).
-#: 실측: 경고를 유발한 수치 상위 3개가 `2026`(78회)·`1`(60회)·`2025`(38회)였다.
-ORDINAL_MAX = 31
-
-#: 표 머리글의 단위 표기(`(단위 : 천원)`, `(단위 : 백만 원)`)로 생기는 자릿수 차이.
-#: 머리글을 파싱하는 대신 배수 일치를 허용한다 — 머리글은 인용문 밖에 있는 경우가 많아
-#: 파싱해도 인용문만으로는 복원되지 않는다.
-_SCALE_MULTIPLIERS = (10 ** 3, 10 ** 4, 10 ** 6, 10 ** 8, 10 ** 12)
-
-#: 배수 일치로 인정할 때의 상대 오차. 반올림 표기(3,746억 ↔ 374,629백만) 흡수용.
-SCALE_TOLERANCE = 0.01
-
-#: 인용문을 조각으로 나누는 구분자: 줄바꿈·표 구분자·생략부호.
-_FRAGMENT_SPLIT = re.compile(r'\n|\||\.{3}|…')
-
-#: 조각 검증에 쓸 최소 길이(서식 문자 제거 후). 이보다 짧으면 라벨·구분자라 판정에 무의미하다.
-MIN_FRAGMENT_CHARS = 4
-
-#: 서식 문자를 모두 제거해 '내용'만 남기는 정규화. 표 구분자·공백·괄호 유무 차이를 흡수한다.
-_CONTENT_ONLY = re.compile(r'[^0-9A-Za-z가-힣.%\-]')
-
-
-def _normalize(text):
-    """원문 대조용 정규화. 공백과 표 셀 구분자를 흡수한다.
-
-    전처리된 원문은 표를 `합 계 | 80,948 | | 17,236,792,300` 형태로 담는다(backend 전처리).
-    모델은 이를 `합 계 80,948` 처럼 구분자 없이 인용하는 경우가 많아, 구분자를 그대로 두면
-    실제로는 정확한 인용인데도 quote_found=False 가 된다.
-    구분자는 지우지 않고 **공백으로 치환**한다. 통째로 지우면 빈 셀을 사이에 둔 숫자들이
-    `80,94817,236,792,300` 으로 붙어 버려 수치 대조가 더 나빠진다.
-    """
-    return _WHITESPACE.sub(' ', (text or '').replace('|', ' ')).strip()
-
-
-def extract_numbers(text):
-    """텍스트에서 대조 대상 수치를 뽑아 [(표기, 값)] 로 반환한다.
-
-    '7조 931억' 처럼 단위가 이어지는 복합 표기는 하나의 값으로 합산한다.
-    요약에서 '7,093,100,000,000원'을 '약 7조 931억 원'으로 바꿔 쓰는 것은 지침이 요구하는
-    정상 동작이므로, 자릿수 문자열이 아니라 **값**으로 대조해야 오탐이 나지 않는다.
-    """
-    matches = list(_NUMBER.finditer(text or ''))
-    results = []
-    idx = 0
-    while idx < len(matches):
-        match = matches[idx]
-        raw = match.group(1).replace(',', '')
-        unit = match.group(2)
-        try:
-            value = float(raw)
-        except ValueError:
-            idx += 1
-            continue
-        if unit is None:
-            results.append((match.group(0).strip(), value))
-            idx += 1
-            continue
-
-        # 단위가 붙었으면 뒤따르는 하위 단위를 합산한다. 예: '7조 931억' → 7.0931e12
-        total = value * _UNIT_MULTIPLIER[unit]
-        last_multiplier = _UNIT_MULTIPLIER[unit]
-        end = idx
-        for nxt in range(idx + 1, len(matches)):
-            gap = (text[matches[nxt - 1].end():matches[nxt].start()] or '').strip()
-            nxt_unit = matches[nxt].group(2)
-            if gap or nxt_unit is None or _UNIT_MULTIPLIER[nxt_unit] >= last_multiplier:
-                break
-            try:
-                nxt_value = float(matches[nxt].group(1).replace(',', ''))
-            except ValueError:
-                break
-            total += nxt_value * _UNIT_MULTIPLIER[nxt_unit]
-            last_multiplier = _UNIT_MULTIPLIER[nxt_unit]
-            end = nxt
-        results.append((text[match.start():matches[end].end()].strip(), total))
-        idx = end + 1
-    return results
-
-
-def is_reference_number(text, value):
-    """대조에서 제외할 '수치 아닌 숫자'(연도·항목번호·순번)인지 판정한다.
-
-    금액·비율·주식수는 검증의 핵심이므로 절대 제외하지 않는다. 판정 기준은 보수적이다.
-      - 한국어 단위(조·억·만·천)가 붙었으면 금액이다 → 제외하지 않는다
-      - 쉼표나 소수점이 있으면 자릿수 구분·비율이다 → 제외하지 않는다
-      - 그 외 맨 정수 중 연도(19xx·20xx)와 0~ORDINAL_MAX 만 제외한다
-    """
-    bare = (text or '').strip()
-    if re.search(r'[조억만천]', bare):
-        return False
-    if ',' in bare or '.' in bare:
-        return False
-    if _YEAR.match(bare):
-        return True
-    return value == int(value) and 0 <= value <= ORDINAL_MAX
-
-
-def extract_comparable_numbers(text):
-    """extract_numbers 에서 연도·항목번호를 걸러낸 대조용 수치 목록."""
-    return [
-        (raw, value) for raw, value in extract_numbers(text)
-        if not is_reference_number(raw, value)
-    ]
-
-
-def _value_supported(value, quote_values, approximate):
-    """요약의 수치 value가 인용문의 수치들로 뒷받침되는지 판정한다."""
-    for qvalue in quote_values:
-        if value == qvalue:
-            return True
-        # 단위 환산으로 자릿수 표기만 달라진 경우(7,093,100,000,000 ↔ 7조 931억)
-        if qvalue and abs(value - qvalue) / abs(qvalue) <= (
-            APPROX_TOLERANCE if approximate else 0.0
-        ):
-            return True
-    # 표 머리글 단위(`(단위 : 천원)`)로 자릿수만 어긋난 경우.
-    # 원문 표가 374,629(백만원)이고 요약이 '3조 7,462억'이면 값은 10^6 배 차이지만 옳은 환산이다.
-    for qvalue in quote_values:
-        if not qvalue:
-            continue
-        for multiplier in _SCALE_MULTIPLIERS:
-            for left, right in ((value, qvalue * multiplier), (value * multiplier, qvalue)):
-                if right and abs(left - right) / abs(right) <= SCALE_TOLERANCE:
-                    return True
-    return False
-
-
-def _content_only(text):
-    """서식 문자를 지우고 내용 문자만 남긴다. 표 구분자·공백 차이를 흡수하기 위한 정규화."""
-    return _CONTENT_ONLY.sub('', text or '')
-
-
-def quote_fragments(quote):
-    """인용문을 대조 단위 조각으로 나눈다(서식 문자 제거 후, 짧은 조각은 버린다)."""
-    return [
-        fragment for fragment in (
-            _content_only(part) for part in _FRAGMENT_SPLIT.split(quote or '')
-        )
-        if len(fragment) >= MIN_FRAGMENT_CHARS
-    ]
-
-
-def verify_quote(quote, raw_text=None, *, raw_content=None):
-    """인용문이 원문에 근거하는지 판정한다. 판정 불가면 None.
-
-    ## 왜 '통짜 일치'가 아니라 '조각 순서 일치'인가
-
-    모델은 표에서 **떨어진 두 행을 하나의 인용문으로 이어 붙이는** 경우가 많다.
-    예: `4. 개최방법 | 대면미팅` + `6. 주요 설명회내용(요약) | ...` (5번 항목을 건너뜀).
-    각 조각은 원문에 정확히 존재하고 이어 붙인 문자열만 존재하지 않는다. 즉 할루시네이션이
-    아니라 인용 형식 문제다. 통짜 일치로 보면 이런 정상 인용이 전부 경고로 뜬다
-    (실측: 요약 140건 중 44건).
-
-    그래서 인용문을 조각으로 나눠 **원문에 순서대로 등장하는지**만 본다.
-    조각 하나라도 원문에 없으면 여전히 실패하므로 지어낸 인용은 그대로 걸린다.
-    조각 순서를 요구하는 것도 의미가 있다 — 원문 순서를 뒤집어 인과를 왜곡한 인용은 잡힌다.
-
-    프롬프트에는 "인용문은 연속된 한 구간이어야 한다"고 명시해 두었다(§4).
-    이 완화는 그 지시가 없던 시점에 생성된 요약을 구제하기 위한 것이기도 하다.
-    """
-    if raw_content is None:
-        raw_content = _content_only(_normalize(raw_text))
-    fragments = quote_fragments(quote)
-    if not fragments:
-        return None  # 판정할 만한 내용이 없는 짧은 인용
-    position = 0
-    for fragment in fragments:
-        found = raw_content.find(fragment, position)
-        if found < 0:
-            return False
-        position = found + len(fragment)
-    return True
-
-
-def count_sentences(text):
-    """문장 수를 센다. '3.5%' 처럼 소수점 뒤에 공백이 없으면 분할되지 않는다."""
-    stripped = (text or '').strip()
-    if not stripped:
-        return 0
-    parts = [p for p in _SENTENCE_END.split(stripped) if p.strip()]
-    return len(parts)
-
-
-def verify_evidence(evidence, raw_text):
-    """근거 항목을 원문과 대조한다. QA 숫자 대조의 기계적 1차 관문.
-
-    각 항목에 두 개의 판정을 붙인다.
-      quote_found  — quote 의 각 조각이 원문에 순서대로 존재하는가(verify_quote 참고).
-                     False면 인용에 원문에 없는 내용이 섞인 것이다.
-      numbers_ok   — claim 에 등장하는 수치가 **근거 전체**로 뒷받침되는가.
-                     진단용 필드이며 경고를 만들지 않는다(아래 참고).
-    반환: (판정이 붙은 evidence 리스트, 경고 문자열 리스트)
-
-    ## numbers_ok 로는 경고를 만들지 않는 이유
-
-    근거 하나가 주장 여러 개를 걸치는 일이 흔해서, 항목별 대조는 오탐이 대부분이다.
-    "인용 없이 등장한 수치"는 validate_summary 의 집계 검사가 정확히 걸러내므로
-    검수 게이트는 그쪽에 맡기고, 여기서는 판정 결과만 기록해 원인 추적에 쓴다.
-    대조 범위를 자기 인용문이 아니라 **전체 인용문**으로 둔 것도 같은 이유다
-    (실측: 자기 인용문 대조는 55건 오탐, 전체 대조는 13건).
-    """
-    raw_content = _content_only(_normalize(raw_text))
-    all_quote_values = []
-    for item in evidence:
-        all_quote_values.extend(
-            value for _, value in extract_numbers(_normalize(item.get('quote', '')))
-        )
-
-    checked = []
-    warnings = []
-    for idx, item in enumerate(evidence):
-        claim = item.get('claim', '')
-        verdict = verify_quote(item.get('quote', ''), raw_content=raw_content)
-        approximate = bool(_APPROX.search(claim))
-        missing = sorted({
-            text for text, value in extract_comparable_numbers(claim)
-            if not _value_supported(value, all_quote_values, approximate)
-        })
-        result = dict(item)
-        # 판정 불가(None)는 실패로 취급하지 않는다. 경고를 만들지 못하는 근거일 뿐이다.
-        result['quote_found'] = verdict is not False
-        result['numbers_ok'] = not missing
-        result['missing_numbers'] = missing
-        checked.append(result)
-        if verdict is False:
-            warnings.append(f'evidence[{idx}]: 인용문이 원문에서 발견되지 않음')
-    return checked, warnings
-
-
-def validate_summary(data, raw_text):
-    """파싱된 dict를 검증한다.
-
-    하드 검증(실패 시 재시도): 필수 필드 존재, importance 값, one_line 길이,
-    evidence 최소 1건. one_line 길이는 모델 필드 max_length=200 과 직결되므로
-    초과하면 저장이 깨진다 — 반드시 하드 검증이다.
-    소프트 검증(경고만 기록): 문장 수, 근거 대조 결과. QA가 판단할 재료로 넘긴다.
-    """
-    for field in ('one_line', 'easy_explanation', 'why_important', 'importance'):
-        value = data.get(field)
-        if not isinstance(value, str) or not value.strip():
-            raise SummaryValidationError(f'필수 필드 누락 또는 빈 값: {field}')
-
-    if data['importance'] not in ('high', 'medium', 'low'):
-        raise SummaryValidationError(f"중요도 값이 잘못됨: {data['importance']!r}")
-
-    one_line = data['one_line'].strip()
-    if len(one_line) > ONE_LINE_MAX_CHARS:
-        raise SummaryValidationError(
-            f'one_line이 {len(one_line)}자로 상한 {ONE_LINE_MAX_CHARS}자를 초과'
-        )
-
-    evidence = data.get('evidence') or []
-    if not isinstance(evidence, list) or not evidence:
-        raise SummaryValidationError('evidence가 비어 있음 (원문 근거 필수)')
-
-    checked, warnings = verify_evidence(evidence, raw_text)
-
-    # QA 숫자 대조의 본 관문: 요약 본문에 등장한 모든 수치가 근거 인용문 전체로 뒷받침되는가.
-    # 항목별 대조는 근거 하나가 주장 여러 개를 걸칠 때 오탐이 나지만, 이 집계 검사는
-    # "인용 없이 등장한 수치"만 정확히 걸러낸다. 단위 환산 오차는 허용한다.
-    # 연도·항목번호는 금액이 아니므로 대조에서 뺀다(is_reference_number 참고).
-    # 인용문은 verify_evidence 와 똑같이 정규화한 뒤 수치를 뽑는다.
-    # 표 구분자를 지우지 않으면 `1,234|567` 같은 셀 경계에서 값이 다르게 읽힌다.
-    quote_values = []
-    for item in evidence:
-        quote_values.extend(
-            value for _, value in extract_numbers(_normalize(item.get('quote', '')))
-        )
-    summary_text = ' '.join(
-        data[f] for f in ('one_line', 'easy_explanation', 'why_important')
-    )
-    unsupported = sorted({
-        text for text, value in extract_comparable_numbers(summary_text)
-        if not _value_supported(value, quote_values, approximate=True)
-    })
-    if unsupported:
-        warnings.append(
-            f'요약 본문의 수치 {", ".join(unsupported)}에 대응하는 원문 근거가 없음'
-        )
-
-    sentences = count_sentences(data['easy_explanation'])
-    if not EXPLANATION_MIN_SENTENCES <= sentences <= EXPLANATION_MAX_SENTENCES:
-        warnings.append(
-            f'easy_explanation이 {sentences}문장 '
-            f'(권장 {EXPLANATION_MIN_SENTENCES}~{EXPLANATION_MAX_SENTENCES}문장)'
-        )
-
-    return {
-        'one_line': one_line,
-        'easy_explanation': data['easy_explanation'].strip(),
-        'why_important': data['why_important'].strip(),
-        'importance': data['importance'],
-        'evidence': checked,
-        'unsupported_numbers': unsupported,
-        'sentence_count': sentences,
-        'warnings': warnings,
-    }
-
-
-#: 경고 문구의 접두어. 경고의 **종류**를 문자열에서 되읽기 위한 단일 출처다.
-#: 화면(정확성 배너)과 admin이 종류별로 다르게 다뤄야 하므로 접두어를 고정한다.
-#: 문구를 바꾸면 저장된 경고와 어긋나므로 revalidate_summaries 를 다시 돌려야 한다.
-UNSUPPORTED_NUMBER_PREFIX = '인용 근거 없는 수치: '
-UNVERIFIED_QUOTE_PREFIX = '원문에서 찾지 못한 인용'
-SENTENCE_COUNT_PREFIX = '설명 길이'
-
-#: 요약의 **사실 정확성**과 직접 관련된 경고. 사용자에게 알려야 하는 종류다.
-#: 문장 수(SENTENCE_COUNT_PREFIX)는 문체 문제라 여기 넣지 않는다 —
-#: 3문장 권장을 6문장으로 쓴 것을 두고 "수치를 신뢰하지 말라"고 경고하면 오히려 해롭다.
-ACCURACY_WARNING_PREFIXES = (UNSUPPORTED_NUMBER_PREFIX, UNVERIFIED_QUOTE_PREFIX)
-
-#: 경고 문구에서 수치 여러 개를 잇는 구분자.
-#: 쉼표만으로 나누면 `3조 9,891억`이 `3조 9` + `891억`으로 쪼개진다 — 자릿수 쉼표와
-#: 구분자를 구별해야 하므로 **쉼표+공백**을 함께 쓰고, 되읽을 때도 같은 문자열로 나눈다.
-WARNING_LIST_SEPARATOR = ', '
-
-
-def build_review_warnings(result):
-    """DisclosureSummary.review_warnings 에 저장할 경고 목록을 만든다.
-
-    요약 생성(summarize_disclosures)과 재검증(revalidate_summaries) 두 경로가 이 함수를
-    공유해야 같은 요약이 경로에 따라 다르게 판정되지 않는다. 문구를 고칠 일이 있으면
-    여기만 고친다.
-
-    validate_summary 가 반환하는 `warnings` 를 그대로 쓰지 않는 이유는, 검수자가
-    admin에서 바로 판단할 수 있도록 문제가 된 인용문·수치를 문구에 담기 위해서다.
-
-    각 문구는 위 접두어 상수로 시작한다. `DisclosureSummary.accuracy_warnings` 가
-    이 접두어로 정확성 경고만 골라내므로, 접두어보다 앞에 다른 말을 붙이면 안 된다.
-    """
-    warnings = []
-    if result.get('unsupported_numbers'):
-        warnings.append(
-            UNSUPPORTED_NUMBER_PREFIX
-            + WARNING_LIST_SEPARATOR.join(result['unsupported_numbers'])
-        )
-    for idx, item in enumerate(result.get('evidence', [])):
-        if not item.get('quote_found', True):
-            quote = (item.get('quote') or '').strip()
-            warnings.append(
-                f'{UNVERIFIED_QUOTE_PREFIX} (근거 {idx + 1}번): {quote[:60]}'
-            )
-    sentences = result.get('sentence_count')
-    if sentences is not None and not (
-        EXPLANATION_MIN_SENTENCES <= sentences <= EXPLANATION_MAX_SENTENCES
-    ):
-        warnings.append(
-            f'{SENTENCE_COUNT_PREFIX}: 쉬운 설명이 {sentences}문장 '
-            f'(권장 {EXPLANATION_MIN_SENTENCES}~{EXPLANATION_MAX_SENTENCES}문장)'
-        )
-    return warnings
-
-
-# ---------------------------------------------------------------------------
 # OpenAI 호출
 # ---------------------------------------------------------------------------
 
@@ -863,11 +787,26 @@ def _call_openai(messages, model, max_output_tokens, reasoning_effort):
 def summarize_disclosure(*, company_name, report_name, filed_at, rcept_no, raw_text,
                          disclosure_type='', model=DEFAULT_MODEL,
                          reasoning_effort=DEFAULT_REASONING_EFFORT,
-                         max_retries=MAX_RETRIES, max_input_tokens=MAX_INPUT_TOKENS):
+                         max_retries=MAX_RETRIES, max_input_tokens=MAX_INPUT_TOKENS,
+                         correction_warnings=None, correction_previous=None):
     """공시 1건을 요약해 검증된 dict를 반환한다.
 
     raw_text 는 **전처리를 마친** 원문이어야 한다(XML 태그 제거·표 텍스트화·상용구 제거).
     이 함수는 전처리를 하지 않는다.
+
+    `correction_warnings` 를 주면 **자동 교정 재생성**이 된다.
+
+      correction_warnings: 검증 경고 문자열 목록(`build_review_warnings` 결과).
+      correction_previous: 직전 요약 dict. **함께 넘기는 것을 강하게 권한다.**
+        없어도 동작하지만, 없으면 모델이 "인용 근거 없는 수치: 3조 9,891억" 이라는 지적을
+        받고도 자기가 그 값을 어디에 썼는지 알 수 없어 교정이 아니라 재작성이 된다.
+
+    이때도 시스템 프롬프트와 user 메시지는 최초 호출과 바이트 단위로 같게 유지하고
+    assistant·user 턴만 뒤에 덧붙인다. 캐시 접두사 동일성을 호출자가 아니라 이 함수가
+    책임지기 위해서다 — 호출자가 user 메시지를 다시 조립하면 캐시가 조용히 깨지고
+    입력 토큰을 전액 다시 낸다. 재생성 횟수 상한은 호출자가 관리한다
+    (`review_policy.MAX_REGENERATION_ATTEMPTS`). 이 함수는 한 번의 교정 요청만 수행한다.
+    경고가 비어 있으면 교정 턴을 붙이지 않고 최초 호출과 동일하게 동작한다.
 
     반환 dict::
 
@@ -887,7 +826,12 @@ def summarize_disclosure(*, company_name, report_name, filed_at, rcept_no, raw_t
           'cost_usd': float,
           'attempts': int,
           'prompt_version': str,
+          'corrected': bool,          # 교정 재생성으로 만들어진 요약인가
         }
+
+    본문 3필드에는 `annotate_amounts` 로 읽기 쉬운 금액 표기가 병기돼 있다
+    (`45,453,450,000,000원(약 45조 4,534억 원)`). 검증은 병기 **전** 텍스트로 끝낸 뒤라
+    `warnings`·`unsupported_numbers` 는 모델이 실제로 쓴 표기를 기준으로 판정된 값이다.
 
     예외는 모두 SummarizerError 하위이므로, 호출자는 이것만 잡아 건별 기록 후 계속 진행한다.
     """
@@ -908,6 +852,21 @@ def summarize_disclosure(*, company_name, report_name, filed_at, rcept_no, raw_t
         {'role': 'user', 'content': user_message},
     ]
 
+    # 교정 턴은 캐시 접두사 **뒤**에 붙는다. 위 두 메시지를 손대면 캐시가 깨지므로
+    # 여기서 append 만 한다.
+    correction_message = build_correction_message(correction_warnings)
+    if correction_message:
+        # 직전 출력이 없으면 assistant 턴을 만들지 않는다. 빈 JSON을 넣으면 모델이
+        # 그 빈 출력을 고쳐야 할 대상으로 오해한다.
+        if correction_previous:
+            messages.append({
+                'role': 'assistant',
+                'content': json.dumps(
+                    schema_only(correction_previous), ensure_ascii=False
+                ),
+            })
+        messages.append({'role': 'user', 'content': correction_message})
+
     max_output_tokens = MAX_OUTPUT_TOKENS
     last_error = None
     for attempt in range(1, max_retries + 2):  # 최초 1회 + 재시도 max_retries회
@@ -920,7 +879,8 @@ def summarize_disclosure(*, company_name, report_name, filed_at, rcept_no, raw_t
             except json.JSONDecodeError as exc:
                 raise SummaryValidationError(f'JSON 파싱 실패: {exc}') from exc
 
-            result = validate_summary(data, raw_text)
+            # 검증은 모델이 쓴 표기 그대로 수행한다. 금액 병기는 판정이 끝난 뒤에 붙인다.
+            result = annotate_amounts(validate_summary(data, raw_text))
             result['model_name'] = model_id[:50]  # 모델 필드 max_length=50
             result['usage'] = usage
             result['cost_usd'] = estimate_cost(
@@ -931,6 +891,7 @@ def summarize_disclosure(*, company_name, report_name, filed_at, rcept_no, raw_t
             )
             result['attempts'] = attempt
             result['prompt_version'] = PROMPT_VERSION
+            result['corrected'] = bool(correction_message)
             return result
 
         except SummaryRefusedError:

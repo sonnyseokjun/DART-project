@@ -1,6 +1,11 @@
-"""수집된 공시에 요약 대상 선별 정책(disclosures/selection.py)을 적용한다.
+"""수집된 공시에 제목 기반 규칙 정책 두 가지를 적용한다.
 
-LLM 호출 없는 규칙 판정이며, 결과를 Disclosure.selection_state/exclusion_reason에 남긴다.
+  1. 요약 대상 선별 (disclosures/selection.py) → selection_state / exclusion_reason
+  2. 사람 검수 게이트 (disclosures/review_policy.py) → review_category
+
+둘 다 LLM 호출이 없는 순수 규칙 판정이고 입력이 같으므로(공시 유형·제목) 한 번에 돈다.
+따로 두면 정책을 고친 뒤 한쪽만 재적용하는 일이 생기고, 그 순간 검수 큐가 어긋난다.
+
 판정을 DB에 기록하므로 재실행해도 이미 판정된 행은 건너뛴다 — 정책을 고친 뒤에는
 --force로 전건을 재판정한다.
 
@@ -14,6 +19,8 @@ import collections
 from django.core.management.base import BaseCommand
 
 from disclosures.models import Disclosure
+from disclosures.review_policy import ReviewCategory
+from disclosures.review_policy import evaluate as evaluate_review_gate
 from disclosures.selection import ExclusionReason, SelectionState, evaluate
 
 # 한 번에 저장할 행 수. SQLite 단일 파일이므로 과한 트랜잭션을 피한다.
@@ -59,21 +66,28 @@ class Command(BaseCommand):
         changed = []
         for disclosure in pending:
             state, reason = evaluate(disclosure.disclosure_type, disclosure.report_name)
-            if disclosure.selection_state == state and disclosure.exclusion_reason == reason:
+            category = evaluate_review_gate(disclosure.report_name)
+            if (disclosure.selection_state == state
+                    and disclosure.exclusion_reason == reason
+                    and disclosure.review_category == category):
                 continue
             disclosure.selection_state = state
             disclosure.exclusion_reason = reason
+            disclosure.review_category = category
             changed.append(disclosure)
 
         if dry_run:
             self.stdout.write(f'변경될 행 {len(changed):,}건 (저장하지 않음)')
         else:
             Disclosure.objects.bulk_update(
-                changed, ['selection_state', 'exclusion_reason'], batch_size=BATCH_SIZE
+                changed,
+                ['selection_state', 'exclusion_reason', 'review_category'],
+                batch_size=BATCH_SIZE,
             )
             self.stdout.write(self.style.SUCCESS(f'판정 저장 완료: {len(changed):,}건 갱신'))
 
         self._report_distribution(overrides=pending if dry_run else None)
+        self._report_review_gate(overrides=pending if dry_run else None)
 
     # --- 집계 출력 -------------------------------------------------------
 
@@ -120,3 +134,22 @@ class Command(BaseCommand):
                 f'  {disclosure_type or "(미분류)":<10} '
                 f'{counter[SelectionState.TARGET]:>4,} / {sum(counter.values()):>4,}'
             )
+
+    def _report_review_gate(self, overrides=None):
+        """검수 필수 유형 분포. 게이트 정책을 고친 뒤 영향 범위를 바로 확인하기 위한 것이다."""
+        rows = {
+            d.pk: d.review_category
+            for d in Disclosure.objects.all().only('review_category')
+        }
+        for d in overrides or []:
+            rows[d.pk] = d.review_category
+
+        counts = collections.Counter(rows.values())
+        gated = sum(count for category, count in counts.items() if category)
+        labels = dict(ReviewCategory.choices)
+
+        self.stdout.write('')
+        self.stdout.write(f'== 사람 검수 필수 유형 (전체 {len(rows):,}건 중 {gated:,}건) ==')
+        for category, _label in ReviewCategory.choices:
+            self.stdout.write(f'  {labels[category]:<20} {counts.get(category, 0):>6,}건')
+        self.stdout.write(f'  {"(게이트 비대상)":<20} {counts.get("", 0):>6,}건')

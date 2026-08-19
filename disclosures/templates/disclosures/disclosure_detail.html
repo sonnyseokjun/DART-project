@@ -21,7 +21,9 @@
         {% if disclosure.disclosure_type %}
           <span class="badge badge-type">{{ disclosure.disclosure_type }}</span>
         {% endif %}
-        {% if summary.needs_review %}
+        {% if not summary.is_reviewed %}
+          {# _disclosure_card.html 과 같은 조건이어야 목록과 상세의 신호가 어긋나지 않는다.
+             needs_review(검수 큐 운영 개념)가 아니라 is_reviewed(사람이 봤는가)를 본다. #}
           <span class="badge badge-unreviewed" title="사람 검수를 거치지 않은 AI 생성 요약입니다">
             AI 생성 · 미검수
           </span>

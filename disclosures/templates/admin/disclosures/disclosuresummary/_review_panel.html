@@ -3,7 +3,10 @@
 
 컨텍스트: admin change_form 이 넘겨주는 `original`(DisclosureSummary) 하나만 쓴다.
 뷰에서 별도 컨텍스트를 주입하지 않으므로 backend 쪽 변경이 필요 없다.
-소비하는 property: unsupported_numbers · accuracy_warnings · needs_review · was_human_edited.
+소비하는 property: unsupported_numbers · accuracy_warnings · needs_review · was_human_edited ·
+auto_hidden · regeneration_exhausted.
+소비하는 필드: hidden_by · hidden_reason · regeneration_count · regeneration_history ·
+disclosure.review_category (전부 5단계 backend 산출물, _workspace/22_backend_pipeline.md 7장).
 
 이 패널은 DB에 이미 있는 `disclosure.raw_content`만 읽는다 — 검수 화면에서 DART API나
 LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
@@ -46,9 +49,26 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
     {% elif original.edited_by_human %}
       <span class="rp-badge rp-badge-todo">사람이 수정함 · 검수 미완료</span>
     {% endif %}
-    {% if original.is_published == False %}
+    {% if original.auto_hidden %}
+      {# 자동 미게시와 사람이 내린 것은 검수자가 할 일이 정반대다 — 전자는 "고쳐서 올릴 것",
+         후자는 "이미 결론이 난 것"이다. is_published 하나로 분기하면 둘이 같게 보인다
+         (22_backend_pipeline.md 2.2). 판정은 hidden_reason 문구가 아니라 hidden_by 를 보는
+         `auto_hidden` property 로 한다 — hidden_reason 은 검수자가 고치는 자유 문자열이다. #}
+      <span class="rp-badge rp-badge-auto">자동 미게시 · 아직 아무도 보지 않음</span>
+      {% if original.regeneration_exhausted %}
+        <span class="rp-badge rp-badge-exhausted">자동 교정 불가 · 재생성 상한 소진</span>
+      {% endif %}
+    {% elif original.is_published == False %}
       <span class="rp-badge rp-badge-hidden">
-        웹에서 숨김{% if original.hidden_reason %} · {{ original.hidden_reason }}{% endif %}
+        {% if original.hidden_by %}{{ original.get_hidden_by_display }}{% else %}웹에서 숨김 · 주체 미기록{% endif %}
+        {% if original.hidden_reason %} · {{ original.hidden_reason }}{% endif %}
+      </span>
+    {% endif %}
+    {% if original.disclosure.review_category %}
+      {# 경고가 하나도 없는데 큐에 있는 요약은 전부 이 유형 게이트 때문에 들어온 것이다.
+         이유를 안 보여주면 검수자가 "왜 이게 여기 있지"부터 다시 조사하게 된다. #}
+      <span class="rp-badge-plain">
+        검수 필수 유형 · {{ original.disclosure.get_review_category_display }}
       </span>
     {% endif %}
     {% if original.reviewed_by or original.reviewed_at %}
@@ -58,6 +78,82 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
       </span>
     {% endif %}
   </div>
+
+  {% if original.auto_hidden %}
+    {# 배지 한 줄로는 "지금 사용자에게 안 보이고 있다"는 사실의 무게가 전달되지 않는다.
+       검수자가 이 화면에서 가장 먼저 알아야 할 상태이므로 경고 목록보다 위에 둔다. #}
+    <div class="rp-auto" id="rp-auto-hidden">
+      <p class="rp-auto-title">자동 미게시 — 검증이 막았습니다. 사람이 내린 것이 아닙니다</p>
+      <p class="rp-auto-body">
+        이 요약은 <strong>지금 웹에 노출되지 않고 있습니다.</strong>
+        {% if original.hidden_reason %}<br>사유: {{ original.hidden_reason }}{% endif %}
+      </p>
+      {% if not original.regeneration_count %}
+        <p class="rp-auto-note">
+          AI 재생성 시도 <strong>0회</strong> — 이 요약은 아직 다시 만들어 보지 않았습니다.
+        </p>
+      {% endif %}
+      <p class="rp-auto-help">
+        아래 수치를 원문과 대조해 <strong>고쳐서 올리거나</strong>, 고칠 수 없다고 판단하면
+        그대로 내려 두십시오. 목록 화면의 일괄 액션이 정식 경로입니다 —
+        <strong>노출 복구</strong>는 숨김 사유·주체까지 함께 지우고,
+        <strong>웹에서 숨김</strong>은 "검수자가 내림"으로 기록을 바꿉니다.
+      </p>
+    </div>
+  {% endif %}
+
+  {% if original.regeneration_count or original.regeneration_history %}
+    {# 몇 번 시도했고 왜 실패했는지를 알면 검수자의 판단이 빨라진다 — "AI가 두 번 시도했는데도
+       안 됐다"면 사람이 직접 고쳐야 한다는 뜻이다. 자동 미게시 건은 펼친 채로 연다. #}
+    <details class="rp-regen" id="rp-regen"{% if original.auto_hidden %} open{% endif %}>
+      <summary class="rp-regen-summary">
+        AI 자동 재생성 {{ original.regeneration_count }}회 시도
+        {% if original.regeneration_exhausted %}
+          · 상한 소진(더 시도하지 않습니다)
+        {% endif %}
+      </summary>
+      {% if original.regeneration_history %}
+        <ol class="rp-regen-list">
+          {% for entry in original.regeneration_history %}
+            <li class="rp-regen-item">
+              <div class="rp-regen-head">
+                <span class="rp-badge-plain">{{ entry.attempt }}차 시도</span>
+                {% if entry.error %}
+                  <span class="rp-badge rp-badge-bad">재생성 호출 실패</span>
+                {% elif entry.resolved %}
+                  <span class="rp-badge rp-badge-ok">교정됨</span>
+                {% else %}
+                  <span class="rp-badge rp-badge-bad">교정 실패</span>
+                {% endif %}
+                {% if entry.rolled_back %}
+                  <span class="rp-badge rp-badge-bad">결과가 더 나빠 되돌림</span>
+                {% endif %}
+                {% if entry.model %}<span class="rp-badge-plain">{{ entry.model }}</span>{% endif %}
+                {% if entry.at %}<span class="rp-badge-plain">{{ entry.at|slice:':19' }}</span>{% endif %}
+              </div>
+              {% if entry.warnings %}
+                <p class="rp-regen-label">고치려던 경고</p>
+                <ul class="rp-regen-warnings">
+                  {% for warning in entry.warnings %}<li>{{ warning }}</li>{% endfor %}
+                </ul>
+              {% endif %}
+              {% if entry.remaining_warnings %}
+                <p class="rp-regen-label">다시 만든 뒤에도 남은 경고</p>
+                <ul class="rp-regen-warnings">
+                  {% for warning in entry.remaining_warnings %}<li>{{ warning }}</li>{% endfor %}
+                </ul>
+              {% endif %}
+              {% if entry.error %}
+                <p class="rp-regen-error">{{ entry.error }}</p>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="rp-empty-line">남아 있는 재생성 이력이 없습니다.</p>
+      {% endif %}
+    </details>
+  {% endif %}
 
   {% if original.review_warnings %}
     <ul class="rp-warnings">

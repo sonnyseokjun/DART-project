@@ -12,7 +12,23 @@
     "deny": [
       "Edit(.env*)",
       "Bash(rm *)",
-      "Bash(git push*)"
+      "Bash(git push*)",
+      "Bash(./venv/Scripts/python.exe manage.py summarize_disclosures*)",
+      "Bash(python manage.py summarize_disclosures*)",
+      "Bash(py manage.py summarize_disclosures*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/venv/Scripts/python.exe\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/block_llm_calls.py\""
+          }
+        ]
+      }
     ]
   }
 }

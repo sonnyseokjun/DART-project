@@ -19,7 +19,12 @@
       <span class="dot">·</span>
     {% endif %}
     <time datetime="{{ disclosure.filed_at|date:'Y-m-d' }}">{{ disclosure.filed_at|date:'Y-m-d' }}</time>
-    {% if disclosure.summary.needs_review %}
+    {% if not disclosure.summary.is_reviewed %}
+      {# 조건이 needs_review 가 아니라 is_reviewed 인 이유: needs_review 는 5단계에서
+         **검수 큐에 넣을지**를 정하는 운영 개념이 됐고(공시 유형 게이트), 이 배지는
+         **사람이 봤는지**를 알리는 사용자 신뢰 신호다. 둘이 우연히 겹쳐 있다가 갈라졌다.
+         게이트 밖으로 나간 미검수 요약에서 배지가 사라지면 사용자에게 실제보다 강한
+         신뢰 신호를 준다(PLAN.md 1.4·5.3). 배지 문구가 곧 is_reviewed 다. #}
       <span class="badge badge-unreviewed" title="사람 검수를 거치지 않은 AI 생성 요약입니다">
         AI 생성 · 미검수
       </span>

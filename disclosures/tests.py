@@ -5,7 +5,10 @@ seed_companies는 download_corp_codes를, poll_dart는 iter_disclosures를,
 fetch_documents는 fetch_document를 목으로 대체한다.
 """
 import json
+import os
 import re
+import subprocess
+import sys
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -26,12 +29,18 @@ from disclosures.dart import (
 from disclosures.admin import (
     DEFAULT_HIDDEN_REASON, DisclosureSummaryAdmin, DisclosureSummaryInline,
 )
+from disclosures.management.commands import (
+    summarize_disclosures as summarize_command,
+)
 from disclosures.management.commands.seed_companies import TARGET_COMPANIES
 from disclosures.models import Company, Disclosure, DisclosureSummary, Sector
 from disclosures.templatetags.review_panel import (
     evidence_field_label, has_key, highlight_terms,
 )
-from disclosures import summarizer, views
+from disclosures import review_policy, summarizer, units, verification, views
+from disclosures.review_policy import (
+    MAX_REGENERATION_ATTEMPTS, ReviewCategory, should_regenerate,
+)
 from disclosures.selection import (
     ExclusionReason, SelectionState, evaluate, is_blacklisted, normalize_title,
 )
@@ -814,18 +823,30 @@ class SummaryPersistenceTest(TestCase):
         self.assertEqual(stored.evidence, evidence)
         self.assertTrue(stored.evidence[0]['quote_found'])
 
-    def test_needs_review_flags_high_importance_and_warnings(self):
-        summary = self._summary(importance=DisclosureSummary.Importance.HIGH)
-        self.assertTrue(summary.needs_review)          # 중요도 높음 → 검수 게이트
+    def test_needs_review_follows_the_type_gate_and_warnings_not_importance(self):
+        """5단계에서 검수 게이트가 AI의 `importance` 에서 **공시 유형**으로 옮겨졌다.
 
-        summary.importance = DisclosureSummary.Importance.LOW
+        AI 요약을 믿지 못해 하는 검수인데 대상 선정을 그 AI에게 맡기고 있었고, AI가
+        중요도를 낮게 잘못 매기면 가장 위험한 요약이 큐에 아예 안 떴다(review_policy.py).
+        그래서 `importance` 는 이제 큐에 **아무 영향이 없다** — 유형과 경고만 본다.
+        기대값을 바꾼 것이지 조건을 느슨하게 한 것이 아니므로, 유형 축을 함께 고정한다.
+        """
+        self.assertEqual(self.disclosure.review_category, '')  # 공급계약은 게이트 밖
+
+        summary = self._summary(importance=DisclosureSummary.Importance.HIGH)
+        self.assertFalse(summary.needs_review)         # 중요도만 높아서는 큐에 안 들어온다
+
         summary.review_warnings = ['evidence[0]: 인용문이 원문에서 발견되지 않음']
         self.assertTrue(summary.needs_review)          # 경고 있음 → 검수 필요
 
         summary.review_warnings = []
-        self.assertFalse(summary.needs_review)         # 경고 없고 중요도 낮음
+        self.assertFalse(summary.needs_review)
 
-        summary.importance = DisclosureSummary.Importance.HIGH
+        # 유형 게이트에 걸리면 경고가 없고 중요도가 낮아도 사람이 본다.
+        summary.importance = DisclosureSummary.Importance.LOW
+        self.disclosure.review_category = ReviewCategory.CAPITAL
+        self.assertTrue(summary.needs_review)
+
         summary.is_reviewed = True
         self.assertFalse(summary.needs_review)         # 이미 검수 완료
 
@@ -1728,8 +1749,14 @@ class ReviewWorkflowTestBase(TestCase):
 
     def make_summary(self, seq, *, company=None, report_name=None,
                      filed_at=None, raw_content='공시 원문 · 계약금액 | 1,234,567',
-                     **summary_kwargs):
-        """공시 1건 + 요약 1건을 만든다. seq가 접수번호·제목의 구분자다."""
+                     review_category='', **summary_kwargs):
+        """공시 1건 + 요약 1건을 만든다. seq가 접수번호·제목의 구분자다.
+
+        `review_category` 는 5단계에서 생긴 검수 게이트 판정 결과다(`review_policy.py`).
+        실제로는 `apply_selection` 이 제목을 보고 채우지만, 여기서는 축을 직접 지정한다 —
+        제목 문자열을 바꿔 가며 게이트를 만들면 테스트가 정책 정규식의 사소한 변경에
+        끌려다니게 된다. 정규식 자체는 `ReviewPolicyGateTest` 가 따로 고정한다.
+        """
         rcept_no = f'2026070100{seq:04d}'
         disclosure = Disclosure.objects.create(
             company=company or self.company, rcept_no=rcept_no,
@@ -1737,6 +1764,7 @@ class ReviewWorkflowTestBase(TestCase):
             disclosure_type='거래소공시', filed_at=filed_at or date(2026, 7, 1),
             dart_url=dart_viewer_url(rcept_no),
             selection_state=SelectionState.TARGET,
+            review_category=review_category,
             raw_fetched=bool(raw_content), raw_content=raw_content,
         )
         defaults = dict(
@@ -2191,20 +2219,28 @@ class NeedsReviewFilterParityTest(ReviewWorkflowTestBase):
     큐에서 빠진 요약은 영원히 검수되지 않는다. 두 구현을 전수 대조한다.
     """
 
-    #: (is_reviewed, importance, review_warnings) 전 조합 — 경계 케이스를 모두 포함한다.
+    #: (is_reviewed, importance, review_category, review_warnings) 전 조합 36가지.
+    #:
+    #: 5단계에서 게이트가 `importance == 'high'` 에서 `Disclosure.review_category` 로
+    #: 옮겨졌다. 조건이 **FK를 타게 됐으므로** 양쪽이 같이 움직였는지 다시 전수 대조한다.
+    #: `importance` 를 축에 남긴 것은 **더 이상 큐에 영향을 주지 않는다는 사실 자체**를
+    #: 고정하기 위해서다. 축에서 빼면 조건에 되살아나도 아무도 모른다.
     COMBINATIONS = [
-        (reviewed, importance, warnings)
+        (reviewed, importance, category, warnings)
         for reviewed in (False, True)
         for importance in DisclosureSummary.Importance.values
+        for category in ('', ReviewCategory.CAPITAL)
         for warnings in ([], ['경고 1건'], ['경고 1건', '경고 2건'])
     ]
 
     def setUp(self):
         super().setUp()
-        for seq, (reviewed, importance, warnings) in enumerate(self.COMBINATIONS, start=1):
+        for seq, (reviewed, importance, category, warnings) in enumerate(
+            self.COMBINATIONS, start=1
+        ):
             self.make_summary(
                 seq, is_reviewed=reviewed, importance=importance,
-                review_warnings=warnings,
+                review_category=category, review_warnings=warnings,
             )
 
     def _filtered_pks(self, value):
@@ -2231,32 +2267,49 @@ class NeedsReviewFilterParityTest(ReviewWorkflowTestBase):
         self.assertEqual(yes | no, every_pk)     # 어느 쪽에도 안 들어가는 요약이 없어야
         self.assertEqual(yes & no, set())        # 양쪽에 겹치는 요약도 없어야
 
+    def _matching(self, reviewed, category, has_warnings):
+        qs = DisclosureSummary.objects.filter(
+            is_reviewed=reviewed, disclosure__review_category=category)
+        return list(
+            qs.exclude(review_warnings=[]) if has_warnings else qs.filter(review_warnings=[])
+        )
+
     def test_boundary_cases_are_classified_the_same_way(self):
-        """말로 옮긴 경계 3가지 — 조건식이 바뀌면 여기가 먼저 깨진다."""
+        """말로 옮긴 경계 — 조건식이 바뀌면 여기가 먼저 깨진다.
+
+        축이 `importance` 에서 `review_category` 로 바뀌었다. 각 경계마다 **importance
+        3종 전부**를 확인하므로, 게이트가 중요도로 되돌아가면 여기서 갈린다.
+        """
         expectations = {
-            # 중요도 높음 + 검수 완료 → 검수 불필요
-            (True, DisclosureSummary.Importance.HIGH, 0): False,
-            # 경고만 있고 미검수 → 검수 필요
-            (False, DisclosureSummary.Importance.LOW, 1): True,
-            # 중요도 높음 + 미검수 + 경고 없음 → 검수 필요
-            (False, DisclosureSummary.Importance.HIGH, 0): True,
-            # 둘 다 아님 → 검수 불필요
-            (False, DisclosureSummary.Importance.MEDIUM, 0): False,
-            # 검수 완료 + 경고 있음 → 검수 불필요(경고는 남지만 사람이 이미 봤다)
-            (True, DisclosureSummary.Importance.LOW, 1): False,
+            # (검수 완료?, 게이트 유형, 경고 있음?) → 검수 필요한가
+            (False, '', False): False,                       # 아무 사유 없음
+            (False, '', True): True,                         # 경고만 → 유형 무관
+            (False, ReviewCategory.CAPITAL, False): True,    # 유형 게이트만 → 경고 무관
+            (False, ReviewCategory.CAPITAL, True): True,     # 둘 다
+            (True, ReviewCategory.CAPITAL, False): False,    # 검수 완료
+            (True, '', True): False,                         # 검수 완료(경고는 남는다)
         }
         yes = self._filtered_pks('yes')
-        for (reviewed, importance, warning_count), expected in expectations.items():
-            summary = DisclosureSummary.objects.filter(
-                is_reviewed=reviewed, importance=importance,
-            ).exclude(review_warnings=[]).first() if warning_count else \
-                DisclosureSummary.objects.filter(
-                    is_reviewed=reviewed, importance=importance, review_warnings=[]).first()
-            with self.subTest(reviewed=reviewed, importance=importance,
-                              warnings=warning_count):
-                self.assertIsNotNone(summary)
-                self.assertEqual(summary.needs_review, expected)
-                self.assertEqual(summary.pk in yes, expected)
+        for (reviewed, category, has_warnings), expected in expectations.items():
+            matched = self._matching(reviewed, category, has_warnings)
+            with self.subTest(reviewed=reviewed, category=category,
+                              warnings=has_warnings):
+                # importance 3종 × (경고 목록 2종 or 1종)이 전부 잡혀야 축이 온전하다.
+                self.assertEqual(len(matched), 6 if has_warnings else 3)
+                for summary in matched:
+                    self.assertEqual(summary.needs_review, expected)
+                    self.assertEqual(summary.pk in yes, expected)
+
+    def test_importance_no_longer_moves_the_queue(self):
+        """중요도만 다른 두 요약이 같은 판정을 받는지 — 게이트 전환의 핵심 주장이다."""
+        for category in ('', ReviewCategory.CAPITAL):
+            for has_warnings in (False, True):
+                verdicts = {
+                    summary.importance: summary.needs_review
+                    for summary in self._matching(False, category, has_warnings)
+                }
+                with self.subTest(category=category, warnings=has_warnings):
+                    self.assertEqual(len(set(verdicts.values())), 1, verdicts)
 
     def test_has_warnings_filter_matches_stored_warnings(self):
         with_warnings = {
@@ -2327,19 +2380,48 @@ class AdminReviewScreenTest(ReviewWorkflowTestBase):
         self.assertContains(response, 'target="_blank"')
 
     def test_queue_is_ordered_by_review_priority(self):
-        """중요도 높음 → 경고 있음 → 접수일 최신. 큐가 56건일 때 정렬이 곧 작업 순서다."""
-        warned = self.make_summary(
-            2, review_warnings=['경고'], filed_at=date(2026, 7, 1))
-        recent = self.make_summary(3, filed_at=date(2026, 7, 5))
-        older = self.make_summary(4, filed_at=date(2026, 7, 3))
+        """자동 미게시 → 검수 필수 유형 → 경고 있음 → 접수일 최신.
+
+        5단계에서 1순위 키가 AI의 `importance` 에서 공시 유형 게이트로 바뀌었고,
+        자동 미게시가 그 앞에 붙었다. **큐에 들어오는 기준이 유형인데 정렬만 중요도로
+        두면 맨 위가 큐의 이유와 어긋난다.** 자동 미게시가 맨 앞인 이유는 그 요약들이
+        지금 사용자에게 안 보이고 있어 서비스에 구멍이 나 있기 때문이다.
+
+        `self.summary`(seq=1)는 수치 경고를 달고 있고 importance 가 HIGH 다 —
+        중요도가 정렬에 남아 있었다면 맨 위여야 하지만 이제 3순위다.
+        """
+        auto_hidden = self.make_summary(
+            2, filed_at=date(2026, 7, 1), is_published=False,
+            hidden_by=DisclosureSummary.HiddenBy.AUTO)
+        gated = self.make_summary(
+            3, filed_at=date(2026, 7, 1), review_category=ReviewCategory.CAPITAL)
+        recent = self.make_summary(4, filed_at=date(2026, 7, 5))
+        older = self.make_summary(5, filed_at=date(2026, 7, 3))
 
         response = self.client.get(
             reverse('admin:disclosures_disclosuresummary_changelist'))
 
         self.assertEqual(
             list(response.context['cl'].queryset.values_list('pk', flat=True)),
-            [self.summary.pk, warned.pk, recent.pk, older.pk],
+            [auto_hidden.pk, gated.pk, self.summary.pk, recent.pk, older.pk],
         )
+
+    def test_human_hidden_summaries_do_not_jump_the_queue(self):
+        """사람이 내린 요약은 '이미 결론이 난 것'이라 맨 앞이 아니다.
+
+        `is_published=False` 하나로 정렬하면 자동 미게시와 구분되지 않는다 —
+        검수자가 할 일이 정반대인데 같은 자리에 놓인다.
+        """
+        human_hidden = self.make_summary(
+            2, filed_at=date(2026, 7, 9), is_published=False,
+            hidden_by=DisclosureSummary.HiddenBy.HUMAN)
+
+        response = self.client.get(
+            reverse('admin:disclosures_disclosuresummary_changelist'))
+        order = list(response.context['cl'].queryset.values_list('pk', flat=True))
+
+        self.assertEqual(order[0], self.summary.pk)   # 경고 있는 게시분이 먼저
+        self.assertEqual(order[-1], human_hidden.pk)
 
     def test_dart_link_column_degrades_when_the_url_is_missing(self):
         """링크가 없는 공시에서 목록이 깨지면 검수 큐 전체를 못 연다."""
@@ -2693,3 +2775,1293 @@ class ReviewContractConsistencyTest(TestCase):
         # 부모 링크(disclosure)를 뺀 모든 편집 가능 필드가 읽기 전용이어야 한다.
         self.assertEqual(
             sorted(editable - set(inline.readonly_fields) - {'disclosure'}), [])
+
+
+# ===========================================================================
+# 5단계 — 요약 파이프라인 자동 교정
+# ===========================================================================
+
+
+class KoreanUnitFormatTest(TestCase):
+    """`units.py` 경계값 — 이번 단계의 표적.
+
+    LLM이 반복해서 틀린 지점은 정확히 하나였다. **쉼표는 3자리로 끊고 만·억·조는 4자리로
+    끊는다.** 코드가 하면 영원히 안 틀리지만, 그 코드가 틀리면 이번엔 영원히 틀린다.
+    그래서 표기 규칙 전체를 값으로 못 박는다.
+
+    표는 `_workspace/21_backend_units_verification.md` 2.3을 그대로 옮긴 것이고,
+    굵게 표시됐던 세 줄(39조·45조·43조)이 실제로 웹에 잘못 나갔던 값이다.
+    """
+
+    #: (원 단위 정수, max_units=2 기본 표기, max_units=None 정확 표기)
+    CASES = [
+        (0, '0 원', '0 원'),
+        (1, '1 원', '1 원'),
+        (9_999, '9,999 원', '9,999 원'),
+        (10_000, '1만 원', '1만 원'),
+        (10_001, '1만 1 원', '1만 1 원'),
+        (12_345, '1만 2,345 원', '1만 2,345 원'),
+        (100_000_000, '1억 원', '1억 원'),
+        (1_000_000_000_000, '1조 원', '1조 원'),
+        (10_000_000_000_000, '10조 원', '10조 원'),
+        # 0인 자리가 생략돼 항이 2개뿐이라도 '10조 1 원'은 사람이 쓰는 말이 아니다.
+        # 절사 기준이 '항 개수'가 아니라 '자릿수 폭'이어야 하는 이유가 이 줄이다.
+        (10_000_000_000_001, '약 10조 원', '10조 1 원'),
+        (100_000_000_000_001, '약 100조 원', '100조 1 원'),
+        # 반대로 원래 정보가 적은 값은 폭 안에 다 들어와 절사가 일어나지 않는다.
+        (1_000_050_000, '10억 5만 원', '10억 5만 원'),
+        (39_890_534_790_000, '약 39조 8,905억 원', '39조 8,905억 3,479만 원'),   # id 128
+        (45_453_450_000_000, '약 45조 4,534억 원', '45조 4,534억 5,000만 원'),   # id 81
+        (43_140_750_000_000, '약 43조 1,407억 원', '43조 1,407억 5,000만 원'),   # id 107
+        (400_000_000_000, '4,000억 원', '4,000억 원'),                           # id 8
+        (-39_890_534_790_000, '약 -39조 8,905억 원', '-39조 8,905억 3,479만 원'),
+        (123456789012345678901, '약 12,345경 6,789조 원',
+         '12,345경 6,789조 123억 4,567만 8,901 원'),
+    ]
+
+    #: 웹에 실제로 나간 오답 → 정답. 전부 정확히 10배 어긋나 있었다.
+    TEN_FOLD_ERRORS = [
+        ('3조 9,891억', 39_890_534_790_000, '약 39조 8,905억 원'),
+        ('4조 5,453억', 45_453_450_000_000, '약 45조 4,534억 원'),
+        ('4조 3,140억', 43_140_750_000_000, '약 43조 1,407억 원'),
+    ]
+
+    def test_boundary_values_format_as_specified(self):
+        for value, short, exact in self.CASES:
+            with self.subTest(value=value):
+                self.assertEqual(units.format_korean_won(value), short)
+                self.assertEqual(units.format_korean_won(value, max_units=None), exact)
+
+    def test_the_three_real_errors_are_reproduced_correctly(self):
+        """AI가 낸 오답을 같은 파서로 되읽으면 정확히 10배 차이가 나야 한다."""
+        for wrong, raw_value, expected in self.TEN_FOLD_ERRORS:
+            with self.subTest(wrong=wrong):
+                self.assertEqual(units.format_korean_won(raw_value), expected)
+                wrong_value = units.parse_korean_amount(wrong)
+                self.assertIsNotNone(wrong_value)
+                # 오답 ÷ 정답이 정확히 1/10 — 자릿수 끊기에서만 무너졌다는 진단의 근거.
+                self.assertAlmostEqual(wrong_value / raw_value, 0.1, places=4)
+
+    def test_exact_notation_round_trips(self):
+        """`parse(format(v, max_units=None)) == v` — 표기 로직의 자기 검산."""
+        for value, _short, _exact in self.CASES:
+            with self.subTest(value=value):
+                exact = units.format_korean_won(value, max_units=None)
+                self.assertEqual(units.parse_korean_amount(exact), value)
+
+    def test_currency_only_changes_the_suffix(self):
+        """통화가 달라도 자릿수를 끊는 규칙은 같다 — 본문이 갈라지면 버그다."""
+        for value in (26507100000, 39890534790000, 10 ** 8):
+            with self.subTest(value=value):
+                body = units.format_korean_amount(value)
+                self.assertEqual(units.format_korean_won(value), f'{body} 원')
+                self.assertEqual(units.format_korean_usd(value), f'{body} 달러')
+
+    def test_usd_notation_matches_the_real_dr_filing(self):
+        """실제 DR 공시(20260710800023)의 발행 규모."""
+        self.assertEqual(units.format_korean_usd(26507100000), '265억 710만 달러')
+
+    def test_foreign_currency_notation_round_trips(self):
+        """달러 표기도 되읽어 값이 보존돼야 한다."""
+        for value, _short, _exact in self.CASES:
+            with self.subTest(value=value):
+                exact = units.format_korean_usd(value, max_units=None)
+                self.assertEqual(units.parse_korean_amount(exact), value)
+
+    def test_truncated_notation_never_exceeds_the_value(self):
+        """절사는 버림이므로 되읽은 값이 원값을 넘지 않는다(금액을 부풀리지 않는다).
+
+        음수는 절댓값 기준으로 본다 — 버림은 0쪽으로 당기므로 부호를 붙인 채 비교하면
+        부등호가 뒤집힌다.
+        """
+        for value, _short, _exact in self.CASES:
+            with self.subTest(value=value):
+                parsed = units.parse_korean_amount(units.format_korean_won(value))
+                self.assertIsNotNone(parsed)
+                self.assertLessEqual(abs(parsed), abs(value))
+                self.assertEqual(parsed < 0, value < 0)
+
+    def test_round_trip_holds_across_a_swept_range(self):
+        """경계표 밖에서도 성립하는지 — 표에만 맞춘 구현을 걸러낸다."""
+        values = [
+            v for base in (1, 7, 9999, 10 ** 4, 10 ** 8, 10 ** 12, 10 ** 16)
+            for v in (base - 1, base, base + 1, base * 3 + 1234)
+            if v >= 0
+        ]
+        for value in values:
+            with self.subTest(value=value):
+                exact = units.format_korean_amount(value, max_units=None)
+                self.assertEqual(units.parse_korean_amount(exact), value)
+                short = units.format_korean_amount(value)
+                self.assertLessEqual(units.parse_korean_amount(short), value)
+
+    def test_approximation_mark_appears_exactly_when_digits_are_dropped(self):
+        """`약` 은 장식이 아니라 '버린 자리가 있다'는 사실의 표시다."""
+        self.assertNotIn(units.APPROX_MARK.strip(), units.format_korean_won(10 ** 13))
+        self.assertIn(units.APPROX_MARK.strip(), units.format_korean_won(10 ** 13 + 1))
+
+    def test_split_units_drops_zero_coefficients(self):
+        self.assertEqual(units.split_units(45_453_450_000_000),
+                         [(12, 45), (8, 4534), (4, 5000)])
+        self.assertEqual(units.split_units(10_000), [(4, 1)])
+        self.assertEqual(units.split_units(0), [])
+
+    def test_invalid_inputs_are_rejected_loudly(self):
+        """조용히 이상한 값을 뱉느니 터지는 게 낫다 — 금액 표기는 되돌릴 수 없다."""
+        with self.assertRaises(ValueError):
+            units.split_units(-1)
+        for bad in (1.0, True, '1', None):
+            with self.subTest(bad=bad), self.assertRaises(TypeError):
+                units.split_units(bad)
+        with self.assertRaises(ValueError):
+            units.format_korean_amount(1, max_units=0)
+        with self.assertRaises(ValueError):
+            units.format_korean_amount(1, max_units=-1)
+
+    def test_parser_takes_whole_notations_only(self):
+        """자유 문장에서 긁어내는 일은 `verification.extract_numbers` 몫이다.
+
+        여기서 통짜 일치를 요구하는 이유는 용도가 '코드가 만든 표기를 되읽어 값이
+        보존됐는지 확인'하는 것이기 때문이다. 넓게 잡으면 그 확인이 무의미해진다.
+        """
+        for text, expected in [
+            ('약 45조 4,534억 5,000만 원', 45_453_450_000_000),
+            ('39,890,534,790,000', 39_890_534_790_000),
+            ('4,000억원', 400_000_000_000),
+            ('3조9891억', 3_989_100_000_000),   # 공백 없이 붙여 쓴 표기
+            ('-1억', -100_000_000),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(units.parse_korean_amount(text), expected)
+
+        for text in ('계약금액은 3조 원이다', '', '원', 'abc', '3조 4,000억원어치', None):
+            with self.subTest(text=text):
+                self.assertIsNone(units.parse_korean_amount(text))
+
+    def test_module_imports_without_django(self):
+        """Django 없이 import 된다 — 순수 함수라는 설계 제약 자체를 고정한다.
+
+        여기에 Django 의존이 들어오면 `manage.py` 없이 경계값을 돌릴 수 없게 되고,
+        환산 로직이 웹 프레임워크의 수명에 묶인다.
+        """
+        code = (
+            'import sys; sys.path.insert(0, sys.argv[1]); import units; '
+            'assert "django" not in sys.modules, "django가 함께 로드됐다"; '
+            'print(units.format_korean_won(45453450000000))'
+        )
+        env = dict(os.environ, PYTHONIOENCODING='utf-8')
+        env.pop('DJANGO_SETTINGS_MODULE', None)
+        result = subprocess.run(
+            [sys.executable, '-c', code, str(Path(__file__).resolve().parent)],
+            capture_output=True, text=True, encoding='utf-8', env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '약 45조 4,534억 원')
+
+
+class ReviewPolicyGateTest(TestCase):
+    """검수 게이트 정책(`review_policy.evaluate`) — 제목만 보고 판정한다.
+
+    이 게이트가 5단계의 핵심 변경이다. AI가 매긴 중요도 대신 **DART가 부여한 제목**이라는
+    바꿀 수 없는 사실로 대상을 고른다.
+    """
+
+    def test_capital_structure_titles_are_gated(self):
+        for name in (
+            '주요사항보고서(유상증자결정)', '증권신고서(지분증권)', '투자설명서',
+            '증권발행실적보고서', '증권예탁증권(DR)발행결정',
+            '유상증자또는주식관련사채등의발행결과(자율공시)',
+            '주요사항보고서(전환사채권발행결정)',
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(review_policy.evaluate(name), ReviewCategory.CAPITAL)
+
+    def test_other_categories(self):
+        self.assertEqual(review_policy.evaluate('중대재해발생'), ReviewCategory.SAFETY)
+        self.assertEqual(review_policy.evaluate('최대주주변경'), ReviewCategory.CONTROL)
+        self.assertEqual(
+            review_policy.evaluate('회계감사인의감사의견(감사보고서)제출'),
+            ReviewCategory.DISTRESS,
+        )
+
+    def test_normalization_keeps_corrections_and_spacing_on_the_same_verdict(self):
+        """정정 공시가 원 공시와 다른 판정을 받으면 검수 큐가 갈라진다.
+
+        DART 제목에는 정렬용 연속 공백이 섞여 있고 `[기재정정]`·`[발행조건확정]` 같은
+        선행 태그가 붙는다. `selection.normalize_title` 을 재사용하는 이유가 이것이다.
+        """
+        for name in (
+            '주요사항보고서(유상증자결정)',
+            '[기재정정]주요사항보고서(유상증자결정)',
+            '주요사항보고서 (유상증자결정)',
+            '주요사항보고서(유상증자결정)   ',
+            '[발행조건확정]증권신고서(지분증권)',
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(review_policy.evaluate(name))
+
+    def test_types_deliberately_left_out_stay_out(self):
+        """게이트 밖으로 뺀 유형 — 뺀 것이 사고가 아니라 판단이었음을 고정한다.
+
+        `단일판매ㆍ공급계약체결` 제외가 가장 논쟁적이다(backend 8(b)). 정형 서식이라
+        위험이 사실상 금액 오류 하나이고 그건 수치 검증기가 담당한다는 논리인데,
+        **이 유형에서 실제 오류가 나오면 즉시 게이트에 넣어야 한다.**
+        """
+        for name in (
+            '단일판매ㆍ공급계약체결', '분기보고서(2026.03)',
+            '연결재무제표기준영업(잠정)실적(공정공시)', '신규시설투자등',
+            '기업설명회(IR)개최', '현금ㆍ현물배당결정',
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(review_policy.evaluate(name), '')
+
+    def test_category_choices_match_the_model_field(self):
+        field = Disclosure._meta.get_field('review_category')
+        self.assertEqual(
+            [value for value, _label in field.choices], ReviewCategory.values)
+        self.assertTrue(field.blank)
+        self.assertEqual(field.default, '')
+
+    def test_should_regenerate_is_the_single_gate_on_cost(self):
+        blocking = [verification.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억']
+
+        self.assertFalse(should_regenerate([], 0))     # 고칠 게 없으면 안 부른다
+        self.assertTrue(should_regenerate(blocking, 0))
+        self.assertFalse(should_regenerate(blocking, MAX_REGENERATION_ATTEMPTS))
+        self.assertFalse(should_regenerate(blocking, MAX_REGENERATION_ATTEMPTS + 5))
+
+
+class ApplySelectionReviewGateTest(TestCase):
+    """게이트 판정이 **DB에 남는지** — property가 아니라 컬럼이어야 admin 필터가 SQL로 건다."""
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자')
+
+    def _make(self, rcept_no, report_name, **kwargs):
+        return Disclosure.objects.create(
+            company=self.company, rcept_no=rcept_no, report_name=report_name,
+            disclosure_type='거래소공시', filed_at=date(2026, 7, 1),
+            dart_url=dart_viewer_url(rcept_no), **kwargs)
+
+    def test_gate_verdict_is_persisted(self):
+        gated = self._make('20260701000001', '[기재정정]주요사항보고서(유상증자결정)')
+        plain = self._make('20260701000002', '단일판매ㆍ공급계약체결')
+
+        call_command('apply_selection')
+
+        gated.refresh_from_db()
+        plain.refresh_from_db()
+        self.assertEqual(gated.review_category, ReviewCategory.CAPITAL)
+        self.assertEqual(plain.review_category, '')
+
+    def test_already_decided_disclosures_need_force_to_pick_up_the_gate(self):
+        """**운영상의 함정을 고정한다.** 이미 선별 판정이 끝난 공시는 `--force` 없이는
+        게이트를 다시 받지 않는다.
+
+        `apply_selection` 은 `selection_state=PENDING` 만 훑는다. 마이그레이션 0006 직후나
+        게이트 정책에 유형을 새로 추가한 뒤에는 **반드시 `--force`** 로 재판정해야 한다.
+        안 하면 새로 넣은 고위험 유형이 기존 데이터에서 조용히 비어 있는다.
+        """
+        decided = self._make(
+            '20260701000003', '주요사항보고서(유상증자결정)',
+            selection_state=SelectionState.TARGET)
+
+        call_command('apply_selection')
+        decided.refresh_from_db()
+        self.assertEqual(decided.review_category, '')      # 건드리지 않는다
+
+        call_command('apply_selection', force=True)
+        decided.refresh_from_db()
+        self.assertEqual(decided.review_category, ReviewCategory.CAPITAL)
+
+
+class NumberExtractionTailTest(TestCase):
+    """복합 표기의 꼬리 절단 — 오탐 4건(id 13·56·73·131)의 직접 원인이었다.
+
+    `341억 8,587만 4,800원` 의 맨 끝 `4,800` 이 별개 수치로 떨어져 나가 "인용 근거 없는
+    수치" 경고가 됐다. **AI가 정확히 맞았는데 경고가 붙던 경우다.**
+    """
+
+    def _value(self, text):
+        found = verification.extract_numbers(text)
+        self.assertEqual(len(found), 1, found)
+        return found[0][1]
+
+    def test_trailing_remainder_is_absorbed(self):
+        self.assertEqual(self._value('341억 8,587만 4,800원'), 34_185_874_800)     # id 13
+        self.assertEqual(self._value('2,882억 1,539만 6,500원'), 288_215_396_500)  # id 131
+        self.assertEqual(self._value('1,942만 1,345주'), 19_421_345)               # id 73
+        self.assertEqual(self._value('45조 4,534억 5,000만'), 45_453_450_000_000)
+
+    def test_unrelated_neighbours_are_still_separate(self):
+        """흡수를 넓히면 이번엔 무관한 두 수치가 하나로 뭉친다 — 반대 방향도 고정한다."""
+        self.assertEqual(
+            [value for _raw, value in verification.extract_numbers('1,234 5,678')],
+            [1234.0, 5678.0],
+        )
+        # 직전 단위(만=10^4)보다 크거나 같으면 나머지가 아니라 뒤따르는 다른 수치다.
+        self.assertEqual(
+            [value for _raw, value in verification.extract_numbers('5만 60,000')],
+            [50_000.0, 60_000.0],
+        )
+
+
+class ScalePathToleranceTest(TestCase):
+    """표 머리글 배수 경로의 허용오차 — 오탐을 줄이면서 진짜 오류를 계속 잡는가(양방향)."""
+
+    def test_approximate_wording_gets_the_same_tolerance_on_the_scale_path(self):
+        """id 38: `736`(백만원)=7.36억을 '약 7억'으로 쓴 **정확한** 요약이 오탐이었다.
+
+        직접 대조는 근사에 5%를 허용하는데 배수 경로만 1%를 요구하던 비대칭이 원인이다.
+        배수를 곱하는 것과 근사로 반올림하는 것은 서로 독립인 오차다.
+        """
+        self.assertTrue(verification._value_supported(7e8, [736.0], True))
+
+    def test_without_approximation_the_tight_tolerance_still_applies(self):
+        """'약' 없이 단정한 수치에까지 5%를 열어 주면 탐지력을 그냥 내주는 것이다."""
+        self.assertFalse(verification._value_supported(7e8, [736.0], False))
+
+    def test_ten_fold_errors_are_still_caught_after_the_widening(self):
+        """넓힌 허용오차가 진짜 오류를 통과시키지 않는지 — 이게 양방향의 반대쪽이다."""
+        for wrong, raw in (
+            (3.9891e12, 39_890_534_790_000.0),   # id 128
+            (4.5453e12, 45_453_450_000_000.0),   # id 81
+            (4.3140e12, 43_140_750_000_000.0),   # id 107
+        ):
+            with self.subTest(wrong=wrong):
+                self.assertFalse(verification._value_supported(wrong, [raw], True))
+
+    def test_declared_scales_reads_units_embedded_in_the_quote(self):
+        """인용문이 머리글을 품고 있으면 좌표 계산 없이 배수를 알 수 있다(프롬프트 v3 §2)."""
+        self.assertEqual(
+            verification.declared_scales(
+                ['(단위 : 억원)\n라. 출자상대방 총출자액 | 4,000']),
+            {10 ** 8},
+        )
+        self.assertEqual(verification.declared_scales(['(단위: 백만원)']), {10 ** 6})
+        # 외화·비금액 선언에는 원 배수를 붙이지 않는다.
+        self.assertEqual(verification.declared_scales(['(단위 : 조 달러)']), set())
+        self.assertEqual(verification.declared_scales(['(단위: 명)', '(단위 : 주)']), set())
+        # 콜론이 없으면 산문이다. 이 신호가 없으면 '단위당 원가'가 전부 걸린다.
+        self.assertEqual(verification.declared_scales(['3년 단위 주주환원정책']), set())
+
+    def test_declared_scales_only_widens_never_narrows(self):
+        """가산 전용이라는 성질 — 이 인자로는 경고가 새로 생길 수 없어야 한다."""
+        self.assertFalse(verification._value_supported(999.0, [7.0], False))
+        self.assertFalse(
+            verification._value_supported(999.0, [7.0], False, {10 ** 8}))
+
+    def test_unit_declarations_reset_the_scale_on_non_money_units(self):
+        """비금액 선언을 버리면 앞 표의 배수가 뒤 표로 샌다(analyst W1, id 37)."""
+        text = '머리\n(단위: 백만원)\n영업이익 | 37,610,283\n(단위: 시간)\n근로시간 | 40'
+        declarations = verification.unit_declarations(text)
+
+        self.assertEqual([scale for _pos, scale in declarations], [10 ** 6, 1])
+        first, second = (position for position, _scale in declarations)
+        self.assertEqual(verification.scale_at(declarations, first + 10), 10 ** 6)
+        self.assertEqual(verification.scale_at(declarations, second + 10), 1)
+        # 선언보다 앞에 있는 수치에는 적용하지 않는다(소급 금지).
+        self.assertIsNone(verification.scale_at(declarations, 0))
+
+
+class PublicationBlockingTest(TestCase):
+    """무엇이 게시를 막는가 — 수치만 막고 인용·문체는 막지 않는다(양방향)."""
+
+    NUMBER = verification.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억'
+    QUOTE = verification.UNVERIFIED_QUOTE_PREFIX + ' (근거 1번): 합 계 | 4,177'
+    STYLE = verification.SENTENCE_COUNT_PREFIX + ': 쉬운 설명이 7문장 (권장 3~5문장)'
+
+    def test_only_numeric_warnings_block(self):
+        self.assertEqual(
+            verification.blocking_warnings([self.NUMBER, self.QUOTE, self.STYLE]),
+            [self.NUMBER],
+        )
+        self.assertEqual(verification.blocking_warnings([self.QUOTE, self.STYLE]), [])
+        self.assertEqual(verification.blocking_warnings([]), [])
+        self.assertEqual(verification.blocking_warnings(None), [])
+
+    def test_blocking_and_user_facing_warning_sets_are_deliberately_different(self):
+        """'알려야 하는 것'과 '감춰야 하는 것'은 다른 판단이다.
+
+        인용 경고가 정확히 그 차이에 있다 — 사용자에게는 알리되 게시는 막지 않는다.
+        두 상수를 같게 만들면 표의 두 행을 이어 붙인 멀쩡한 요약이 대량으로 내려간다.
+        """
+        self.assertIn(
+            verification.UNVERIFIED_QUOTE_PREFIX, verification.ACCURACY_WARNING_PREFIXES)
+        self.assertNotIn(
+            verification.UNVERIFIED_QUOTE_PREFIX,
+            verification.PUBLICATION_BLOCKING_PREFIXES)
+        self.assertNotIn(
+            verification.SENTENCE_COUNT_PREFIX, verification.ACCURACY_WARNING_PREFIXES)
+        self.assertNotIn(
+            verification.SENTENCE_COUNT_PREFIX,
+            verification.PUBLICATION_BLOCKING_PREFIXES)
+
+
+class KnownDetectionGapTest(TestCase):
+    """**지금 못 잡는 것**을 기록한다. 통과가 정상이라는 뜻이 아니다.
+
+    아래 테스트가 실패하면 미탐이 **고쳐진** 것이다. 그때 기대값을 뒤집고 이 클래스를
+    지우면 된다. 고쳐지지 않은 채 조용히 잊히는 것을 막기 위한 장치다.
+    """
+
+    def test_hundred_fold_errors_still_pass_the_multiplier_menu(self):
+        """남은 배수(10^3~10^8)는 여전히 무조건 허용된다 — 백만 배 틀려도 통과한다.
+
+        진짜 오류 7토큰이 걸린 것은 순전히 **10배가 목록에 없어서**다.
+        `10**5`·`10**1` 을 목록에 넣으면 진짜 오류가 전부 통과하므로 **절대 넣지 말 것**.
+        조(10^12)만 문서 선언 게이트로 닫았다(`ScaleGateTest`). 나머지를 마저 닫으려면
+        v2 잔재가 사라진 뒤 재측정해야 한다 — 지금 닫으면 새 오탐 25건이 생긴다.
+        """
+        # 같은 근거 값 7,348 에 대해 7.348e9(십억원 표) 와 7.348e12(백만원 표)가
+        # **둘 다 정답으로 인정된다.** 천 배 차이인데 검증기는 구별하지 못한다.
+        self.assertTrue(verification._value_supported(7.348e9, [7348.0], False))
+        self.assertTrue(verification._value_supported(7.348e12, [7348000.0], False))
+        self.assertNotIn(10 ** 5, verification._SCALE_MULTIPLIERS)
+        self.assertNotIn(10 ** 1, verification._SCALE_MULTIPLIERS)
+
+
+class ScaleGateTest(TestCase):
+    """조(10^12) 배수는 **문서가 선언했을 때만** 인정한다.
+
+    무조건 허용하면 인용문의 한 자리 숫자 하나가 조 단위 금액 아무거나를 정당화한다.
+    실제로 그 경로로 10배 오류가 검증을 통과해 웹에 게시됐다
+    (rcept_no 20260710000008: 40,023,070,290,000원을 `약 4조 원`으로 적었다).
+    """
+
+    def test_a_bare_digit_no_longer_justifies_a_trillion_scale_figure(self):
+        """표 항목번호 `4.` 가 값 `4` 로 추출돼 `4조` 의 가짜 근거가 되던 경로."""
+        quote_values = [4.0, 40_023_070_290_000.0]   # 항목번호 4 + 진짜 금액
+        self.assertFalse(verification._value_supported(4e12, quote_values, True))
+
+    def test_a_declared_trillion_unit_is_still_accepted(self):
+        """`(단위 : 조원)` 표는 정상이다 — 삼성전자 잠정실적이 매출을 `171.00` 으로 적는다.
+
+        게이트가 이걸 막으면 정상 요약 2건이 곧바로 오탐이 된다(실측).
+        """
+        self.assertTrue(verification._value_supported(
+            1.71e14, [171.0], True, quote_scales={10 ** 12}))
+
+    def test_document_scales_reads_declarations_from_the_raw_text(self):
+        """인용문이 머리글을 담지 않은 v2 요약도 문서 선언으로 구제된다."""
+        self.assertIn(
+            10 ** 12, verification.document_scales('매출액 (단위 : 조원) | 171.00'))
+        self.assertEqual(verification.document_scales('금액 40,023,070,290,000'), set())
+
+    def test_the_real_escaped_error_is_now_caught(self):
+        """회귀 방지 — 실제로 웹에 나갔던 문장 그대로 검증한다."""
+        raw = '4. 자금조달의 목적 | 시설자금 (원) | 40,023,070,290,000'
+        evidence = [{'claim': '시설자금 조달액', 'quote': raw}]
+        wrong = verification.validate_summary(
+            {'one_line': '40,023,070,290,000원(약 4조 원)을 조달한다',
+             'easy_explanation': '.', 'why_important': '.',
+             'importance': 'high', 'evidence': evidence}, raw)
+        self.assertTrue(any('4조' in w for w in summarizer.build_review_warnings(wrong)))
+
+
+class AmountAnnotationTest(TestCase):
+    """`annotate_amounts` — 코드가 읽기 쉬운 표기를 만들어 붙인다.
+
+    A안(코드 사후 치환)의 유일한 위험은 **날짜·접수번호·주식수까지 잘못 환산하는 것**이다.
+    앵커를 `원`/`주` 로 끝나는 수에만 걸어 구조적으로 막았다는 주장을 공격적으로 검증한다.
+    """
+
+    def _annotate(self, text):
+        return summarizer.annotate_amounts({'one_line': text})['one_line']
+
+    def test_amounts_over_the_floor_get_a_readable_notation(self):
+        self.assertEqual(
+            self._annotate('39,890,534,790,000원을 조달한다'),
+            '39,890,534,790,000원(약 39조 8,905억 원)을 조달한다',
+        )
+        self.assertEqual(
+            self._annotate('288,215,396,500원이다'),
+            '288,215,396,500원(약 2,882억 1,539만 원)이다',
+        )
+        self.assertEqual(
+            self._annotate('1,152,149,501주다'),
+            '1,152,149,501주(약 11억 5,214만 주)다',
+        )
+
+    def test_non_amount_numbers_are_structurally_untouched(self):
+        """날짜·접수번호·사업자번호·비율은 통화·주 앵커로 끝나지 않아 **불가능**하다."""
+        for text in (
+            '2026년 07월 13일 접수번호 20260713000123 사업자 104-81-26688',
+            '17.33%에서 17.32%로 하락',
+            '보통주식 1,132,477주식수 기준',           # 주(?!식)
+            '390,242백만원',                          # 이미 단위가 붙었다
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self._annotate(text), text)
+
+    def test_foreign_currency_gets_the_same_treatment(self):
+        """외화도 3자리 쉼표라 원화와 똑같이 읽히지 않는다.
+
+        v3 첫 실측(DR발행결정)에서 모델이 `26,507,100,000 USD` 라고만 적어, 오탐은
+        사라졌는데 읽을 수 없는 표기가 남았다. 통화만 바뀐 같은 문제이므로 같은 규칙을 쓴다.
+        """
+        self.assertEqual(
+            self._annotate('26,507,100,000 USD 규모로 발행한다'),
+            '26,507,100,000 USD(265억 710만 달러) 규모로 발행한다',
+        )
+        # 모델이 한글로 적어도 동일하게 잡는다.
+        self.assertEqual(
+            self._annotate('미화 26,507,100,000달러를 조달했다'),
+            '미화 26,507,100,000달러(265억 710만 달러)를 조달했다',
+        )
+
+    def test_exchange_rate_is_never_applied_by_code(self):
+        """달러를 원화로 바꾸지 않는다.
+
+        환율은 원문에 없을 수도 있는 값이다. 코드가 끌어와 곱하면 그 결과가 곧
+        `인용 근거 없는 수치` 가 된다 — 이 파이프라인이 잡아내려는 바로 그 오류다.
+        달러는 달러 단위로만 읽기 쉽게 만든다.
+        """
+        annotated = self._annotate('26,507,100,000 USD 규모')
+        self.assertIn('265억 710만 달러', annotated)
+        self.assertNotIn('원', annotated)
+
+    def test_small_foreign_prices_stay_as_written(self):
+        """`149.00 USD` 는 쉼표 없이도 읽힌다. 하한 아래는 건드리지 않는다."""
+        for text in ('1 DR당 발행가액은 149.00 USD다', '수수료 500 USD'):
+            with self.subTest(text=text):
+                self.assertEqual(self._annotate(text), text)
+
+    def test_korean_units_already_written_are_not_annotated_again(self):
+        """`4,000억원(약 4,000억 원)` 같은 동어반복이 나오면 결함이다."""
+        for text in (
+            '4,000억원이다', '4,000억 원이다',
+            '45조 4,534억 5,000만 원', '3조 9,891억 원',
+            '2,882억 1,539만 6,500원',                # 복합 표기의 꼬리(띄어 쓴 경우)
+            '2,882억 1,539만6,500원',                 # 붙여 쓴 경우
+            '3조 500,000,000원',                      # 하한을 넘는 인위적 꼬리
+            '5,000만원', '374,629천원',
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self._annotate(text), text)
+
+    def test_floor_is_one_hundred_million(self):
+        """`285,000원(약 28만 원)` 은 도움이 안 되고 문장만 지저분해진다."""
+        self.assertEqual(summarizer.AMOUNT_NOTATION_MIN, 10 ** 8)
+        self.assertEqual(self._annotate('285,000원'), '285,000원')
+        self.assertEqual(self._annotate('99,999,999원'), '99,999,999원')
+        self.assertIn('(', self._annotate('100,000,000원'))
+
+    def test_one_line_gives_up_annotation_rather_than_breaking_the_save(self):
+        """병기가 200자를 넘기면 `one_line.max_length` 를 초과해 **저장이 깨진다.**
+
+        읽기 편함보다 저장 성공이 우선이고, 그 금액은 easy_explanation 에서 다시 나온다.
+        """
+        # 병기 전 195자 → 병기하면 213자. 경계를 정확히 걸치게 만든다.
+        long_text = '가' * 175 + ' 45,453,450,000,000원'
+        self.assertLessEqual(len(long_text), verification.ONE_LINE_MAX_CHARS)
+        result = summarizer.annotate_amounts(
+            {'one_line': long_text, 'easy_explanation': long_text, 'why_important': ''})
+
+        self.assertEqual(result['one_line'], long_text)           # 병기 생략
+        self.assertIn('(약', result['easy_explanation'])           # 여기서는 병기
+        self.assertLessEqual(
+            len(result['one_line']),
+            DisclosureSummary._meta.get_field('one_line').max_length)
+
+    def test_original_dict_is_not_mutated(self):
+        source = {'one_line': '500,000,000원', 'easy_explanation': '500,000,000원',
+                  'why_important': '500,000,000원'}
+        summarizer.annotate_amounts(source)
+
+        self.assertEqual(source['one_line'], '500,000,000원')
+
+    def test_annotation_is_idempotent_with_or_without_truncation(self):
+        """두 번 적용해도 같아야 한다. `약` 유무와 무관하다.
+
+        예전 멱등성 장치는 `(?!\\s*\\(약)` 하나뿐이라 **절사가 일어난 표기만** 막았다.
+        딱 떨어지는 금액(`500,000,000원` → `(5억 원)`)에는 `약` 이 안 붙어 두 번째
+        적용에서 다시 병기됐다. 외화 병기(`265억 710만 달러`)는 절사 없이 떨어지는 경우가
+        흔해 그 결함이 예외가 아니라 기본 동작이 되므로, `약` 이 아니라 "괄호 안이 한국
+        단위 표기인가" 로 판정하게 바꿨다.
+
+        도달 경로가 실재한다 — 재생성 루프가 `correction_previous=result` 로 **이미 병기된**
+        요약을 모델에게 되돌려 주고, 교정 프롬프트는 "지적되지 않은 문장은 한 글자도 바꾸지
+        마라"고 지시한다. 모델이 그대로 옮기면 그 출력에 `annotate_amounts` 가 다시 걸린다.
+        """
+        for text in (
+            '45,453,450,000,000원을 조달한다',   # 절사 있음 → `약` 이 붙는다
+            '500,000,000원을 지급한다',          # 절사 없음 → `약` 이 없다
+            '26,507,100,000 USD 규모로 발행한다',  # 외화, 절사 없음
+        ):
+            with self.subTest(text=text):
+                once = self._annotate(text)
+                self.assertEqual(self._annotate(once), once)
+
+    def test_exact_amounts_annotate_without_the_approximation_mark(self):
+        """딱 떨어지면 `약` 을 붙이지 않는다 — 버린 자리가 없으므로 근사가 아니다."""
+        self.assertEqual(
+            self._annotate('500,000,000원을 지급한다'),
+            '500,000,000원(5억 원)을 지급한다',
+        )
+
+
+class AmountAnnotationKnownGapTest(TestCase):
+    """**지금 있는 결함**을 기록한다. 아래가 실패하면 결함이 고쳐진 것이다."""
+
+    def test_original_share_wording_is_misread_as_won(self):
+        """`원주`(원주식)를 `원`(통화)으로 오인한다. DR 공시에 실제로 나오는 말이다."""
+        self.assertEqual(
+            summarizer.annotate_amounts(
+                {'one_line': '177,900,000 원주를 예탁했다'})['one_line'],
+            '177,900,000 원(1억 7,790만 원)주를 예탁했다',
+        )
+
+
+class CorrectionMessageTest(TestCase):
+    """재생성 요청 메시지 — 저장된 경고는 **진단문**이고 모델에게는 **지시문**이 필요하다."""
+
+    def test_empty_warnings_produce_no_message(self):
+        """고칠 게 없는데 교정 턴을 붙이면 비용만 나간다."""
+        self.assertIsNone(summarizer.build_correction_message([]))
+        self.assertIsNone(summarizer.build_correction_message(None))
+        self.assertIsNone(summarizer.build_correction_message(['', '   ']))
+
+    def test_each_warning_prefix_gets_its_own_action(self):
+        for prefix in (
+            verification.UNSUPPORTED_NUMBER_PREFIX,
+            verification.UNVERIFIED_QUOTE_PREFIX,
+            verification.SENTENCE_COUNT_PREFIX,
+        ):
+            with self.subTest(prefix=prefix):
+                message = summarizer.build_correction_message([prefix + '무엇무엇'])
+                self.assertIn(summarizer.CORRECTION_ACTIONS[prefix], message)
+
+    def test_unknown_warning_falls_back_instead_of_blanking(self):
+        message = summarizer.build_correction_message(['처음 보는 경고'])
+        self.assertIn(summarizer.DEFAULT_CORRECTION_ACTION, message)
+
+    def test_actions_are_keyed_by_the_verification_constants(self):
+        """문구가 아니라 상수로 이어야 경고 문구를 고쳐도 조치문이 안 끊긴다."""
+        self.assertEqual(
+            set(summarizer.CORRECTION_ACTIONS),
+            {verification.UNSUPPORTED_NUMBER_PREFIX,
+             verification.UNVERIFIED_QUOTE_PREFIX,
+             verification.SENTENCE_COUNT_PREFIX},
+        )
+
+    def test_schema_only_strips_diagnostic_fields(self):
+        """되먹이는 직전 출력에 우리가 붙인 진단 필드가 남으면 strict 스키마와 어긋난다."""
+        stripped = summarizer.schema_only({
+            'one_line': '한 줄', 'easy_explanation': '설명', 'why_important': '의미',
+            'importance': 'high', 'warnings': ['경고'], 'unsupported_numbers': ['3조'],
+            'evidence': [{'field': 'one_line', 'claim': '주장', 'quote': '인용',
+                          'quote_found': True, 'numbers_ok': False,
+                          'missing_numbers': ['3조']}],
+        })
+
+        self.assertEqual(
+            set(stripped),
+            {'one_line', 'easy_explanation', 'why_important', 'importance', 'evidence'})
+        self.assertEqual(set(stripped['evidence'][0]), {'field', 'claim', 'quote'})
+
+
+class CorrectionCachePrefixTest(TestCase):
+    """교정 턴이 캐시 접두사를 깨지 않는지 — **깨져도 청구서에만 나타난다.**
+
+    시스템 프롬프트와 원문 user 메시지가 바이트 단위로 같아야 프롬프트 캐시가 접두사
+    전체에 적중한다(캐시 입력 단가는 미캐시의 1/10). 21만 토큰짜리 사업보고서 기준
+    건당 $0.021 대 $0.21 의 차이라 회귀로 고정할 값이 있다.
+    """
+
+    BASE = dict(
+        company_name='SK하이닉스', report_name='주요사항보고서(유상증자결정)',
+        filed_at='2026-07-01', rcept_no='20260701000001',
+        raw_text='유상증자 결정\n계약금액 | 1,234,567', disclosure_type='거래소공시',
+    )
+
+    def _capture(self, **kwargs):
+        captured = []
+
+        def fake_call(messages, model, max_output_tokens, reasoning_effort):
+            captured.append([dict(message) for message in messages])
+            return _valid_summary_payload(), FAKE_USAGE, 'gpt-5.6-luna'
+
+        with patch.object(summarizer, '_call_openai', side_effect=fake_call):
+            result = summarizer.summarize_disclosure(**self.BASE, **kwargs)
+        return captured[0], result
+
+    def test_correction_turn_only_appends_to_the_cached_prefix(self):
+        first, result = self._capture()
+        warnings = [verification.UNSUPPORTED_NUMBER_PREFIX + '3조 9,891억']
+        second, corrected = self._capture(
+            correction_warnings=warnings, correction_previous=result)
+
+        self.assertEqual([m['role'] for m in first], ['system', 'user'])
+        self.assertEqual([m['role'] for m in second],
+                         ['system', 'user', 'assistant', 'user'])
+        self.assertEqual(first[0]['content'], second[0]['content'])   # system 바이트 동일
+        self.assertEqual(first[1]['content'], second[1]['content'])   # 원문 user 동일
+        self.assertFalse(result['corrected'])
+        self.assertTrue(corrected['corrected'])
+
+    def test_empty_warnings_add_no_turn_at_all(self):
+        messages, _result = self._capture(correction_warnings=[])
+        self.assertEqual([m['role'] for m in messages], ['system', 'user'])
+
+    def test_previous_output_is_optional_but_omits_the_assistant_turn(self):
+        messages, _result = self._capture(
+            correction_warnings=[verification.SENTENCE_COUNT_PREFIX + ': 7문장'])
+        self.assertEqual([m['role'] for m in messages], ['system', 'user', 'user'])
+
+
+# --- 요약 생성 명령 ---------------------------------------------------------
+#
+# `summarize_disclosures` 는 **돈이 나가는 유일한 경로**인데 4단계까지 테스트가 0건이었다.
+# 실호출은 절대 하지 않고 `_call_openai`(HTTP 경계) 만 대역으로 바꿔 명령 전체를 태운다.
+
+#: 원문. 아래 payload 의 인용문이 여기서 발견돼야 quote_found 가 참이 된다.
+COMMAND_RAW_TEXT = '단일판매ㆍ공급계약 체결\n계약금액 | 1,234,567\n매출액 대비 | 12.34%'
+
+#: 검증을 통과하지 못하는 payload — one_line 의 9,999,999 는 인용문에 근거가 없다.
+#: 수치 경고는 게시를 막으므로 자동 미게시 경로가 켜진다.
+def _blocking_summary_payload(number='9,999,999'):
+    return _valid_summary_payload(
+        one_line=f'삼성전자가 {number}원 규모의 공급계약을 체결했다.')
+
+
+def _fake_llm(*responses):
+    """`_call_openai` 대역. 문자열 하나면 매번 같은 응답을 준다."""
+    queue = list(responses)
+
+    def call(messages, model, max_output_tokens, reasoning_effort):
+        body = queue.pop(0) if len(queue) > 1 else queue[0]
+        return body, dict(FAKE_USAGE), 'gpt-5.6-luna'
+
+    return call
+
+
+class SummarizeDisclosuresCommandTest(TestCase):
+    """요약 생성 명령 — LLM 실호출 없이 저장 결과와 게시 판정을 고정한다."""
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자')
+        self.disclosure = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000001',
+            report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
+        )
+
+    def _call(self, *responses, **options):
+        with patch.object(
+            summarizer, '_call_openai', side_effect=_fake_llm(*responses)
+        ) as mock_call:
+            call_command('summarize_disclosures', **options)
+        return mock_call
+
+    def test_creates_a_summary_from_the_model_output(self):
+        mock_call = self._call(_valid_summary_payload())
+
+        self.assertEqual(mock_call.call_count, 1)
+        summary = DisclosureSummary.objects.get(disclosure=self.disclosure)
+        self.assertEqual(summary.importance, 'medium')
+        self.assertEqual(summary.model_name, 'gpt-5.6-luna')
+        self.assertEqual(summary.review_warnings, [])
+        self.assertTrue(summary.is_published)
+        self.assertEqual(summary.hidden_by, '')
+        self.assertEqual(summary.regeneration_count, 0)
+        self.assertEqual(summary.regeneration_history, [])
+        # 검수 여부는 요약을 만드는 쪽에서 정하지 않는다 — 게이트와 경고가 정한다.
+        self.assertFalse(summary.is_reviewed)
+
+    def test_prompt_version_is_recorded(self):
+        """모델명만으로는 v2와 v3를 구별할 수 없다 — 프롬프트 개선 효과를 못 잰다."""
+        self._call(_valid_summary_payload())
+
+        summary = DisclosureSummary.objects.get(disclosure=self.disclosure)
+        self.assertEqual(summary.prompt_version, summarizer.PROMPT_VERSION)
+
+    def test_recorded_version_comes_from_the_result_not_the_constant(self):
+        """재생성 중 상수가 바뀌어도 **실제로 쓴** 버전이 남아야 한다."""
+        payload = _valid_summary_payload()
+        with patch.object(summarizer, 'PROMPT_VERSION', 'v9'):
+            self._call(payload)
+
+        summary = DisclosureSummary.objects.get(disclosure=self.disclosure)
+        self.assertEqual(summary.prompt_version, 'v9')
+
+    def test_unknown_version_stays_empty_rather_than_guessing(self):
+        """이 필드가 생기기 전 요약은 '모름'이다. v2로 단정하면 측정이 오염된다."""
+        summary = DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line='.', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+        )
+        self.assertEqual(summary.prompt_version, '')
+
+    def test_only_warned_requires_resummarize(self):
+        """경고 붙은 요약은 이미 존재하므로 --resummarize 없이는 대상이 늘 0건이다.
+
+        조용히 0건으로 끝나면 "돌렸는데 왜 안 고쳐졌지"로 이어진다. 이유를 말하고 멈춘다.
+        """
+        with self.assertRaises(CommandError):
+            call_command('summarize_disclosures', only_warned=True)
+
+    def test_only_warned_picks_exactly_the_flagged_summaries(self):
+        """경고 없는 요약에까지 비용을 쓰면 안 된다."""
+        clean = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000002',
+            report_name='주요사항보고서', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 2), dart_url=dart_viewer_url('20260701000002'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
+        )
+        DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line='경고 있음', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            review_warnings=['인용 근거 없는 수치: 4,000억'],
+        )
+        DisclosureSummary.objects.create(
+            disclosure=clean, one_line='경고 없음', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            review_warnings=[],
+        )
+
+        mock_call = self._call(_valid_summary_payload(),
+                               resummarize=True, only_warned=True)
+
+        self.assertEqual(mock_call.call_count, 1)
+        clean.refresh_from_db()
+        self.assertEqual(clean.summary.one_line, '경고 없음')
+
+    def test_dry_run_never_calls_the_model(self):
+        """비용 추정만 하는 경로가 실수로 호출을 하면 그대로 청구된다."""
+        mock_call = self._call(_valid_summary_payload(), dry_run=True)
+
+        mock_call.assert_not_called()
+        self.assertFalse(DisclosureSummary.objects.exists())
+
+    def test_existing_summary_is_not_resummarized(self):
+        """공시당 1회 원칙(PLAN.md 11)의 실행 지점 — 여기가 새면 비용이 트래픽에 비례한다."""
+        self._call(_valid_summary_payload())
+        mock_call = self._call(_valid_summary_payload())
+
+        mock_call.assert_not_called()
+        self.assertEqual(DisclosureSummary.objects.count(), 1)
+
+    def test_resummarize_overwrites_in_place(self):
+        self._call(_valid_summary_payload())
+        self._call(
+            _valid_summary_payload(one_line='다시 만든 한 줄 요약이다.'),
+            resummarize=True,
+        )
+
+        self.assertEqual(DisclosureSummary.objects.count(), 1)
+        summary = DisclosureSummary.objects.get()
+        self.assertEqual(summary.one_line, '다시 만든 한 줄 요약이다.')
+
+    def test_numeric_warning_hides_the_summary_at_creation(self):
+        """검증 결과가 노출에 영향을 주는 지점. 39조를 3조로 적은 요약이 경고를 단 채
+        웹에 그대로 떠 있던 문제(00_input.md 2.3)를 막는 곳이다."""
+        self._call(_blocking_summary_payload())
+
+        summary = DisclosureSummary.objects.get()
+        self.assertFalse(summary.is_published)
+        self.assertEqual(summary.hidden_by, DisclosureSummary.HiddenBy.AUTO)
+        self.assertEqual(summary.hidden_reason, verification.AUTO_HIDDEN_REASON)
+        self.assertTrue(summary.auto_hidden)
+        self.assertTrue(any(
+            warning.startswith(verification.UNSUPPORTED_NUMBER_PREFIX)
+            for warning in summary.review_warnings))
+
+    def test_quote_only_warning_does_not_hide_the_summary(self):
+        """인용 형식 문제로 멀쩡한 요약을 내리면 화면이 텅 빈다(양방향 확인)."""
+        payload = _valid_summary_payload(evidence=[{
+            'field': 'one_line', 'claim': '1,234,567원 규모의 공급계약',
+            'quote': '원문에 없는 지어낸 인용문이다 계약금액 | 1,234,567',
+        }])
+        self._call(payload)
+
+        summary = DisclosureSummary.objects.get()
+        self.assertTrue(any(
+            warning.startswith(verification.UNVERIFIED_QUOTE_PREFIX)
+            for warning in summary.review_warnings))
+        self.assertTrue(summary.is_published)
+        self.assertEqual(summary.hidden_by, '')
+
+    def test_amount_annotation_reaches_the_stored_body(self):
+        """코드 환산이 실제로 저장까지 도달하는지 — 이게 5단계 변경의 사용자 접점이다."""
+        payload = _valid_summary_payload(
+            one_line='SK하이닉스가 45,453,450,000,000원을 조달한다.',
+            easy_explanation='회사가 돈을 모은다. 45,453,450,000,000원이다. 셋째 문장이다.',
+            evidence=[{'field': 'one_line', 'claim': '45,453,450,000,000원',
+                       'quote': '계약금액 | 1,234,567'}],
+        )
+        self._call(payload)
+
+        summary = DisclosureSummary.objects.get()
+        self.assertIn('(약 45조 4,534억 원)', summary.one_line)
+        self.assertIn('(약 45조 4,534억 원)', summary.easy_explanation)
+
+    def test_summarizer_failure_is_recorded_without_killing_the_run(self):
+        """건별 실패로 전체가 죽으면 남은 공시가 통째로 밀린다."""
+        mock_call = self._call('{깨진 JSON')
+
+        self.assertEqual(mock_call.call_count, summarizer.MAX_RETRIES + 1)
+        self.assertFalse(DisclosureSummary.objects.exists())
+
+    def test_invalid_limit_is_rejected_before_any_call(self):
+        with self.assertRaises(CommandError):
+            call_command('summarize_disclosures', limit=0)
+
+    def test_worst_case_llm_calls_per_disclosure(self):
+        """건당 LLM 호출의 **진짜 상한**을 잰다.
+
+        backend 보고서의 '건당 최대 2회'는 `summarize_disclosure` **호출 횟수**이고,
+        그 함수 안에는 검증 실패 시 도는 재시도 루프가 따로 있다(`MAX_RETRIES`).
+        실제 HTTP 호출 상한은 `(1 + MAX_REGENERATION_ATTEMPTS) × (MAX_RETRIES + 1)` 이다.
+        비용 상한을 이 수로 잡아야 한다.
+        """
+        broken = '{깨진 JSON'
+        mock_call = self._call(
+            broken, broken, _blocking_summary_payload(),   # 최초: 3번째에 성공(경고 있음)
+            broken, broken, broken,                        # 재생성: 3번 다 실패
+            regenerate=True,
+        )
+
+        expected = (1 + MAX_REGENERATION_ATTEMPTS) * (summarizer.MAX_RETRIES + 1)
+        self.assertEqual(mock_call.call_count, expected)
+        self.assertEqual(mock_call.call_count, 6)
+
+        summary = DisclosureSummary.objects.get()
+        self.assertEqual(summary.regeneration_count, 1)
+        self.assertFalse(summary.is_published)
+        self.assertIn('error', summary.regeneration_history[0])
+
+
+# --- 재생성 상한 ------------------------------------------------------------
+#
+# **무한 재시도 = 무한 비용.** 상한이 이 파이프라인의 유일한 비용 방어선이므로
+# `summarize_disclosure` 자체를 대역으로 바꿔 호출 횟수를 직접 센다.
+
+def _regen_result(**overrides):
+    """`summarize_disclosure` 가 돌려주는 모양의 dict."""
+    result = {
+        'one_line': '삼성전자가 1,234,567원 규모의 공급계약을 체결했다.',
+        'easy_explanation': '첫 문장이다. 둘째 문장이다. 셋째 문장이다.',
+        'why_important': '매출로 이어지는 계약이다.',
+        'importance': 'medium',
+        'model_name': 'gpt-5.6-luna',
+        'evidence': [{'field': 'one_line', 'claim': '계약금액 1,234,567원',
+                      'quote': '계약금액 | 1,234,567', 'quote_found': True,
+                      'numbers_ok': True, 'missing_numbers': []}],
+        'unsupported_numbers': [],
+        'sentence_count': 3,
+        'warnings': [],
+        'usage': dict(FAKE_USAGE),
+        'cost_usd': 0.01,
+        'attempts': 1,
+        'prompt_version': summarizer.PROMPT_VERSION,
+        'corrected': False,
+    }
+    result.update(overrides)
+    return result
+
+
+def _fake_summarize_disclosure(outcomes):
+    """`summarize_disclosure` 대역.
+
+    **시그니처가 진짜와 같아야 한다** — 명령이 `inspect.signature` 로 재생성 지원 여부를
+    판정하기 때문이다(MagicMock 을 쓰면 키워드가 없다고 판정돼 재생성이 통째로 꺼진다).
+    """
+    calls = []
+
+    def fake(*, company_name, report_name, filed_at, rcept_no, raw_text,
+             disclosure_type='', model=summarizer.DEFAULT_MODEL,
+             reasoning_effort=summarizer.DEFAULT_REASONING_EFFORT,
+             max_retries=summarizer.MAX_RETRIES,
+             max_input_tokens=summarizer.MAX_INPUT_TOKENS,
+             correction_warnings=None, correction_previous=None):
+        calls.append({'correction_warnings': correction_warnings,
+                      'correction_previous': correction_previous})
+        outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return dict(outcome)
+
+    fake.calls = calls
+    return fake
+
+
+class RegenerationLimitTest(TestCase):
+    """재생성 루프의 상한 — 이 테스트가 없으면 이 단계는 배포하면 안 된다."""
+
+    BLOCKING = _regen_result(unsupported_numbers=['3조 9,891억'])
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자')
+        self.disclosure = Disclosure.objects.create(
+            company=company, rcept_no='20260701000001',
+            report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
+        )
+
+    def _run(self, outcomes, **options):
+        fake = _fake_summarize_disclosure(outcomes)
+        with patch.object(summarize_command, 'summarize_disclosure', fake):
+            call_command('summarize_disclosures', **options)
+        return fake
+
+    def test_a_model_that_never_improves_is_called_exactly_twice(self):
+        """계속 실패해도 3회째가 없어야 한다. 상한이 없으면 한 건이 LLM을 무한히 부른다."""
+        fake = self._run([self.BLOCKING], regenerate=True)
+
+        self.assertEqual(len(fake.calls), 2)                  # 최초 1 + 재생성 1
+        self.assertIsNone(fake.calls[0]['correction_warnings'])
+        self.assertTrue(fake.calls[1]['correction_warnings'])
+
+        summary = DisclosureSummary.objects.get()
+        self.assertEqual(summary.regeneration_count, MAX_REGENERATION_ATTEMPTS)
+        self.assertTrue(summary.regeneration_exhausted)
+        self.assertFalse(summary.is_published)
+        self.assertEqual(summary.hidden_by, DisclosureSummary.HiddenBy.AUTO)
+        self.assertEqual(len(summary.regeneration_history), 1)
+        self.assertFalse(summary.regeneration_history[0]['resolved'])
+
+    def test_the_constant_is_the_only_place_the_ceiling_lives(self):
+        """상수를 올리면 호출 수가 실제로 따라 올라야 단일 출처라고 말할 수 있다.
+
+        호출부마다 상한을 다시 적어 두면 한 곳만 빠뜨려도 비용이 샌다.
+        """
+        with patch.object(review_policy, 'MAX_REGENERATION_ATTEMPTS', 3):
+            fake = self._run([self.BLOCKING], regenerate=True)
+
+        self.assertEqual(len(fake.calls), 4)                  # 최초 1 + 재생성 3
+        self.assertEqual(DisclosureSummary.objects.get().regeneration_count, 3)
+
+    def test_regeneration_is_off_unless_explicitly_asked(self):
+        """비용이 드는 동작은 명시적으로 켤 때만 돈다."""
+        fake = self._run([self.BLOCKING])
+
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(DisclosureSummary.objects.get().regeneration_count, 0)
+
+    def test_nothing_blocking_means_no_second_call(self):
+        """고칠 게 없는데 부르면 그냥 돈이다."""
+        fake = self._run([_regen_result()], regenerate=True)
+
+        self.assertEqual(len(fake.calls), 1)
+        self.assertTrue(DisclosureSummary.objects.get().is_published)
+
+    def test_previous_output_is_fed_back_with_the_warnings(self):
+        """경고만 넘기면 모델이 자기가 그 값을 어디에 썼는지 몰라 교정이 재작성이 된다."""
+        fake = self._run([self.BLOCKING], regenerate=True)
+
+        previous = fake.calls[1]['correction_previous']
+        self.assertIsNotNone(previous)
+        self.assertEqual(previous['one_line'], self.BLOCKING['one_line'])
+
+    def test_an_exception_during_regeneration_keeps_the_first_summary(self):
+        """재생성 실패가 최초 요약까지 버릴 이유는 못 된다 — 미게시로 사람에게 넘어간다."""
+        fake = self._run(
+            [self.BLOCKING, summarizer.SummaryValidationError('교정 응답이 깨졌다')],
+            regenerate=True,
+        )
+
+        self.assertEqual(len(fake.calls), 2)                  # 예외가 나도 상한은 지켜진다
+        summary = DisclosureSummary.objects.get()
+        self.assertEqual(summary.one_line, self.BLOCKING['one_line'])
+        self.assertFalse(summary.is_published)
+        self.assertIn('error', summary.regeneration_history[0])
+        self.assertNotIn('resolved', summary.regeneration_history[0])
+
+    def test_a_successful_correction_publishes_and_records_it(self):
+        clean = _regen_result(one_line='교정된 한 줄 요약이다.', corrected=True)
+        fake = self._run([self.BLOCKING, clean], regenerate=True)
+
+        self.assertEqual(len(fake.calls), 2)
+        summary = DisclosureSummary.objects.get()
+        self.assertEqual(summary.one_line, '교정된 한 줄 요약이다.')
+        self.assertTrue(summary.is_published)
+        self.assertEqual(summary.hidden_by, '')
+        self.assertEqual(summary.regeneration_count, 1)
+        self.assertTrue(summary.regeneration_history[0]['resolved'])
+        self.assertEqual(summary.regeneration_history[0]['remaining_warnings'], [])
+
+
+class RegenerationKnownGapTest(TestCase):
+    """**지금 있는 결함**을 기록한다. 아래가 실패하면 결함이 고쳐진 것이다."""
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자')
+        Disclosure.objects.create(
+            company=company, rcept_no='20260701000001',
+            report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
+        )
+
+    def test_a_strictly_worse_correction_is_still_accepted(self):
+        """⚠ '교정 결과가 더 나쁘면 되돌린다'는 방어가 **발동할 수 없다.**
+
+        되돌림 조건이 `len(retried_blocking) > len(blocking)` 인데, 게시를 막는 경고는
+        `인용 근거 없는 수치: ` **한 종류뿐이고 수치 여러 개를 한 문자열로 합친다.**
+        그래서 막는 경고 목록의 길이는 언제나 0 또는 1이고, 재생성은 1일 때만 도니까
+        `> 1` 이 성립할 수 없다. 수치가 1개에서 4개로 늘어도 길이는 그대로 1이다.
+
+        고치려면 경고 **문자열 수**가 아니라 `unsupported_numbers` 의 **개수**를 비교해야
+        한다. 그때까지 frontend 의 `rolled_back` 배지는 절대 뜨지 않는다.
+        """
+        before = _regen_result(unsupported_numbers=['3조 9,891억'])
+        worse = _regen_result(
+            one_line='더 나빠진 요약이다.',
+            unsupported_numbers=['3조 9,891억', '4조 5,453억', '1,234', '5,678'],
+        )
+        fake = _fake_summarize_disclosure([before, worse])
+        with patch.object(summarize_command, 'summarize_disclosure', fake):
+            call_command('summarize_disclosures', regenerate=True)
+
+        summary = DisclosureSummary.objects.get()
+        # ⚠ 결함: 더 나빠진 두 번째 결과가 그대로 저장된다.
+        self.assertEqual(summary.one_line, '더 나빠진 요약이다.')
+        self.assertNotIn('rolled_back', summary.regeneration_history[0])
+
+    def test_a_successfully_corrected_summary_also_reports_exhausted(self):
+        """⚠ `regeneration_exhausted` 가 '성공한 교정'과 '상한 소진'을 구분하지 못한다.
+
+        `regeneration_count >= MAX_REGENERATION_ATTEMPTS` 하나로 판정하므로,
+        **한 번에 고쳐져 정상 게시된 요약도 True** 가 된다. frontend 는 이 값을
+        "코드가 시도해 실패 — 검수 우선순위 최상위"로 읽는다(24번 보고서 1.1).
+        고치려면 상한 소진 판정에 "아직 막는 경고가 남아 있는가"를 함께 봐야 한다.
+        """
+        before = _regen_result(unsupported_numbers=['3조 9,891억'])
+        clean = _regen_result(one_line='교정된 한 줄 요약이다.')
+        fake = _fake_summarize_disclosure([before, clean])
+        with patch.object(summarize_command, 'summarize_disclosure', fake):
+            call_command('summarize_disclosures', regenerate=True)
+
+        summary = DisclosureSummary.objects.get()
+        self.assertTrue(summary.is_published)          # 정상 게시된 요약인데
+        self.assertTrue(summary.regeneration_exhausted)  # ⚠ '자동 교정 불가'로 읽힌다
+
+
+class RevalidatePublicationTest(TestCase):
+    """재검증이 **기존 140건의 게시 상태까지** 되계산하는지.
+
+    생성 경로만 고치면 이미 저장된 요약은 LLM을 다시 사기 전까지 영원히 그 상태로 남는다.
+    이 명령은 LLM을 부르지 않으므로 비용이 0이고 몇 번을 돌려도 안전하다.
+    """
+
+    CLEAN_ONE_LINE = '삼성전자가 1,234,567원 규모의 공급계약을 체결했다.'
+    BAD_ONE_LINE = '삼성전자가 9,999,999원 규모의 공급계약을 체결했다.'
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자')
+
+    def _summary(self, one_line, **kwargs):
+        disclosure = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000001',
+            report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
+        )
+        defaults = dict(
+            disclosure=disclosure, one_line=one_line,
+            easy_explanation='첫 문장이다. 둘째 문장이다. 셋째 문장이다.',
+            why_important='매출로 이어지는 계약이다.',
+            importance=DisclosureSummary.Importance.MEDIUM,
+            evidence=[{'field': 'one_line', 'claim': '계약금액',
+                       'quote': '계약금액 | 1,234,567'}],
+        )
+        defaults.update(kwargs)
+        summary = DisclosureSummary.objects.create(**defaults)
+        return summary
+
+    def test_a_stored_numeric_error_is_taken_off_the_web(self):
+        summary = self._summary(self.BAD_ONE_LINE)
+
+        call_command('revalidate_summaries')
+
+        summary.refresh_from_db()
+        self.assertFalse(summary.is_published)
+        self.assertEqual(summary.hidden_by, DisclosureSummary.HiddenBy.AUTO)
+        self.assertEqual(summary.hidden_reason, verification.AUTO_HIDDEN_REASON)
+
+    def test_dry_run_changes_nothing(self):
+        summary = self._summary(self.BAD_ONE_LINE)
+
+        call_command('revalidate_summaries', dry_run=True)
+
+        summary.refresh_from_db()
+        self.assertTrue(summary.is_published)
+        self.assertEqual(summary.review_warnings, [])
+
+    def test_an_auto_hidden_summary_comes_back_when_the_warning_goes_away(self):
+        summary = self._summary(
+            self.CLEAN_ONE_LINE, is_published=False,
+            hidden_by=DisclosureSummary.HiddenBy.AUTO,
+            hidden_reason=verification.AUTO_HIDDEN_REASON,
+            review_warnings=[verification.UNSUPPORTED_NUMBER_PREFIX + '9,999,999'],
+        )
+
+        call_command('revalidate_summaries')
+
+        summary.refresh_from_db()
+        self.assertTrue(summary.is_published)
+        self.assertEqual(summary.hidden_by, '')
+        self.assertEqual(summary.hidden_reason, '')
+
+    def test_a_human_decision_is_never_overwritten(self):
+        """코드가 '경고가 사라졌으니 올리자'고 되돌리면 사람의 판단을 덮어쓴다."""
+        summary = self._summary(
+            self.CLEAN_ONE_LINE, is_published=False,
+            hidden_by=DisclosureSummary.HiddenBy.HUMAN,
+            hidden_reason='검수자가 내용이 부정확하다고 판단',
+        )
+
+        call_command('revalidate_summaries')
+
+        summary.refresh_from_db()
+        self.assertFalse(summary.is_published)
+        self.assertEqual(summary.hidden_by, DisclosureSummary.HiddenBy.HUMAN)
+        self.assertEqual(summary.hidden_reason, '검수자가 내용이 부정확하다고 판단')
+
+    def test_a_human_published_summary_is_not_auto_hidden_either(self):
+        """반대 방향 — 사람이 올려 둔 요약도 hidden_by 가 human 이면 건드리지 않는다."""
+        summary = self._summary(
+            self.BAD_ONE_LINE, hidden_by=DisclosureSummary.HiddenBy.HUMAN)
+
+        call_command('revalidate_summaries')
+
+        summary.refresh_from_db()
+        self.assertTrue(summary.is_published)
+
+    def test_revalidation_is_idempotent(self):
+        summary = self._summary(self.BAD_ONE_LINE)
+
+        call_command('revalidate_summaries')
+        summary.refresh_from_db()
+        first = (summary.review_warnings, summary.is_published, summary.hidden_by)
+
+        call_command('revalidate_summaries')
+        summary.refresh_from_db()
+        self.assertEqual(
+            (summary.review_warnings, summary.is_published, summary.hidden_by), first)
+
+    def test_revalidation_never_calls_the_model(self):
+        self._summary(self.BAD_ONE_LINE)
+
+        with patch.object(summarizer, '_call_openai') as mock_call:
+            call_command('revalidate_summaries')
+
+        mock_call.assert_not_called()

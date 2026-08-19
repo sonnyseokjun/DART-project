@@ -17,6 +17,7 @@ from django.db import transaction
 
 from disclosures.models import DisclosureSummary
 from disclosures.summarizer import build_review_warnings, validate_summary
+from disclosures.verification import AUTO_HIDDEN_REASON, blocking_warnings
 
 
 class Command(BaseCommand):
@@ -48,6 +49,8 @@ class Command(BaseCommand):
         after_flagged = 0
         changed = 0
         skipped = 0
+        newly_hidden = 0
+        restored = 0
 
         for summary in summaries:
             raw_text = summary.disclosure.raw_content
@@ -62,24 +65,68 @@ class Command(BaseCommand):
             if warnings:
                 after_flagged += 1
 
-            if warnings == summary.review_warnings and evidence == summary.evidence:
+            publication = self._publication_fields(summary, warnings)
+            unchanged = (
+                warnings == summary.review_warnings
+                and evidence == summary.evidence
+                and not publication
+            )
+            if unchanged:
                 continue
 
             changed += 1
+            if publication:
+                if publication['is_published']:
+                    restored += 1
+                else:
+                    newly_hidden += 1
             if options['verbose_diff']:
+                mark = ''
+                if publication:
+                    mark = ' · 게시 복구' if publication['is_published'] else ' · 자동 미게시'
                 self.stdout.write(
                     f'  {summary.disclosure.rcept_no} '
                     f'[{summary.disclosure.company.name}] '
                     f'{summary.disclosure.report_name[:36]}: '
-                    f'경고 {len(summary.review_warnings)} → {len(warnings)}'
+                    f'경고 {len(summary.review_warnings)} → {len(warnings)}{mark}'
                 )
             if not options['dry_run']:
                 summary.review_warnings = warnings
                 summary.evidence = evidence
+                fields = ['review_warnings', 'evidence']
+                for name, value in (publication or {}).items():
+                    setattr(summary, name, value)
+                    fields.append(name)
                 with transaction.atomic():
-                    summary.save(update_fields=['review_warnings', 'evidence'])
+                    summary.save(update_fields=fields)
 
-        self._report(summaries, before_flagged, after_flagged, changed, skipped, options)
+        self._report(summaries, before_flagged, after_flagged, changed, skipped,
+                     newly_hidden, restored, options)
+
+    def _publication_fields(self, summary, warnings):
+        """게시 여부를 검증 결과에 맞춰 되계산한다. 바꿀 게 없으면 빈 dict.
+
+        검증 결과가 노출에 아무 영향을 주지 않던 탓에, 39조를 3조로 적은 요약이 경고를
+        단 채 웹에 그대로 떠 있었다(입력 명세 2.3). 요약 생성 경로만 고치면 **이미 저장된
+        요약은 영원히 그 상태로 남는다** — 다시 만들려면 LLM 비용이 드니까. 그래서 재검증도
+        같은 판정을 적용한다. 이 명령은 LLM을 부르지 않으므로 비용이 0이다.
+
+        **사람이 내린 결정은 건드리지 않는다.** hidden_by='human'은 검수자가 판단해 내린
+        것이고, 코드가 "경고가 사라졌으니 올리자"고 되돌리면 사람의 판단을 덮어쓴다.
+        """
+        blocking = blocking_warnings(warnings)
+        if summary.hidden_by == DisclosureSummary.HiddenBy.HUMAN:
+            return {}
+        if blocking and summary.is_published:
+            return {
+                'is_published': False,
+                'hidden_by': DisclosureSummary.HiddenBy.AUTO,
+                'hidden_reason': AUTO_HIDDEN_REASON,
+            }
+        if not blocking and summary.hidden_by == DisclosureSummary.HiddenBy.AUTO:
+            # 경고가 사라졌으면 자동으로 내렸던 것도 자동으로 되돌린다.
+            return {'is_published': True, 'hidden_by': '', 'hidden_reason': ''}
+        return {}
 
     def _select(self, options):
         qs = (
@@ -107,7 +154,8 @@ class Command(BaseCommand):
         result = validate_summary(data, raw_text)
         return build_review_warnings(result), result['evidence']
 
-    def _report(self, summaries, before, after, changed, skipped, options):
+    def _report(self, summaries, before, after, changed, skipped,
+                newly_hidden, restored, options):
         total = len(summaries)
         self.stdout.write('')
         self.stdout.write(f'  경고 있는 요약 : {before}건 → {after}건 (전체 {total}건)')
@@ -116,6 +164,10 @@ class Command(BaseCommand):
                 f'  경고 비율      : {before / total:.0%} → {after / total:.0%}'
             )
         self.stdout.write(f'  판정이 바뀐 요약: {changed}건')
+        if newly_hidden or restored:
+            self.stdout.write(
+                f'  게시 상태 변경  : 자동 미게시 {newly_hidden}건 · 복구 {restored}건'
+            )
         if skipped:
             self.stdout.write(self.style.WARNING(
                 f'  원문 없어 건너뜀: {skipped}건 (fetch_documents 필요)'
