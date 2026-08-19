@@ -52,7 +52,17 @@ ORDINAL_MAX = 31
 #: 표 머리글의 단위 표기(`(단위 : 천원)`, `(단위 : 백만 원)`)로 생기는 자릿수 차이.
 #: 머리글을 파싱하는 대신 배수 일치를 허용한다 — 머리글은 인용문 밖에 있는 경우가 많아
 #: 파싱해도 인용문만으로는 복원되지 않는다.
-_SCALE_MULTIPLIERS = (10 ** 3, 10 ** 4, 10 ** 6, 10 ** 8, 10 ** 12)
+#:
+#: **10^12(조)는 여기서 뺐다.** 무조건 허용하면 인용문의 **한 자리 숫자 하나가 조 단위
+#: 금액 아무거나를 정당화한다** — `4` 가 `4조` 의 근거로 인정된다. 실제로 그 경로로
+#: 10배 오류가 검증을 통과해 웹에 게시됐다(2026-08-19, rcept_no 20260710000008:
+#: 40,023,070,290,000원을 `약 4조 원`으로 적었는데 경고가 붙지 않았다).
+#: 배수가 클수록 이 구멍이 커지므로 가장 큰 배수부터 닫는다.
+#:
+#: 조 단위 표는 여전히 통과한다 — 문서가 `(단위 : 조원)` 을 선언했을 때만
+#: `document_scales` 가 10^12 을 후보에 다시 넣는다(아래 `_value_supported` 의 가산 경로).
+#: 실측(140건): 이 게이트로 새로 생긴 오탐 0건, 놓치던 10배 오류 1건 검출.
+_SCALE_MULTIPLIERS = (10 ** 3, 10 ** 4, 10 ** 6, 10 ** 8)
 
 #: 배수 일치로 인정할 때의 상대 오차. 반올림 표기(3,746억 ↔ 374,629백만) 흡수용.
 SCALE_TOLERANCE = 0.01
@@ -251,6 +261,24 @@ def declared_scales(quotes):
     return scales
 
 
+def document_scales(raw_text):
+    """원문 **전체**가 선언한 단위 배수의 집합.
+
+    `declared_scales` 는 인용문이 스스로 품은 선언만 본다. 그 규칙은 v3 프롬프트가
+    "머리글을 quote 에 함께 담아라"를 요구하면서 생겼고, v2로 만든 기존 요약에는
+    선언이 담겨 있지 않아 빈 집합이 나온다.
+
+    조 단위 표(`(단위 : 조원)`)는 이 프로젝트에서 실제로 쓰인다 — 삼성전자 잠정실적
+    공시가 매출액을 `171.00` 으로만 적는다. 인용문 기준으로만 판정하면 그런 정상 요약이
+    v2 잔재라는 이유만으로 오탐이 된다.
+
+    그래서 **문서 단위**로 한 번 더 본다. 표 단위로 좁히는 것보다 느슨하지만,
+    "아무 문서에나 10^12 을 허용"하던 이전 상태보다는 훨씬 좁다. 조를 선언한 문서는
+    140건 중 6건뿐이고, 나머지 134건에서는 조 배수가 아예 후보에 오르지 않는다.
+    """
+    return {scale for _position, scale in unit_declarations(raw_text) if scale > 1}
+
+
 def _value_supported(value, quote_values, approximate, quote_scales=()):
     """요약의 수치 value가 인용문의 수치들로 뒷받침되는지 판정한다.
 
@@ -258,10 +286,13 @@ def _value_supported(value, quote_values, approximate, quote_scales=()):
     후보 배수를 늘리기만 하고 기존 후보를 줄이지 않는다. 그래서 이 인자로는 경고가
     사라질 수는 있어도 새로 생길 수는 없다.
 
-    좁히기(선언된 배수 **하나만** 허용)가 탐지력 면에서는 옳지만 지금은 하지 않는다.
-    v3로 만든 요약이 아직 0건이라 좁혔을 때 새 오탐이 몇 건 생기는지 **측정할 데이터가
-    없다.** 측정 없이 140건 전체의 값 대조 의미를 바꾸는 것은 오탐을 다른 오탐으로
-    바꾸는 길이다(analyst 7.4의 경고). v3 요약이 쌓인 뒤 좁힐 것.
+    좁히기는 **가장 위험한 배수부터 부분적으로** 했다. 10^12 을 무조건 후보에 넣던 것을
+    빼고, 문서가 조 단위를 선언했을 때만 `document_scales` 로 되돌려 넣는다(위 상수 주석).
+    v3 요약 27건이 쌓인 뒤 140건 전체로 측정한 결과다 — 새 오탐 0건, 놓치던 10배 오류 1건 검출.
+
+    **선언된 배수 하나만 허용하는 전면 좁히기는 아직 하지 않는다.** 같은 측정에서 경고가
+    6건 → 31건으로 늘었고(새 오탐 25건), 그 25건은 대부분 v2로 만든 요약이 머리글을
+    quote 에 담지 않아 생긴다. v2 잔재가 사라진 뒤 다시 측정할 것.
     """
     for qvalue in quote_values:
         if value == qvalue:
@@ -373,7 +404,9 @@ def verify_evidence(evidence, raw_text):
         all_quote_values.extend(
             value for _, value in extract_numbers(_normalize(item.get('quote', '')))
         )
-    quote_scales = declared_scales(item.get('quote', '') for item in evidence)
+    quote_scales = declared_scales(
+        item.get('quote', '') for item in evidence
+    ) | document_scales(raw_text)
 
     checked = []
     warnings = []
@@ -442,7 +475,9 @@ def validate_summary(data, raw_text):
     summary_text = ' '.join(
         data[f] for f in ('one_line', 'easy_explanation', 'why_important')
     )
-    quote_scales = declared_scales(item.get('quote', '') for item in evidence)
+    quote_scales = declared_scales(
+        item.get('quote', '') for item in evidence
+    ) | document_scales(raw_text)
     unsupported = sorted({
         text for text, value in extract_comparable_numbers(summary_text)
         if not _value_supported(value, quote_values, True, quote_scales)

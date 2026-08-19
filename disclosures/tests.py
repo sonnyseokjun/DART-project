@@ -2849,6 +2849,25 @@ class KoreanUnitFormatTest(TestCase):
                 exact = units.format_korean_won(value, max_units=None)
                 self.assertEqual(units.parse_korean_amount(exact), value)
 
+    def test_currency_only_changes_the_suffix(self):
+        """통화가 달라도 자릿수를 끊는 규칙은 같다 — 본문이 갈라지면 버그다."""
+        for value in (26507100000, 39890534790000, 10 ** 8):
+            with self.subTest(value=value):
+                body = units.format_korean_amount(value)
+                self.assertEqual(units.format_korean_won(value), f'{body} 원')
+                self.assertEqual(units.format_korean_usd(value), f'{body} 달러')
+
+    def test_usd_notation_matches_the_real_dr_filing(self):
+        """실제 DR 공시(20260710800023)의 발행 규모."""
+        self.assertEqual(units.format_korean_usd(26507100000), '265억 710만 달러')
+
+    def test_foreign_currency_notation_round_trips(self):
+        """달러 표기도 되읽어 값이 보존돼야 한다."""
+        for value, _short, _exact in self.CASES:
+            with self.subTest(value=value):
+                exact = units.format_korean_usd(value, max_units=None)
+                self.assertEqual(units.parse_korean_amount(exact), value)
+
     def test_truncated_notation_never_exceeds_the_value(self):
         """절사는 버림이므로 되읽은 값이 원값을 넘지 않는다(금액을 부풀리지 않는다).
 
@@ -3188,36 +3207,58 @@ class KnownDetectionGapTest(TestCase):
     지우면 된다. 고쳐지지 않은 채 조용히 잊히는 것을 막기 위한 장치다.
     """
 
-    def test_item_number_can_still_justify_a_ten_fold_error(self):
-        """미탐 id 117 — 검증기가 오류를 못 잡은 게 아니라 **정당화해 줬다**.
-
-        원문 `4. 자금조달의 목적 | 시설자금 (원) | 40,023,070,290,000`(=40조 230억)을
-        요약이 `약 4조 원`으로 썼는데 경고가 없었다. 표 항목번호 `4.` 가 값 `4` 로
-        추출돼 `4 × 조원 = 4조` 라는 가짜 근거가 됐기 때문이다.
-
-        원인은 `is_reference_number` 의 비대칭이다 — 항목번호를 대조 **대상**에서는
-        빼면서 **근거**에서는 빼지 않는다. 근거 쪽에서도 빼는 단순 수정은 id 110에
-        새 오탐을 만들므로(꼬리 `5,000만`의 `5`를 잃는다) 헤더 배수 확정이 선행돼야 한다.
-        """
-        quote_values = [4.0, 40_023_070_290_000.0]   # 항목번호 4 + 진짜 금액
-        self.assertTrue(verification._value_supported(4e12, quote_values, True))
-        # 대조 '대상'에서는 이미 빠진다 — 이 비대칭이 원인 그 자체다.
-        self.assertTrue(verification.is_reference_number('4', 4.0))
-        self.assertFalse(verification.is_reference_number('4,000', 4000.0))
-
-    def test_thousand_fold_errors_pass_the_multiplier_menu(self):
-        """`_SCALE_MULTIPLIERS` 가 다섯 배수를 무조건 허용한다 — 1,000배 틀려도 통과한다.
+    def test_hundred_fold_errors_still_pass_the_multiplier_menu(self):
+        """남은 배수(10^3~10^8)는 여전히 무조건 허용된다 — 백만 배 틀려도 통과한다.
 
         진짜 오류 7토큰이 걸린 것은 순전히 **10배가 목록에 없어서**다.
-        좁히려면 헤더 배수 배선이 선행돼야 한다(backend 5.2·5.3).
         `10**5`·`10**1` 을 목록에 넣으면 진짜 오류가 전부 통과하므로 **절대 넣지 말 것**.
+        조(10^12)만 문서 선언 게이트로 닫았다(`ScaleGateTest`). 나머지를 마저 닫으려면
+        v2 잔재가 사라진 뒤 재측정해야 한다 — 지금 닫으면 새 오탐 25건이 생긴다.
         """
-        # 같은 근거 값 7,348 에 대해 7.348e9(십억원 표) 와 7.348e15(조원 표)가
-        # **둘 다 정답으로 인정된다.** 백만 배 차이인데 검증기는 구별하지 못한다.
+        # 같은 근거 값 7,348 에 대해 7.348e9(십억원 표) 와 7.348e12(백만원 표)가
+        # **둘 다 정답으로 인정된다.** 천 배 차이인데 검증기는 구별하지 못한다.
         self.assertTrue(verification._value_supported(7.348e9, [7348.0], False))
-        self.assertTrue(verification._value_supported(7.348e15, [7348.0], False))
+        self.assertTrue(verification._value_supported(7.348e12, [7348000.0], False))
         self.assertNotIn(10 ** 5, verification._SCALE_MULTIPLIERS)
         self.assertNotIn(10 ** 1, verification._SCALE_MULTIPLIERS)
+
+
+class ScaleGateTest(TestCase):
+    """조(10^12) 배수는 **문서가 선언했을 때만** 인정한다.
+
+    무조건 허용하면 인용문의 한 자리 숫자 하나가 조 단위 금액 아무거나를 정당화한다.
+    실제로 그 경로로 10배 오류가 검증을 통과해 웹에 게시됐다
+    (rcept_no 20260710000008: 40,023,070,290,000원을 `약 4조 원`으로 적었다).
+    """
+
+    def test_a_bare_digit_no_longer_justifies_a_trillion_scale_figure(self):
+        """표 항목번호 `4.` 가 값 `4` 로 추출돼 `4조` 의 가짜 근거가 되던 경로."""
+        quote_values = [4.0, 40_023_070_290_000.0]   # 항목번호 4 + 진짜 금액
+        self.assertFalse(verification._value_supported(4e12, quote_values, True))
+
+    def test_a_declared_trillion_unit_is_still_accepted(self):
+        """`(단위 : 조원)` 표는 정상이다 — 삼성전자 잠정실적이 매출을 `171.00` 으로 적는다.
+
+        게이트가 이걸 막으면 정상 요약 2건이 곧바로 오탐이 된다(실측).
+        """
+        self.assertTrue(verification._value_supported(
+            1.71e14, [171.0], True, quote_scales={10 ** 12}))
+
+    def test_document_scales_reads_declarations_from_the_raw_text(self):
+        """인용문이 머리글을 담지 않은 v2 요약도 문서 선언으로 구제된다."""
+        self.assertIn(
+            10 ** 12, verification.document_scales('매출액 (단위 : 조원) | 171.00'))
+        self.assertEqual(verification.document_scales('금액 40,023,070,290,000'), set())
+
+    def test_the_real_escaped_error_is_now_caught(self):
+        """회귀 방지 — 실제로 웹에 나갔던 문장 그대로 검증한다."""
+        raw = '4. 자금조달의 목적 | 시설자금 (원) | 40,023,070,290,000'
+        evidence = [{'claim': '시설자금 조달액', 'quote': raw}]
+        wrong = verification.validate_summary(
+            {'one_line': '40,023,070,290,000원(약 4조 원)을 조달한다',
+             'easy_explanation': '.', 'why_important': '.',
+             'importance': 'high', 'evidence': evidence}, raw)
+        self.assertTrue(any('4조' in w for w in summarizer.build_review_warnings(wrong)))
 
 
 class AmountAnnotationTest(TestCase):
@@ -3245,14 +3286,46 @@ class AmountAnnotationTest(TestCase):
         )
 
     def test_non_amount_numbers_are_structurally_untouched(self):
-        """날짜·접수번호·사업자번호·비율은 `원`/`주` 로 끝나지 않아 **불가능**하다."""
+        """날짜·접수번호·사업자번호·비율은 통화·주 앵커로 끝나지 않아 **불가능**하다."""
         for text in (
             '2026년 07월 13일 접수번호 20260713000123 사업자 104-81-26688',
             '17.33%에서 17.32%로 하락',
-            '26,507,100,000 USD 규모',
             '보통주식 1,132,477주식수 기준',           # 주(?!식)
             '390,242백만원',                          # 이미 단위가 붙었다
         ):
+            with self.subTest(text=text):
+                self.assertEqual(self._annotate(text), text)
+
+    def test_foreign_currency_gets_the_same_treatment(self):
+        """외화도 3자리 쉼표라 원화와 똑같이 읽히지 않는다.
+
+        v3 첫 실측(DR발행결정)에서 모델이 `26,507,100,000 USD` 라고만 적어, 오탐은
+        사라졌는데 읽을 수 없는 표기가 남았다. 통화만 바뀐 같은 문제이므로 같은 규칙을 쓴다.
+        """
+        self.assertEqual(
+            self._annotate('26,507,100,000 USD 규모로 발행한다'),
+            '26,507,100,000 USD(265억 710만 달러) 규모로 발행한다',
+        )
+        # 모델이 한글로 적어도 동일하게 잡는다.
+        self.assertEqual(
+            self._annotate('미화 26,507,100,000달러를 조달했다'),
+            '미화 26,507,100,000달러(265억 710만 달러)를 조달했다',
+        )
+
+    def test_exchange_rate_is_never_applied_by_code(self):
+        """달러를 원화로 바꾸지 않는다.
+
+        환율은 원문에 없을 수도 있는 값이다. 코드가 끌어와 곱하면 그 결과가 곧
+        `인용 근거 없는 수치` 가 된다 — 이 파이프라인이 잡아내려는 바로 그 오류다.
+        달러는 달러 단위로만 읽기 쉽게 만든다.
+        """
+        annotated = self._annotate('26,507,100,000 USD 규모')
+        self.assertIn('265억 710만 달러', annotated)
+        self.assertNotIn('원', annotated)
+
+    def test_small_foreign_prices_stay_as_written(self):
+        """`149.00 USD` 는 쉼표 없이도 읽힌다. 하한 아래는 건드리지 않는다."""
+        for text in ('1 DR당 발행가액은 149.00 USD다', '수수료 500 USD'):
             with self.subTest(text=text):
                 self.assertEqual(self._annotate(text), text)
 
@@ -3300,32 +3373,38 @@ class AmountAnnotationTest(TestCase):
 
         self.assertEqual(source['one_line'], '500,000,000원')
 
-    def test_truncated_notation_is_idempotent(self):
-        """`(?!\\s*\\(약)` 가 막는 경로 — 절사가 일어난 표기는 두 번 적용해도 같다."""
-        once = self._annotate('45,453,450,000,000원을 조달한다')
-        self.assertEqual(self._annotate(once), once)
+    def test_annotation_is_idempotent_with_or_without_truncation(self):
+        """두 번 적용해도 같아야 한다. `약` 유무와 무관하다.
+
+        예전 멱등성 장치는 `(?!\\s*\\(약)` 하나뿐이라 **절사가 일어난 표기만** 막았다.
+        딱 떨어지는 금액(`500,000,000원` → `(5억 원)`)에는 `약` 이 안 붙어 두 번째
+        적용에서 다시 병기됐다. 외화 병기(`265억 710만 달러`)는 절사 없이 떨어지는 경우가
+        흔해 그 결함이 예외가 아니라 기본 동작이 되므로, `약` 이 아니라 "괄호 안이 한국
+        단위 표기인가" 로 판정하게 바꿨다.
+
+        도달 경로가 실재한다 — 재생성 루프가 `correction_previous=result` 로 **이미 병기된**
+        요약을 모델에게 되돌려 주고, 교정 프롬프트는 "지적되지 않은 문장은 한 글자도 바꾸지
+        마라"고 지시한다. 모델이 그대로 옮기면 그 출력에 `annotate_amounts` 가 다시 걸린다.
+        """
+        for text in (
+            '45,453,450,000,000원을 조달한다',   # 절사 있음 → `약` 이 붙는다
+            '500,000,000원을 지급한다',          # 절사 없음 → `약` 이 없다
+            '26,507,100,000 USD 규모로 발행한다',  # 외화, 절사 없음
+        ):
+            with self.subTest(text=text):
+                once = self._annotate(text)
+                self.assertEqual(self._annotate(once), once)
+
+    def test_exact_amounts_annotate_without_the_approximation_mark(self):
+        """딱 떨어지면 `약` 을 붙이지 않는다 — 버린 자리가 없으므로 근사가 아니다."""
+        self.assertEqual(
+            self._annotate('500,000,000원을 지급한다'),
+            '500,000,000원(5억 원)을 지급한다',
+        )
 
 
 class AmountAnnotationKnownGapTest(TestCase):
-    """**지금 있는 결함**을 기록한다. 아래가 실패하면 결함이 고쳐진 것이다.
-
-    `annotate_amounts` 의 멱등성 장치는 `(?!\\s*\\(약)` 하나뿐이라 **절사가 일어난 표기만**
-    막는다. 딱 떨어지는 금액(`500,000,000원` → `(5억 원)`)에는 `약` 이 안 붙으므로
-    두 번째 적용에서 그대로 다시 병기된다.
-
-    도달 경로가 실재한다 — 재생성 루프가 `correction_previous=result` 로 **이미 병기된**
-    요약을 모델에게 되돌려 주고, 교정 프롬프트는 "지적되지 않은 문장은 한 글자도 바꾸지
-    마라"고 지시한다. 모델이 그대로 옮기면 그 출력에 `annotate_amounts` 가 다시 걸린다.
-    """
-
-    def test_exact_amounts_are_annotated_twice_when_applied_twice(self):
-        once = summarizer.annotate_amounts({'one_line': '500,000,000원을 지급한다'})
-        twice = summarizer.annotate_amounts(once)
-
-        self.assertEqual(once['one_line'], '500,000,000원(5억 원)을 지급한다')
-        # ⚠ 결함: 멱등이 아니다. 고쳐지면 아래 두 줄이 하나의 assertEqual 이 된다.
-        self.assertNotEqual(twice['one_line'], once['one_line'])
-        self.assertEqual(twice['one_line'], '500,000,000원(5억 원)(5억 원)을 지급한다')
+    """**지금 있는 결함**을 기록한다. 아래가 실패하면 결함이 고쳐진 것이다."""
 
     def test_original_share_wording_is_misread_as_won(self):
         """`원주`(원주식)를 `원`(통화)으로 오인한다. DR 공시에 실제로 나오는 말이다."""
@@ -3495,6 +3574,65 @@ class SummarizeDisclosuresCommandTest(TestCase):
         self.assertEqual(summary.regeneration_history, [])
         # 검수 여부는 요약을 만드는 쪽에서 정하지 않는다 — 게이트와 경고가 정한다.
         self.assertFalse(summary.is_reviewed)
+
+    def test_prompt_version_is_recorded(self):
+        """모델명만으로는 v2와 v3를 구별할 수 없다 — 프롬프트 개선 효과를 못 잰다."""
+        self._call(_valid_summary_payload())
+
+        summary = DisclosureSummary.objects.get(disclosure=self.disclosure)
+        self.assertEqual(summary.prompt_version, summarizer.PROMPT_VERSION)
+
+    def test_recorded_version_comes_from_the_result_not_the_constant(self):
+        """재생성 중 상수가 바뀌어도 **실제로 쓴** 버전이 남아야 한다."""
+        payload = _valid_summary_payload()
+        with patch.object(summarizer, 'PROMPT_VERSION', 'v9'):
+            self._call(payload)
+
+        summary = DisclosureSummary.objects.get(disclosure=self.disclosure)
+        self.assertEqual(summary.prompt_version, 'v9')
+
+    def test_unknown_version_stays_empty_rather_than_guessing(self):
+        """이 필드가 생기기 전 요약은 '모름'이다. v2로 단정하면 측정이 오염된다."""
+        summary = DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line='.', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+        )
+        self.assertEqual(summary.prompt_version, '')
+
+    def test_only_warned_requires_resummarize(self):
+        """경고 붙은 요약은 이미 존재하므로 --resummarize 없이는 대상이 늘 0건이다.
+
+        조용히 0건으로 끝나면 "돌렸는데 왜 안 고쳐졌지"로 이어진다. 이유를 말하고 멈춘다.
+        """
+        with self.assertRaises(CommandError):
+            call_command('summarize_disclosures', only_warned=True)
+
+    def test_only_warned_picks_exactly_the_flagged_summaries(self):
+        """경고 없는 요약에까지 비용을 쓰면 안 된다."""
+        clean = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000002',
+            report_name='주요사항보고서', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 2), dart_url=dart_viewer_url('20260701000002'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
+        )
+        DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line='경고 있음', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            review_warnings=['인용 근거 없는 수치: 4,000억'],
+        )
+        DisclosureSummary.objects.create(
+            disclosure=clean, one_line='경고 없음', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            review_warnings=[],
+        )
+
+        mock_call = self._call(_valid_summary_payload(),
+                               resummarize=True, only_warned=True)
+
+        self.assertEqual(mock_call.call_count, 1)
+        clean.refresh_from_db()
+        self.assertEqual(clean.summary.one_line, '경고 없음')
 
     def test_dry_run_never_calls_the_model(self):
         """비용 추정만 하는 경로가 실수로 호출을 하면 그대로 청구된다."""

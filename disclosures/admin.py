@@ -35,7 +35,7 @@ class DisclosureSummaryInline(admin.StackedInline):
     can_delete = False
     readonly_fields = (
         'one_line', 'easy_explanation', 'why_important', 'importance',
-        'model_name', 'evidence', 'review_warnings',
+        'model_name', 'prompt_version', 'evidence', 'review_warnings',
         'is_reviewed', 'is_published', 'hidden_by', 'hidden_reason',
         'regeneration_count', 'regeneration_history',
         'edited_by_human', 'llm_original', 'reviewed_by', 'reviewed_at', 'created_at',
@@ -132,6 +132,8 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
         'disclosure', 'dart_link', 'review_category', 'evidence', 'review_warnings',
         'hidden_by', 'regeneration_count', 'regeneration_history',
         'edited_by_human', 'llm_original', 'reviewed_by', 'reviewed_at', 'created_at',
+        # 기계가 남기는 출처 기록이다. 검수자가 고치면 "무엇이 만든 요약인가"가 무너진다.
+        'model_name', 'prompt_version',
     )
     fieldsets = (
         ('공시', {'fields': ('disclosure', 'dart_link', 'review_category')}),
@@ -143,7 +145,7 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
         ('자동 재생성', {'fields': ('regeneration_count', 'regeneration_history')}),
         ('기록', {
             'fields': ('edited_by_human', 'llm_original', 'reviewed_by', 'reviewed_at',
-                       'model_name', 'created_at'),
+                       'model_name', 'prompt_version', 'created_at'),
         }),
     )
     actions = ('mark_reviewed', 'hide_summaries', 'restore_summaries')

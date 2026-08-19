@@ -113,6 +113,18 @@ class DisclosureSummary(models.Model):
         '중요도', max_length=10, choices=Importance.choices, default=Importance.MEDIUM
     )
     model_name = models.CharField('사용 LLM', max_length=50, blank=True)
+    # 이 요약을 만든 시스템 프롬프트 버전(summarizer.PROMPT_VERSION).
+    #
+    # 모델명만으로는 부족하다. 같은 모델이라도 프롬프트를 고치면 출력 성격이 달라지는데,
+    # 그 경계를 모르면 "프롬프트를 고쳐서 나아진 것"과 "원래 그랬던 것"을 구별할 수 없다.
+    # 실제로 v2→v3 효과를 재려 할 때 어느 요약이 어느 버전인지 알 수 없어 측정이 막혔다.
+    #
+    # 빈 문자열은 **버전을 모른다**는 뜻이다(이 필드가 생기기 전에 만들어진 요약).
+    # 모르는 것을 v2로 단정해 채우지 않는다 — 틀린 값이 들어가면 이 필드의 존재 이유인
+    # "측정 가능성"이 오히려 무너진다.
+    prompt_version = models.CharField(
+        '프롬프트 버전', max_length=10, blank=True, default='',
+    )
     # summarizer.summarize_disclosure()가 돌려주는 원문 근거 배열.
     # [{'field','claim','quote','quote_found','numbers_ok','missing_numbers'}, ...]
     # 저장하지 않으면 QA가 숫자 대조를 재검증할 때마다 LLM을 다시 불러야 해서

@@ -43,6 +43,14 @@ APPROX_MARK = '약 '
 #: 통화 단위. 한글 맞춤법상 단위 명사는 띄어 쓴다(기존 프롬프트도 `1,500억 원` 표기).
 WON_SUFFIX = '원'
 
+#: 외화 단위. 원문이 `26,507,100,000 USD` 처럼 적어 두면 자릿수를 세지 않고는 못 읽는데,
+#: 이건 원화와 완전히 같은 문제다(4자리 단위 vs 3자리 쉼표). 통화만 다르므로 표기 규칙을
+#: 공유한다. 모델이 `USD` 로 쓰든 `달러` 로 쓰든 병기는 항상 한국어 `달러` 로 통일한다.
+USD_SUFFIX = '달러'
+
+#: `parse_korean_amount` 가 되읽을 때 떼어 내는 통화 접미사.
+CURRENCY_SUFFIXES = (WON_SUFFIX, USD_SUFFIX)
+
 #: 한국어 금액 표기 전체를 받아들이는 패턴. `parse_korean_amount` 가 통짜로 검사한다.
 _AMOUNT_RE = re.compile(r'\A(?:\d[\d,]*\s*[경조억만]?\s*)+\Z')
 
@@ -142,14 +150,44 @@ def format_korean_amount(value, *, max_units=DEFAULT_MAX_UNITS, approx_mark=APPR
     return body
 
 
-def format_korean_won(value, *, max_units=DEFAULT_MAX_UNITS, approx_mark=APPROX_MARK):
+def format_korean_currency(value, suffix, *, max_units=DEFAULT_MAX_UNITS,
+                           approx_mark=APPROX_MARK):
     """`format_korean_amount` 에 통화 단위를 붙인다.
+
+        >>> format_korean_currency(45453450000000, WON_SUFFIX)
+        '약 45조 4,534억 원'
+        >>> format_korean_currency(26507100000, USD_SUFFIX)
+        '265억 710만 달러'
+
+    자릿수 표기와 통화를 한 함수에 묶어 두는 이유는, 통화가 늘 때마다 표기 규칙이
+    갈라지지 않게 하기 위해서다. 원화든 외화든 4자리로 끊는 규칙은 동일하다.
+    """
+    body = format_korean_amount(value, max_units=max_units, approx_mark=approx_mark)
+    return f'{body} {suffix}'
+
+
+def format_korean_won(value, *, max_units=DEFAULT_MAX_UNITS, approx_mark=APPROX_MARK):
+    """원화 표기.
 
         >>> format_korean_won(45453450000000)
         '약 45조 4,534억 원'
     """
-    body = format_korean_amount(value, max_units=max_units, approx_mark=approx_mark)
-    return f'{body} {WON_SUFFIX}'
+    return format_korean_currency(value, WON_SUFFIX, max_units=max_units,
+                                  approx_mark=approx_mark)
+
+
+def format_korean_usd(value, *, max_units=DEFAULT_MAX_UNITS, approx_mark=APPROX_MARK):
+    """달러 표기.
+
+        >>> format_korean_usd(26507100000)
+        '265억 710만 달러'
+
+    환율을 곱하지 않는다. 원화 환산은 환율이라는 **원문에 없을 수도 있는 값**을 끌어와야
+    하는 계산이라, 코드가 임의로 하면 근거 없는 수치가 된다(검증기가 잡아내는 바로 그
+    유형이다). 여기서는 달러 금액을 달러 단위로 읽기 쉽게 만들 뿐이다.
+    """
+    return format_korean_currency(value, USD_SUFFIX, max_units=max_units,
+                                  approx_mark=approx_mark)
 
 
 def parse_korean_amount(text):
@@ -159,6 +197,8 @@ def parse_korean_amount(text):
         45453450000000
         >>> parse_korean_amount('39,890,534,790,000')
         39890534790000
+        >>> parse_korean_amount('265억 710만 달러')
+        26507100000
         >>> parse_korean_amount('계약금액은 3조 원이다') is None
         True
 
@@ -179,8 +219,10 @@ def parse_korean_amount(text):
     negative = cleaned.startswith('-')
     if negative:
         cleaned = cleaned[1:].strip()
-    if cleaned.endswith(WON_SUFFIX):
-        cleaned = cleaned[:-len(WON_SUFFIX)].strip()
+    for suffix in CURRENCY_SUFFIXES:
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[:-len(suffix)].strip()
+            break
 
     if not _AMOUNT_RE.match(cleaned):
         return None

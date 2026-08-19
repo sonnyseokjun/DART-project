@@ -27,7 +27,7 @@ import re
 
 from django.conf import settings
 
-from .units import format_korean_amount, format_korean_won
+from .units import format_korean_amount, format_korean_usd, format_korean_won
 
 # 검증 로직은 disclosures/verification.py 로 분리했다(소유권 분리, 동작은 동일).
 # 아래 이름들은 **하위 호환을 위한 재수출**이다 — `from .summarizer import validate_summary`
@@ -390,7 +390,13 @@ def build_user_message(*, company_name, report_name, filed_at, rcept_no,
 # 절사 오차가 APPROX_TOLERANCE(5%) 안이라 판정이 뒤집히지 않는다.
 
 #: 본문에서 금액·주식 수를 찾는 앵커. 4자리 이상의 수 또는 쉼표 세 자리 묶음 표기가
-#: 곧바로 `원`/`주` 로 이어질 때만 잡는다.
+#: 곧바로 `원`/`주`/`USD`/`달러` 로 이어질 때만 잡는다.
+#:
+#: 외화를 넣은 이유. v3 첫 실측(2026-08-19, DR발행결정)에서 모델이 `26,507,100,000 USD`
+#: 라고만 적었다. 오탐은 사라졌지만 **일반인이 읽을 수 없는 표기**가 남았다 —
+#: 원화에서 고친 것과 똑같은 문제(3자리 쉼표 vs 4자리 단위)가 통화만 바꿔 재발한 것이다.
+#: 환율을 곱하지는 않는다. 원화 환산은 원문에 없을 수도 있는 환율을 끌어와야 하므로
+#: 코드가 임의로 하면 그 자체가 근거 없는 수치가 된다. 달러는 달러로 읽기 쉽게 만든다.
 #:
 #: **이미 한국 단위가 붙은 표기는 건드리지 않는다.** 두 경로로 막힌다.
 #:   1. `4,000억원` — 숫자 바로 뒤가 `억` 이라 앵커(`원`/`주`) 자체가 안 맞는다.
@@ -406,21 +412,47 @@ def build_user_message(*, company_name, report_name, filed_at, rcept_no,
 #:   `(?<![경조억만천] )`  위 2번 — `1,539만 6,500원` 처럼 띄어 쓴 경우.
 #:                      파이썬 lookbehind 는 고정 폭이라 폭 1과 폭 2를 둘로 나눠 적는다.
 #:   `(?!식)`           `1,132,477주식수` 를 주식 수로 오인하지 않는다.
-#:   `(?!\s*\(약)`      멱등성 — 이미 병기된 표기를 다시 병기하지 않는다.
+#: 멱등성(이미 병기된 표기를 다시 병기하지 않기)은 lookahead 가 아니라 아래
+#: `_ALREADY_ANNOTATED` 로 처리한다 — 이유는 그쪽 주석에 적었다.
 _AMOUNT_IN_TEXT = re.compile(
     r'(?<![\d,.])(?<![경조억만천])(?<![경조억만천] )'
-    r'(\d{1,3}(?:,\d{3})+|\d{4,})\s*(원|주(?!식))(?!\s*\(약)'
+    r'(\d{1,3}(?:,\d{3})+|\d{4,})\s*(원|주(?!식)|USD|달러)'
 )
+
+#: 바로 뒤에 이미 병기 괄호가 붙어 있는지 보는 패턴.
+#:
+#: 예전에는 앵커 정규식에 `(?!\s*\(약)` 을 달아 막았는데, 그건 **절사가 일어난 표기만**
+#: 걸러낸다. `약` 은 버린 자리가 있을 때만 붙기 때문이다. `26,507,100,000 USD(265억 710만
+#: 달러)` 처럼 딱 떨어지는 금액은 `약` 이 없어 그 lookahead 를 통과했고, 두 번 돌리면
+#: 괄호가 중첩됐다(qa 가 `test_exact_amounts_are_annotated_twice_when_applied_twice` 로
+#: 기록해 둔 결함이다). 외화 병기는 `265억 710만 달러` 처럼 절사 없이 떨어지는 경우가
+#: 흔해서 이 결함이 예외가 아니라 기본 동작이 된다. 그래서 `약` 유무와 무관하게
+#: "괄호 안이 한국 단위 표기인가" 로 판정한다.
+_ALREADY_ANNOTATED = re.compile(r'\s*\((?:약\s*)?-?[\d,]+\s*[경조억만]')
+
+#: 앵커로 잡은 단위 → 병기에 쓸 표기 함수. `주` 처럼 통화가 아닌 단위는 여기 없고
+#: 아래에서 숫자 표기 뒤에 단위를 그대로 붙인다.
+_CURRENCY_FORMATTERS = {
+    '원': format_korean_won,
+    'USD': format_korean_usd,
+    '달러': format_korean_usd,
+}
 
 
 def _amount_replacement(match):
-    """`45,453,450,000,000원` → `45,453,450,000,000원(약 45조 4,534억 원)`."""
+    """`45,453,450,000,000원` → `45,453,450,000,000원(약 45조 4,534억 원)`.
+
+    `26,507,100,000 USD` → `26,507,100,000 USD(265억 710만 달러)`.
+    """
+    if _ALREADY_ANNOTATED.match(match.string, match.end()):
+        return match.group(0)
     value = int(match.group(1).replace(',', ''))
     if value < AMOUNT_NOTATION_MIN:
         return match.group(0)  # 쉼표만으로 읽히는 크기다. 괄호를 붙이면 오히려 지저분하다.
     unit = match.group(2)
+    formatter = _CURRENCY_FORMATTERS.get(unit)
     notation = (
-        format_korean_won(value) if unit == '원'
+        formatter(value) if formatter
         else f'{format_korean_amount(value)} {unit}'
     )
     return f'{match.group(0)}({notation})'

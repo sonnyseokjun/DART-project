@@ -8,6 +8,8 @@
   python manage.py summarize_disclosures --dry-run          # 비용 추정만 (LLM 미호출)
   python manage.py summarize_disclosures --limit 5          # 5건만 요약
   python manage.py summarize_disclosures --type 거래소공시    # 특정 유형만
+  python manage.py summarize_disclosures --resummarize --only-warned --dry-run
+                                                            # 경고 붙은 요약만 (비용 먼저 확인)
   python manage.py summarize_disclosures                    # 대상 전체
 
 검증에 실패한(수치 경고가 붙은) 요약은 **자동으로 미게시 상태로 저장**한다. 검증 결과가
@@ -91,6 +93,11 @@ class Command(BaseCommand):
                  '비용이 다시 발생하므로 프롬프트를 고쳤을 때만 사용한다',
         )
         parser.add_argument(
+            '--only-warned', dest='only_warned', action='store_true',
+            help='검증 경고가 붙은 요약만 다시 생성한다. --resummarize 와 함께 써야 한다. '
+                 '프롬프트를 고친 뒤 "문제 있는 것만" 되돌리는 용도',
+        )
+        parser.add_argument(
             '--regenerate', action='store_true',
             help=f'검증에 실패한 요약을 경고를 되먹여 최대 {MAX_REGENERATION_ATTEMPTS}회 '
                  '다시 생성한다. 건당 LLM을 한 번 더 부르므로 비용이 늘어난다. '
@@ -100,6 +107,14 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if options['limit'] is not None and options['limit'] < 1:
             raise CommandError('--limit은 1 이상이어야 합니다.')
+        if options['only_warned'] and not options['resummarize']:
+            # 경고가 붙은 요약은 **이미 존재하는** 요약이므로, --resummarize 없이는
+            # 대상이 항상 0건이 된다. 조용히 아무것도 안 하는 대신 이유를 말한다.
+            # 비용이 드는 동작(덮어쓰기)을 옵션 하나가 몰래 켜지 않게 하는 뜻도 있다.
+            raise CommandError(
+                '--only-warned 는 --resummarize 와 함께 써야 합니다. '
+                '경고가 붙은 요약을 덮어쓰는 동작이라 비용이 발생합니다.'
+            )
 
         targets = self._select_targets(options)
         if not targets:
@@ -138,6 +153,8 @@ class Command(BaseCommand):
         )
         if not options['resummarize']:
             qs = qs.filter(summary__isnull=True)
+        if options['only_warned']:
+            qs = qs.filter(summary__isnull=False).exclude(summary__review_warnings=[])
         if options['disclosure_type']:
             qs = qs.filter(disclosure_type=options['disclosure_type'])
         if options['rcept_no']:
@@ -264,6 +281,9 @@ class Command(BaseCommand):
             'why_important': result['why_important'],
             'importance': result['importance'],
             'model_name': result['model_name'][:50],
+            # summarizer 가 이미 돌려주는 값을 그대로 남긴다. 여기서 PROMPT_VERSION 을
+            # 다시 읽으면 재생성 도중 상수가 바뀌었을 때 실제로 쓴 버전과 어긋난다.
+            'prompt_version': result.get('prompt_version', '')[:10],
             'evidence': result.get('evidence', []),
             'review_warnings': warnings,
             # 검수 게이트는 공시 유형(Disclosure.review_category)과 경고가 정한다.
