@@ -85,8 +85,14 @@ CACHE_WRITE_MULTIPLIER = 1.25
 TOKENIZER_ENCODING = 'o200k_base'
 
 #: 시스템 프롬프트·원문 외에 매 요청 고정으로 청구되는 입력 토큰(JSON 스키마·채팅 템플릿).
-#: 스모크 테스트 3건 실측값(1402/1401/1404)에서 얻은 상수. 스키마를 크게 바꾸면 다시 잰다.
-FIXED_PREFIX_OVERHEAD_TOKENS = 1400
+#: 스키마·프롬프트를 크게 바꾸면 **반드시 다시 잰다** — 이 값이 낡으면 비용 추정이 조용히 틀린다.
+#: 2026-08-21 v3 실측: 캐시 적중 토큰이 27회 모두 3,908로 일정했다(= 시스템 프롬프트 2,172 + 1,736).
+#: 이전 값 1,400은 2026-07-27 v2 실측(1402/1401/1404)이라 v3와 336토큰 어긋나 있었다.
+FIXED_PREFIX_OVERHEAD_TOKENS = 1736
+
+#: 요약 1건의 예상 출력 토큰. 추론 토큰을 포함한 completion_tokens 기준이다.
+#: 2026-08-21 v3 실측 27건 평균 990.5 (개별 852~1,085). 초안값 700은 추론 토큰을 빼고 잡은 값이었다.
+EXPECTED_OUTPUT_TOKENS = 1000
 
 #: 응답 최대 토큰. 요약 4필드 + 근거 배열 + 추론 토큰을 감안한 여유값.
 MAX_OUTPUT_TOKENS = 4000
@@ -634,16 +640,39 @@ def static_prefix_tokens():
     """요청마다 동일하게 붙는 정적 접두사의 토큰 수.
 
     시스템 프롬프트 외에 JSON 스키마와 채팅 템플릿도 입력 토큰으로 과금된다.
-    스모크 테스트 3건에서 실측한 결과, tiktoken으로 센 (시스템 프롬프트 + 원문) 대비
-    실제 청구 입력 토큰이 **원문 길이와 무관하게 일정하게 약 1,400토큰 더 많았다**
-    (2026-07-27 실측: 1402 / 1401 / 1404). 이 몫을 상수로 반영한다.
-    전량 정적이므로 프롬프트 캐싱 대상이며, 실제로 캐시 적중 토큰이
-    (시스템 프롬프트 + 이 상수)에 근접하게 보고되었다(실측 2,518 / 추정 2,542).
+    실측 결과 tiktoken으로 센 (시스템 프롬프트 + 원문) 대비 실제 청구 입력 토큰이
+    **원문 길이와 무관하게 일정한 양만큼 더 많았다**. 이 몫을 상수로 반영한다.
+
+    전량 정적이므로 프롬프트 캐싱 대상이다. 2026-08-21 v3 실측에서 캐시 적중 토큰이
+    27회 호출 모두 **정확히 3,908**로 보고되어, 이 함수의 반환값과 일치하는 것을 확인했다
+    (23건 배치의 총 입력 221,283 · 캐시 적중 85,976이 계산값과 한 토큰도 어긋나지 않았다).
     """
     return system_prompt_tokens() + FIXED_PREFIX_OVERHEAD_TOKENS
 
 
-def estimate_summary_cost(raw_text, model=DEFAULT_MODEL, expected_output_tokens=700,
+def expected_cache_write_tokens(input_tokens, cached_tokens):
+    """캐시에 **기록**되어 별도로 과금되는 토큰 수.
+
+    캐시 적중분을 뺀 나머지 입력이 그대로 캐시에 기록되고, 입력 단가의
+    CACHE_WRITE_MULTIPLIER 배로 청구된다. 원문은 공시마다 다르므로 이 몫은
+    거의 매번 발생한다 — **고정비가 아니라 입력 길이에 비례하는 변동비다.**
+
+    추정 함수가 이 항목을 통째로 빠뜨린 탓에 실제 청구액의 절반 정도만 내놓고 있었다.
+    2026-08-21 v3 23건 배치 실측($0.4495) 기준으로 원인을 분해하면:
+
+        접두사 상수(1400→1736)   +0.3%p
+        출력 토큰(700→1000)      +9%p
+        **캐시 기록 과금 누락**   **+37%p**   ← 압도적 주범
+        ------------------------------------
+        53% → 100% (반영 후 추정 $0.4510, 오차 +0.3%)
+
+    반환값이 정확할 필요는 없다. 0으로 두는 것이 틀리다는 점이 중요하다.
+    """
+    return max(input_tokens - cached_tokens, 0)
+
+
+def estimate_summary_cost(raw_text, model=DEFAULT_MODEL,
+                          expected_output_tokens=EXPECTED_OUTPUT_TOKENS,
                           cache_hit=True):
     """공시 1건의 예상 비용을 산출한다.
 
@@ -657,18 +686,24 @@ def estimate_summary_cost(raw_text, model=DEFAULT_MODEL, expected_output_tokens=
         'model': model,
         'input_tokens': input_tokens,
         'cached_tokens': cached,
+        'cache_write_tokens': expected_cache_write_tokens(input_tokens, cached),
         'output_tokens': expected_output_tokens,
-        'usd': estimate_cost(input_tokens, expected_output_tokens, cached_tokens=cached,
-                             model=model),
+        'usd': estimate_cost(
+            input_tokens, expected_output_tokens, cached_tokens=cached,
+            cache_write_tokens=expected_cache_write_tokens(input_tokens, cached),
+            model=model,
+        ),
     }
 
 
-def estimate_batch_cost(raw_texts, model=DEFAULT_MODEL, expected_output_tokens=700):
+def estimate_batch_cost(raw_texts, model=DEFAULT_MODEL,
+                        expected_output_tokens=EXPECTED_OUTPUT_TOKENS):
     """요약 대상 원문 목록의 총 예상 비용. 사용자 승인 보고용.
 
     raw_texts: 전처리된 원문 문자열의 이터러블.
     첫 호출은 캐시 미적중(기록만), 이후 호출부터 적중한다고 본다.
-    반환: {'count', 'input_tokens', 'cached_tokens', 'output_tokens', 'usd', 'usd_per_item'}
+    반환: {'count', 'input_tokens', 'cached_tokens', 'cache_write_tokens',
+           'output_tokens', 'usd', 'usd_per_item'}
     """
     prefix = static_prefix_tokens()
     cacheable = prefix >= 1024
@@ -681,12 +716,15 @@ def estimate_batch_cost(raw_texts, model=DEFAULT_MODEL, expected_output_tokens=7
         if cacheable and count > 1:
             total_cached += prefix
     total_output = count * expected_output_tokens
-    usd = estimate_cost(total_input, total_output, cached_tokens=total_cached, model=model)
+    total_cache_write = expected_cache_write_tokens(total_input, total_cached)
+    usd = estimate_cost(total_input, total_output, cached_tokens=total_cached,
+                        cache_write_tokens=total_cache_write, model=model)
     return {
         'count': count,
         'model': model,
         'input_tokens': total_input,
         'cached_tokens': total_cached,
+        'cache_write_tokens': total_cache_write,
         'output_tokens': total_output,
         'usd': usd,
         'usd_per_item': usd / count if count else 0.0,
@@ -700,19 +738,45 @@ def estimate_batch_cost(raw_texts, model=DEFAULT_MODEL, expected_output_tokens=7
 _client = None
 
 
+#: OpenAI API 키의 접두사와 최소 길이. 형식만 본다 — 유효성은 서버만 안다.
+API_KEY_PREFIX = 'sk-'
+API_KEY_MIN_LENGTH = 20
+
+
+def check_api_key():
+    """LLM을 부르기 전에 API 키의 **형식**을 확인하고 정리된 키를 돌려준다.
+
+    키가 유효한지는 호출해 봐야 알지만, **형식부터 어긋난 키는 부르기 전에 안다.**
+    실제로 `.env` 의 값이 `sk` 두 글자였던 적이 있고, 그때는 공시 3건을 각각 호출해
+    401을 세 번 맞고서야 원인을 알았다. 100건 배치였다면 401을 100번 맞았을 것이다.
+
+    호출 전에 값싸게 판정한다는 점에서 `_regeneration_supported()` 와 같은 취지다.
+    형식 검사를 느슨하게 두는 이유는 키 형식이 바뀔 수 있어서다 — 접두사와 최소 길이만 본다.
+    """
+    key = getattr(settings, 'OPENAI_API_KEY', '')
+    # API 키에는 공백이 들어갈 수 없다. .env에 붙여 넣는 과정에서 섞인 공백·줄바꿈을
+    # 제거한다(실제로 키 중간에 공백이 섞여 401이 났던 사례가 있다).
+    key = ''.join(key.split())
+    if not key:
+        raise SummarizerError(
+            'no_api_key', 'OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.'
+        )
+    if not key.startswith(API_KEY_PREFIX) or len(key) < API_KEY_MIN_LENGTH:
+        # 키 자체는 절대 출력하지 않는다. 길이만으로도 원인을 짚기에 충분하다.
+        raise SummarizerError(
+            'bad_api_key',
+            f'OPENAI_API_KEY의 형식이 올바르지 않습니다 '
+            f'(길이 {len(key)}자, {API_KEY_PREFIX!r}로 시작해야 하며 '
+            f'{API_KEY_MIN_LENGTH}자 이상). .env 파일을 확인하세요.'
+        )
+    return key
+
+
 def _get_client():
     global _client
     if _client is None:
-        key = getattr(settings, 'OPENAI_API_KEY', '')
-        # API 키에는 공백이 들어갈 수 없다. .env에 붙여 넣는 과정에서 섞인 공백·줄바꿈을
-        # 제거한다(실제로 키 중간에 공백이 섞여 401이 났던 사례가 있다).
-        key = ''.join(key.split())
-        if not key:
-            raise SummarizerError(
-                'no_api_key', 'OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.'
-            )
         from openai import OpenAI
-        _client = OpenAI(api_key=key)
+        _client = OpenAI(api_key=check_api_key())
     return _client
 
 

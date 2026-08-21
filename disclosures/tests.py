@@ -3512,6 +3512,124 @@ class CorrectionCachePrefixTest(TestCase):
         self.assertEqual([m['role'] for m in messages], ['system', 'user', 'user'])
 
 
+class CostEstimateAccuracyTest(TestCase):
+    """비용 추정을 **실제 청구서에 고정한다.**
+
+    이 함수의 출력은 "돈을 쓸지" 판단하는 근거인데, 두 번 연속 과소 추정했다.
+    23건 배치 실측($0.4495)에 대해 추정치는 $0.2394 — 실제의 53% 였다.
+
+    원인이 셋이고, 그중 하나가 압도적이다.
+
+        접두사 상수(1400→1736)     +0.3%p
+        출력 토큰(700→1000)        +9%p
+        **캐시 기록 과금 누락**     **+37%p**
+        --------------------------------
+        53% → 100%
+
+    추정이 낮게 나오는 것은 높게 나오는 것보다 나쁘다 — 승인하고 나서 청구서를 본다.
+    """
+
+    #: 2026-08-21 v3 실측. 23건 배치 한 번의 usage 합계와 청구액.
+    MEASURED = {'input': 221_283, 'cached': 85_976, 'output': 22_762, 'usd': 0.4495}
+
+    def test_static_prefix_matches_the_measured_cache_hit(self):
+        """캐시 적중 토큰은 27회 호출 모두 정확히 3,908이었다.
+
+        접두사 추정이 실제와 어긋나면 캐시 할인 몫을 잘못 계산한다.
+        """
+        self.assertEqual(summarizer.static_prefix_tokens(), 3908)
+
+    def test_the_pricing_model_reproduces_the_real_invoice(self):
+        """실측 토큰 수를 넣으면 실제 청구액이 나와야 한다 — 단가표의 회귀 고정."""
+        m = self.MEASURED
+        usd = summarizer.estimate_cost(
+            m['input'], m['output'], cached_tokens=m['cached'],
+            cache_write_tokens=summarizer.expected_cache_write_tokens(
+                m['input'], m['cached']),
+        )
+        self.assertAlmostEqual(usd, m['usd'], delta=m['usd'] * 0.02)
+
+    def test_ignoring_cache_write_underestimates_by_a_third(self):
+        """캐시 기록을 빼먹으면 어떻게 되는지 못 박는다 — 되돌아가지 않기 위해서다."""
+        m = self.MEASURED
+        without = summarizer.estimate_cost(
+            m['input'], m['output'], cached_tokens=m['cached'])
+        self.assertLess(without, m['usd'] * 0.7)
+
+    def test_a_single_estimate_bills_the_uncached_input_twice_over(self):
+        """미적중 입력은 입력 단가로 한 번, 캐시 기록 단가로 또 한 번 청구된다."""
+        est = summarizer.estimate_summary_cost('공급계약 체결\n계약금액 | 1,234,567')
+
+        self.assertGreater(est['cache_write_tokens'], 0)
+        self.assertEqual(
+            est['cache_write_tokens'],
+            est['input_tokens'] - est['cached_tokens'],
+        )
+
+    def test_batch_estimate_reports_and_charges_cache_write(self):
+        """배치 경로도 같은 규칙을 따라야 한다 — 승인 보고서가 여기서 나온다."""
+        texts = ['공급계약 체결 내용 %d' % i for i in range(5)]
+        batch = summarizer.estimate_batch_cost(texts)
+
+        self.assertEqual(
+            batch['cache_write_tokens'],
+            batch['input_tokens'] - batch['cached_tokens'],
+        )
+        naive = summarizer.estimate_cost(
+            batch['input_tokens'], batch['output_tokens'],
+            cached_tokens=batch['cached_tokens'])
+        self.assertGreater(batch['usd'], naive)
+
+    def test_the_model_also_reproduces_an_invoice_it_was_not_fitted_to(self):
+        """2단계 전량 요약 실측 — **보정에 쓰지 않은 표본**이라 교차 검증이 된다.
+
+        139건 / 입력 1,392,683(캐시 350,002) / 출력 135,984 / 실제 $3.1964.
+        한 표본에만 맞춘 단가표는 다음 청구서에서 또 틀린다.
+        """
+        input_tokens, cached, output, usd = 1_392_683, 350_002, 135_984, 3.1964
+        estimated = summarizer.estimate_cost(
+            input_tokens, output, cached_tokens=cached,
+            cache_write_tokens=summarizer.expected_cache_write_tokens(
+                input_tokens, cached),
+        )
+        self.assertAlmostEqual(estimated, usd, delta=usd * 0.02)
+
+    def test_expected_output_tokens_include_reasoning(self):
+        """추론 토큰도 completion_tokens 로 청구된다. v3 실측 27건 평균 990.5."""
+        self.assertGreaterEqual(summarizer.EXPECTED_OUTPUT_TOKENS, 900)
+        self.assertLessEqual(summarizer.EXPECTED_OUTPUT_TOKENS, 1100)
+
+
+class ApiKeyGuardTest(TestCase):
+    """LLM을 부르기 전에 키 형식을 본다 — 401을 건수만큼 맞지 않기 위해서다."""
+
+    def test_a_missing_key_is_rejected(self):
+        with patch.object(summarizer.settings, 'OPENAI_API_KEY', ''):
+            with self.assertRaises(summarizer.SummarizerError):
+                summarizer.check_api_key()
+
+    def test_the_two_character_key_that_actually_happened_is_rejected(self):
+        """`.env` 에 `sk` 두 글자가 들어가 401을 세 번 맞았다."""
+        with patch.object(summarizer.settings, 'OPENAI_API_KEY', 'sk'):
+            with self.assertRaises(summarizer.SummarizerError) as ctx:
+                summarizer.check_api_key()
+        self.assertEqual(ctx.exception.code, 'bad_api_key')
+
+    def test_the_error_never_prints_the_key(self):
+        """키를 로그·터미널에 흘리면 그 자체가 사고다. 길이만 말한다."""
+        secret = 'sk-' + 'S3CR3T' * 8
+        with patch.object(summarizer.settings, 'OPENAI_API_KEY', 'nope-' + secret):
+            with self.assertRaises(summarizer.SummarizerError) as ctx:
+                summarizer.check_api_key()
+        self.assertNotIn('S3CR3T', str(ctx.exception))
+
+    def test_surrounding_whitespace_is_forgiven(self):
+        """.env 에 붙여 넣다 섞인 공백·줄바꿈으로 실패한 적이 있다."""
+        key = ' sk-' + 'a' * 40 + '\n'
+        with patch.object(summarizer.settings, 'OPENAI_API_KEY', key):
+            self.assertEqual(summarizer.check_api_key(), 'sk-' + 'a' * 40)
+
+
 # --- 요약 생성 명령 ---------------------------------------------------------
 #
 # `summarize_disclosures` 는 **돈이 나가는 유일한 경로**인데 4단계까지 테스트가 0건이었다.
@@ -3606,6 +3724,91 @@ class SummarizeDisclosuresCommandTest(TestCase):
         """
         with self.assertRaises(CommandError):
             call_command('summarize_disclosures', only_warned=True)
+
+    def test_stale_prompt_requires_resummarize(self):
+        """--only-warned 와 같은 이유 — 대상이 이미 존재하는 요약이다."""
+        with self.assertRaises(CommandError):
+            call_command('summarize_disclosures', stale_prompt=True)
+
+    def test_stale_prompt_skips_summaries_already_on_the_current_prompt(self):
+        """전량 재요약이 중간에 끊겨도 **이미 끝난 건을 다시 사지 않는다.**
+
+        `--limit` 은 filed_at 오름차순이라 오래된 것부터 골라 이어받기에 쓸 수 없다.
+        이 필터가 없으면 113건짜리 배치가 60번째에서 죽었을 때 앞의 60건을 또 결제한다.
+        """
+        stale = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000002',
+            report_name='주요사항보고서', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 2), dart_url=dart_viewer_url('20260701000002'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
+        )
+        # 이미 현재 프롬프트로 만든 요약 — 다시 부르면 안 된다.
+        DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line='최신 프롬프트', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            prompt_version=summarizer.PROMPT_VERSION,
+        )
+        # 옛 프롬프트 산출물 — 이번에 다시 만들어야 한다.
+        DisclosureSummary.objects.create(
+            disclosure=stale, one_line='옛 프롬프트', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            prompt_version='v2',
+        )
+
+        mock_call = self._call(_valid_summary_payload(),
+                               resummarize=True, stale_prompt=True)
+
+        self.assertEqual(mock_call.call_count, 1)
+        self.disclosure.refresh_from_db()
+        self.assertEqual(self.disclosure.summary.one_line, '최신 프롬프트')
+
+    def test_stale_prompt_treats_an_unknown_version_as_stale(self):
+        """이 필드가 생기기 전 요약은 빈 값이다. 건너뛰면 v2 잔재가 그대로 남는다."""
+        DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line='버전 모름', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            prompt_version='',
+        )
+
+        mock_call = self._call(_valid_summary_payload(),
+                               resummarize=True, stale_prompt=True)
+
+        self.assertEqual(mock_call.call_count, 1)
+
+    def test_rerunning_a_stale_prompt_batch_costs_nothing_the_second_time(self):
+        """중단 후 재실행 시나리오를 끝까지 밟는다 — 이 테스트가 이어받기의 근거다."""
+        DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line='옛 프롬프트', easy_explanation='.',
+            why_important='.', importance='medium', model_name='gpt-5.6-luna',
+            prompt_version='v2',
+        )
+        first = self._call(_valid_summary_payload(),
+                           resummarize=True, stale_prompt=True)
+        self.assertEqual(first.call_count, 1)
+
+        # 1회차가 prompt_version 을 남겼으므로 2회차는 대상이 0건이어야 한다.
+        second = self._call(_valid_summary_payload(),
+                            resummarize=True, stale_prompt=True)
+        second.assert_not_called()
+
+    def test_a_malformed_api_key_stops_before_the_first_call(self):
+        """키 형식이 틀리면 배치가 건수만큼 401을 맞는다. 첫 호출 전에 멈춰야 한다.
+
+        실제로 `.env` 값이 `sk` 두 글자였던 적이 있고, 3건을 각각 돌려 401을 세 번 맞았다.
+        """
+        with patch.object(summarizer.settings, 'OPENAI_API_KEY', 'sk'), \
+                patch.object(summarizer, '_call_openai') as mock_call:
+            with self.assertRaises(CommandError):
+                call_command('summarize_disclosures')
+
+        mock_call.assert_not_called()
+        self.assertFalse(DisclosureSummary.objects.exists())
+
+    def test_the_key_guard_does_not_block_cost_estimation(self):
+        """--dry-run 은 LLM을 부르지 않으므로 키가 없어도 돌아야 한다."""
+        with patch.object(summarizer.settings, 'OPENAI_API_KEY', ''):
+            call_command('summarize_disclosures', dry_run=True)
 
     def test_only_warned_picks_exactly_the_flagged_summaries(self):
         """경고 없는 요약에까지 비용을 쓰면 안 된다."""
