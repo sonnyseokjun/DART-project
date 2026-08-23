@@ -10,6 +10,9 @@
   python manage.py summarize_disclosures --type 거래소공시    # 특정 유형만
   python manage.py summarize_disclosures --resummarize --only-warned --dry-run
                                                             # 경고 붙은 요약만 (비용 먼저 확인)
+  python manage.py summarize_disclosures --resummarize --stale-prompt
+                                                            # 옛 프롬프트로 만든 요약만
+                                                            # (중단돼도 재실행이 이어받는다)
   python manage.py summarize_disclosures                    # 대상 전체
 
 검증에 실패한(수치 경고가 붙은) 요약은 **자동으로 미게시 상태로 저장**한다. 검증 결과가
@@ -29,8 +32,10 @@ from disclosures.review_policy import MAX_REGENERATION_ATTEMPTS, should_regenera
 from disclosures.selection import SelectionState
 from disclosures.summarizer import (
     DEFAULT_MODEL,
+    PROMPT_VERSION,
     SummarizerError,
     build_review_warnings,
+    check_api_key,
     count_tokens,
     estimate_summary_cost,
     summarize_disclosure,
@@ -98,6 +103,12 @@ class Command(BaseCommand):
                  '프롬프트를 고친 뒤 "문제 있는 것만" 되돌리는 용도',
         )
         parser.add_argument(
+            '--stale-prompt', dest='stale_prompt', action='store_true',
+            help=f'현재 프롬프트({PROMPT_VERSION})로 만들지 않은 요약만 다시 생성한다. '
+                 '--resummarize 와 함께 써야 한다. 전량 재요약이 도중에 끊겨도 '
+                 '다시 실행하면 남은 것부터 이어받는다',
+        )
+        parser.add_argument(
             '--regenerate', action='store_true',
             help=f'검증에 실패한 요약을 경고를 되먹여 최대 {MAX_REGENERATION_ATTEMPTS}회 '
                  '다시 생성한다. 건당 LLM을 한 번 더 부르므로 비용이 늘어난다. '
@@ -115,6 +126,13 @@ class Command(BaseCommand):
                 '--only-warned 는 --resummarize 와 함께 써야 합니다. '
                 '경고가 붙은 요약을 덮어쓰는 동작이라 비용이 발생합니다.'
             )
+        if options['stale_prompt'] and not options['resummarize']:
+            # --only-warned 와 같은 이유다. 대상이 이미 존재하는 요약이므로
+            # --resummarize 없이는 항상 0건이 된다.
+            raise CommandError(
+                '--stale-prompt 는 --resummarize 와 함께 써야 합니다. '
+                '옛 프롬프트로 만든 요약을 덮어쓰는 동작이라 비용이 발생합니다.'
+            )
 
         targets = self._select_targets(options)
         if not targets:
@@ -130,6 +148,13 @@ class Command(BaseCommand):
         if options['dry_run']:
             self._report_estimate(targets, model)
             return
+
+        # 여기서부터는 돈이 나간다. 키 형식이 어긋났다면 **첫 호출 전에** 멈춘다 —
+        # 건별 실패는 _run 안에서 삼켜지므로, 그대로 두면 배치 전체가 401을 건수만큼 맞는다.
+        try:
+            check_api_key()
+        except SummarizerError as exc:
+            raise CommandError(str(exc)) from exc
 
         if options['regenerate'] and not _regeneration_supported():
             self.stdout.write(self.style.WARNING(
@@ -155,6 +180,12 @@ class Command(BaseCommand):
             qs = qs.filter(summary__isnull=True)
         if options['only_warned']:
             qs = qs.filter(summary__isnull=False).exclude(summary__review_warnings=[])
+        if options['stale_prompt']:
+            # 이미 현재 프롬프트로 만든 요약은 다시 부르지 않는다. 전량 재요약이
+            # 도중에 끊겨도 재실행이 남은 것부터 이어받게 하는 장치다 —
+            # --limit 은 filed_at 오름차순이라 **오래된 것부터** 골라 이 용도로 쓸 수 없다.
+            qs = (qs.filter(summary__isnull=False)
+                    .exclude(summary__prompt_version=PROMPT_VERSION))
         if options['disclosure_type']:
             qs = qs.filter(disclosure_type=options['disclosure_type'])
         if options['rcept_no']:
