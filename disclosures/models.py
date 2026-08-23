@@ -246,12 +246,42 @@ class DisclosureSummary(models.Model):
         실제로 SK하이닉스 유상증자 요약이 39조 8,905억을 3조 9,891억으로 10배 잘못 적은
         사례가 있었고, 그 값을 짚어주는 것과 아닌 것은 확인 난이도가 다르다.
         """
-        from .verification import UNSUPPORTED_NUMBER_PREFIX, WARNING_LIST_SEPARATOR
+        from .verification import UNSUPPORTED_NUMBER_PREFIX
+
+        return self._numbers_from_warnings(UNSUPPORTED_NUMBER_PREFIX)
+
+    @property
+    def uncited_numbers(self):
+        """값은 원문에서 확인됐지만 인용 근거에는 없는 수치 목록.
+
+        `unsupported_numbers` 와 **성격이 다르므로 따로 둔다.** 저쪽은 원문 어디에도 없는
+        수치라 사실 오류일 수 있지만, 이쪽은 값이 원문과 일치한다. 같은 배너에 같은 문구로
+        묶으면 "원문 근거를 찾지 못했습니다"라는 틀린 말을 하게 된다.
+
+        검수자에게는 둘 다 필요하다 — 확인할 숫자를 짚어주는 목적은 같기 때문이다.
+        """
+        from .verification import UNCITED_NUMBER_PREFIX
+
+        return self._numbers_from_warnings(UNCITED_NUMBER_PREFIX)
+
+    @property
+    def numbers_to_review(self):
+        """검수자가 원문과 대조해야 할 수치 전체.
+
+        게시 판정에서는 둘을 갈라야 하지만(하나는 사실 오류일 수 있고 하나는 인용 누락일 뿐),
+        **검수 화면에서는 할 일이 같다** — 원문에서 찾아 맞는지 본다. 검수 패널의 칩이
+        이미 '원문 N곳'과 '원문에 없음'으로 둘을 구분해 보여주므로 합쳐서 넘긴다.
+        """
+        return self.unsupported_numbers + self.uncited_numbers
+
+    def _numbers_from_warnings(self, prefix):
+        """정확성 경고 문구에서 접두어가 맞는 것들의 수치 표기를 뽑는다."""
+        from .verification import WARNING_LIST_SEPARATOR
 
         numbers = []
         for warning in self.accuracy_warnings:
-            if warning.startswith(UNSUPPORTED_NUMBER_PREFIX):
-                body = warning[len(UNSUPPORTED_NUMBER_PREFIX):]
+            if warning.startswith(prefix):
+                body = warning[len(prefix):]
                 numbers.extend(
                     part.strip()
                     for part in body.split(WARNING_LIST_SEPARATOR)

@@ -42,6 +42,7 @@ from .verification import (  # noqa: F401
     ORDINAL_MAX,
     SCALE_TOLERANCE,
     SENTENCE_COUNT_PREFIX,
+    UNCITED_NUMBER_PREFIX,
     UNSUPPORTED_NUMBER_PREFIX,
     UNVERIFIED_QUOTE_PREFIX,
     WARNING_LIST_SEPARATOR,
@@ -520,6 +521,11 @@ CORRECTION_ACTIONS = {
         '되돌리고, 그 표기를 담은 quote 를 붙여라. '
         '(나) 원문에 없는 값을 계산해 만들었다(증감액·증감률·비중·환율 등) '
         '— 그 수치와, 그 수치에만 기대는 문장을 지워라.'
+    ),
+    UNCITED_NUMBER_PREFIX: (
+        '이 수치의 **값 자체는 원문과 일치한다** — 지우거나 고치지 마라. '
+        '빠진 것은 근거뿐이다. 이 값이 인쇄된 원문 구간을 찾아 evidence 에 quote 로 '
+        '추가하라. 표 안의 값이면 단위 머리글(`(단위 : 백만원)`)을 같은 quote 에 함께 담아라.'
     ),
     UNVERIFIED_QUOTE_PREFIX: (
         '이 quote 를 원문에서 찾지 못했다. 원문의 **연속된 한 구간**을 다시 찾아 '
