@@ -62,7 +62,36 @@ ORDINAL_MAX = 31
 #: 조 단위 표는 여전히 통과한다 — 문서가 `(단위 : 조원)` 을 선언했을 때만
 #: `document_scales` 가 10^12 을 후보에 다시 넣는다(아래 `_value_supported` 의 가산 경로).
 #: 실측(140건): 이 게이트로 새로 생긴 오탐 0건, 놓치던 10배 오류 1건 검출.
-_SCALE_MULTIPLIERS = (10 ** 3, 10 ** 4, 10 ** 6, 10 ** 8)
+#:
+#: **2026-08-23: 나머지도 전부 닫았다. 무조건 허용하는 배수는 이제 없다.**
+#: 이 목록의 존재 이유는 "LLM이 단위를 환산해 써서 자릿수가 어긋난 것을 용서한다"였다.
+#: v3 프롬프트가 환산을 금지하고 코드가 대신 하면서(`annotate_amounts`) 그 전제가 사라졌다.
+#: 남은 것은 구멍뿐이었다 — 10^3~10^8 을 무조건 허용하면 **천 배 틀려도 통과**한다.
+#:
+#: 전량 v3 재요약(2026-08-23) 후 140건 전수 재측정:
+#:   요약 수치 650개 중 인용문과 직접 일치 629 / 배수 경로 의존 21
+#:   전면 좁히기 결과 — 차단 0건(변화 없음), 인용 누락 수치 16 → 17 (**+1**)
+#: PR #11 시점에는 같은 좁히기가 새 오탐 25건을 냈다. 그 25건이 전부 v2 잔재였다는 뜻이다.
+#:
+#: 선언된 배수는 그대로 살아 있다 — `declared_scales`(인용문)와 `document_scales`(문서)가
+#: `_value_supported` 의 가산 경로로 넣는다. 즉 `(단위 : 백만원)` 을 실제로 선언한 표는
+#: 통과하고, 아무 근거 없이 자릿수만 맞는 값은 통과하지 못한다.
+_SCALE_MULTIPLIERS = ()
+
+#: **원문 전체 대조에서만** 쓰는 배수. 인용문 대조와 일부러 다르게 둔다.
+#:
+#: 두 대조는 결정하는 것이 다르다.
+#:   - 인용문 대조 → **경고를 붙일지**. 틀렸을 때의 대가가 "검수 목록에 한 줄 더"라
+#:     좁게 잡아도 손해가 작다. 그래서 선언된 배수만 인정한다.
+#:   - 원문 대조 → **게시를 막을지**. 틀렸을 때의 대가가 "정확한 요약이 웹에서 사라짐"이라
+#:     크다. 그래서 넓게 잡는다.
+#:
+#: 이 비대칭이 없으면 좁히기가 과잉 차단으로 돌아온다. 예: `736`(백만원 표)을 `약 7억`으로
+#: 쓴 **정확한** 요약(id 38)은 좁힌 인용문 대조를 통과하지 못한다. 원문 대조까지 좁히면
+#: 그 요약이 통째로 내려간다 — 값이 맞는데도. 넓은 원문 대조가 그것을 게시 쪽으로 돌린다.
+#:
+#: 넓혀도 무력하지 않다: 10배·100배는 여기 없으므로 실제 오류는 그대로 막힌다.
+_DOCUMENT_SCALE_MULTIPLIERS = (10 ** 3, 10 ** 4, 10 ** 6, 10 ** 8)
 
 #: 배수 일치로 인정할 때의 상대 오차. 반올림 표기(3,746억 ↔ 374,629백만) 흡수용.
 SCALE_TOLERANCE = 0.01
@@ -279,6 +308,19 @@ def document_scales(raw_text):
     return {scale for _position, scale in unit_declarations(raw_text) if scale > 1}
 
 
+def document_numbers(raw_text):
+    """원문 **전체**에 등장하는 수치 값의 목록.
+
+    인용문 대조가 실패했을 때 한 번 더 물어보기 위한 것이다 — "이 숫자가 원문 어딘가에는
+    있는가". 인용문 대조보다 훨씬 느슨하므로 **게시를 막는 판정에는 쓰지 않는다.**
+    쓰임새는 그 반대다: 인용만 빠졌을 뿐 값은 맞는 수치를 차단 대상에서 빼는 데 쓴다
+    (`validate_summary` 의 uncited_numbers 참고).
+
+    문서 전체를 훑지만 140건 전수에 0.2초로 비용이 문제되지 않는다.
+    """
+    return [value for _text, value in extract_numbers(_normalize(raw_text))]
+
+
 def _value_supported(value, quote_values, approximate, quote_scales=()):
     """요약의 수치 value가 인용문의 수치들로 뒷받침되는지 판정한다.
 
@@ -478,13 +520,43 @@ def validate_summary(data, raw_text):
     quote_scales = declared_scales(
         item.get('quote', '') for item in evidence
     ) | document_scales(raw_text)
-    unsupported = sorted({
+    #
+    # 인용 대조에 실패한 수치는 **두 종류로 갈라야 한다.** 하나로 묶어 전부 게시를 막던 것이
+    # 실제 손해를 냈다 — v3 재요약(2026-08-23) 직후 자동 미게시 10건 중 8건이
+    # **값은 원문과 정확히 일치하는데** 모델이 인용을 안 붙였다는 이유로 내려가 있었다.
+    # 경고 대상 수치 16개를 전수 확인한 결과 16개 모두 원문에 존재했다.
+    #
+    #   - 원문에도 없다      → 지어냈을 수 있다. **사실 오류**이므로 계속 막는다.
+    #   - 원문에는 있다      → 값은 맞고 근거만 빠졌다. 검수는 요청하되 **게시는 한다.**
+    #
+    # 문서 전체 대조는 느슨하지만 무력하지 않다. 실제로 웹에 떠 있던 오류들을 그대로 막는다
+    # (rcept_no 20260715800045 원문 기준 실측: 10배 오류 `3조 9,891억` 차단,
+    #  100배 오류 차단, pk 117 유형 `4조` 차단, 정답 `39조 8,905억`만 통과).
+    # 10배·100배는 _SCALE_MULTIPLIERS 에 없는 배수라 문서 어느 값으로도 정당화되지 않는다.
+    uncited = []
+    unsupported = []
+    document_values = document_numbers(raw_text)
+    for text in sorted({
         text for text, value in extract_comparable_numbers(summary_text)
         if not _value_supported(value, quote_values, True, quote_scales)
-    })
+    }):
+        value = next(
+            v for t, v in extract_comparable_numbers(summary_text) if t == text
+        )
+        if _value_supported(
+            value, document_values, True,
+            set(quote_scales) | set(_DOCUMENT_SCALE_MULTIPLIERS),
+        ):
+            uncited.append(text)
+        else:
+            unsupported.append(text)
     if unsupported:
         warnings.append(
             f'요약 본문의 수치 {", ".join(unsupported)}에 대응하는 원문 근거가 없음'
+        )
+    if uncited:
+        warnings.append(
+            f'요약 본문의 수치 {", ".join(uncited)}가 인용 근거에 없음 (원문에는 있음)'
         )
 
     sentences = count_sentences(data['easy_explanation'])
@@ -501,6 +573,7 @@ def validate_summary(data, raw_text):
         'importance': data['importance'],
         'evidence': checked,
         'unsupported_numbers': unsupported,
+        'uncited_numbers': uncited,
         'sentence_count': sentences,
         'warnings': warnings,
     }
@@ -510,20 +583,31 @@ def validate_summary(data, raw_text):
 #: 화면(정확성 배너)과 admin이 종류별로 다르게 다뤄야 하므로 접두어를 고정한다.
 #: 문구를 바꾸면 저장된 경고와 어긋나므로 revalidate_summaries 를 다시 돌려야 한다.
 UNSUPPORTED_NUMBER_PREFIX = '인용 근거 없는 수치: '
+UNCITED_NUMBER_PREFIX = '인용에 없는 수치(원문에는 있음): '
 UNVERIFIED_QUOTE_PREFIX = '원문에서 찾지 못한 인용'
 SENTENCE_COUNT_PREFIX = '설명 길이'
 
 #: 요약의 **사실 정확성**과 직접 관련된 경고. 사용자에게 알려야 하는 종류다.
 #: 문장 수(SENTENCE_COUNT_PREFIX)는 문체 문제라 여기 넣지 않는다 —
 #: 3문장 권장을 6문장으로 쓴 것을 두고 "수치를 신뢰하지 말라"고 경고하면 오히려 해롭다.
-ACCURACY_WARNING_PREFIXES = (UNSUPPORTED_NUMBER_PREFIX, UNVERIFIED_QUOTE_PREFIX)
+#: 인용 누락(UNCITED_NUMBER_PREFIX)도 여기 넣는다. 값이 원문과 일치하는 것은 확인했지만
+#: **인용문 대조보다 약한 확인**이기 때문이다 — 200쪽짜리 문서 어딘가에 같은 숫자가 무관한
+#: 맥락으로 있었을 가능성이 남는다. 게시는 하되 화면에 표시는 하는 것이 그 잔여 위험에 맞는
+#: 대응이다. 감추는 것과 알리는 것은 다른 판단이라는 원칙(아래 참고)의 연장이다.
+ACCURACY_WARNING_PREFIXES = (
+    UNSUPPORTED_NUMBER_PREFIX, UNCITED_NUMBER_PREFIX, UNVERIFIED_QUOTE_PREFIX,
+)
 
 #: **게시를 막는** 경고. 이 경고가 붙은 요약은 자동으로 미게시 상태로 만든다.
 #:
 #: 수치 경고만 넣는다. 세 종류를 하나씩 따져 보면 이 결론밖에 없다.
-#:   - 수치(UNSUPPORTED_NUMBER_PREFIX): 요약 본문의 금액이 원문 근거로 뒷받침되지 않는다.
+#:   - 수치(UNSUPPORTED_NUMBER_PREFIX): 요약 본문의 금액이 **원문 어디에도** 없다.
 #:     실제로 39조를 3조로 적은 요약이 경고를 단 채 웹에 그대로 떠 있었다. **사실 오류**이고
 #:     독자가 그대로 믿으면 판단이 통째로 어긋난다 → 막는다.
+#:   - 인용 누락(UNCITED_NUMBER_PREFIX): 값은 원문과 일치하고 인용만 빠졌다.
+#:     **이걸 막던 것이 실제 손해였다.** v3 재요약 직후 자동 미게시 10건 중 8건이 여기였고,
+#:     경고 대상 수치 16개가 전부 원문에 존재했다. 정확한 요약을 형식 때문에 감춘 셈이다
+#:     → 게시하되 검수를 요청하고 화면에 표시한다.
 #:   - 인용(UNVERIFIED_QUOTE_PREFIX): 3단계 조사에서 대부분 "표의 떨어진 두 행을 이어 붙인"
 #:     **인용 형식** 문제로 밝혀졌다. 요약 본문의 사실이 틀린 것이 아니다. 막으면 멀쩡한
 #:     요약이 대량으로 내려간다 → 게시하되 화면에 표시만 한다(accuracy_warnings).
@@ -575,6 +659,11 @@ def build_review_warnings(result):
         warnings.append(
             UNSUPPORTED_NUMBER_PREFIX
             + WARNING_LIST_SEPARATOR.join(result['unsupported_numbers'])
+        )
+    if result.get('uncited_numbers'):
+        warnings.append(
+            UNCITED_NUMBER_PREFIX
+            + WARNING_LIST_SEPARATOR.join(result['uncited_numbers'])
         )
     for idx, item in enumerate(result.get('evidence', [])):
         if not item.get('quote_found', True):

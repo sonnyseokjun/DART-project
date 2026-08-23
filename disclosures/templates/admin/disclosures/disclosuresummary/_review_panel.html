@@ -3,7 +3,7 @@
 
 컨텍스트: admin change_form 이 넘겨주는 `original`(DisclosureSummary) 하나만 쓴다.
 뷰에서 별도 컨텍스트를 주입하지 않으므로 backend 쪽 변경이 필요 없다.
-소비하는 property: unsupported_numbers · accuracy_warnings · needs_review · was_human_edited ·
+소비하는 property: numbers_to_review(= unsupported_numbers + uncited_numbers) · accuracy_warnings · needs_review · was_human_edited ·
 auto_hidden · regeneration_exhausted.
 소비하는 필드: hidden_by · hidden_reason · regeneration_count · regeneration_history ·
 disclosure.review_category (전부 5단계 backend 산출물, _workspace/22_backend_pipeline.md 7장).
@@ -13,10 +13,10 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
 {% endcomment %}
 {% load review_panel %}
 
-{% highlight_terms original.disclosure.raw_content original.unsupported_numbers 'raw' as raw_hl %}
-{% highlight_terms original.one_line original.unsupported_numbers 'one' as one_hl %}
-{% highlight_terms original.easy_explanation original.unsupported_numbers 'exp' as exp_hl %}
-{% highlight_terms original.why_important original.unsupported_numbers 'why' as why_hl %}
+{% highlight_terms original.disclosure.raw_content original.numbers_to_review 'raw' as raw_hl %}
+{% highlight_terms original.one_line original.numbers_to_review 'one' as one_hl %}
+{% highlight_terms original.easy_explanation original.numbers_to_review 'exp' as exp_hl %}
+{% highlight_terms original.why_important original.numbers_to_review 'why' as why_hl %}
 
 <div class="rp" id="review-panel">
   <div class="rp-bar">
@@ -161,7 +161,7 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
     </ul>
   {% endif %}
 
-  {% if original.unsupported_numbers %}
+  {% if original.numbers_to_review %}
     {# 검수자가 가장 먼저 확인해야 할 지점. 요약에는 있는데 원문 근거가 없는 수치다. #}
     <div class="rp-flags">
       <p class="rp-flags-title">먼저 확인할 수치 — 요약에는 있으나 인용 근거가 없습니다</p>

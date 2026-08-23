@@ -60,6 +60,17 @@
           <ul class="unsupported-numbers">
             {% for number in summary.unsupported_numbers %}<li>{{ number }}</li>{% endfor %}
           </ul>
+        {% elif summary.uncited_numbers %}
+          {# 값 자체는 원문에서 확인됐다. 위와 같은 문구를 쓰면 사실과 다른 말이 된다 —
+             경고를 실제 위험에 맞춰 약하게 쓴다. 모든 경고를 똑같이 무섭게 쓰면
+             사용자가 전부 무시하게 되고, 정작 수치가 틀린 요약을 놓친다. #}
+          <p>
+            아래 수치는 원문에서 값을 확인했지만, 요약이 인용한 구절과는 연결되지 않았습니다.
+            <strong>맥락은 DART 원문에서 확인하세요.</strong>
+          </p>
+          <ul class="unsupported-numbers">
+            {% for number in summary.uncited_numbers %}<li>{{ number }}</li>{% endfor %}
+          </ul>
         {% else %}
           <p>
             요약이 인용한 원문 구절 중 일부를 원문에서 확인하지 못했습니다.

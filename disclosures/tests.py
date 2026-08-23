@@ -11,6 +11,7 @@ import subprocess
 import sys
 import unittest
 from datetime import date, timedelta
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1082,18 +1083,32 @@ class VerifyQuoteTest(TestCase):
 
 
 class ScaleToleranceTest(TestCase):
-    """표 머리글 단위(`(단위 : 백만원)`)로 자릿수만 어긋난 환산을 정상으로 인정한다."""
+    """표 머리글 단위(`(단위 : 백만원)`)로 자릿수만 어긋난 환산.
 
-    def test_million_won_table_conversion_is_supported(self):
+    2026-08-23부터 **선언이 있어야** 인정한다. 그 전에는 10^3~10^8 을 무조건 허용했고,
+    그 탓에 천 배 틀린 값도 통과했다(`ClosedDetectionGapTest`). v3 프롬프트가 환산을
+    금지하면서 무조건 허용의 전제가 사라져 닫았다.
+    """
+
+    def test_million_won_table_conversion_is_supported_when_declared(self):
         # 원문 표: 374,629 (단위: 백만원) → 요약: 3,746억 (반올림 표기까지 인정한다)
         quote_values = [value for _, value in summarizer.extract_numbers('매출액 | 374,629')]
         value = summarizer.extract_numbers('3,746억')[0][1]
-        self.assertTrue(summarizer._value_supported(value, quote_values, approximate=False))
+        self.assertTrue(summarizer._value_supported(
+            value, quote_values, approximate=False, quote_scales={10 ** 6}))
 
-    def test_thousand_won_table_conversion_is_supported(self):
+    def test_thousand_won_table_conversion_is_supported_when_declared(self):
         quote_values = [v for _, v in summarizer.extract_numbers('63,956,675')]
         value = summarizer.extract_numbers('639억 5,668만')[0][1]
-        self.assertTrue(summarizer._value_supported(value, quote_values, approximate=False))
+        self.assertTrue(summarizer._value_supported(
+            value, quote_values, approximate=False, quote_scales={10 ** 3}))
+
+    def test_an_undeclared_conversion_no_longer_passes(self):
+        """선언 없이 자릿수만 맞는 값은 통과하지 못한다 — 좁히기의 핵심."""
+        quote_values = [value for _, value in summarizer.extract_numbers('매출액 | 374,629')]
+        value = summarizer.extract_numbers('3,746억')[0][1]
+        self.assertFalse(summarizer._value_supported(
+            value, quote_values, approximate=False))
 
     def test_unrelated_number_is_still_unsupported(self):
         """자릿수 배수가 아닌 값은 여전히 뒷받침되지 않는다."""
@@ -1213,6 +1228,74 @@ class ReferenceDocSelectionTest(TestCase):
         """유형째 빼면 안 된다 — 같은 공정위공시에도 요약 가치가 있는 공시가 있다."""
         state, _ = evaluate('공정위공시', '대규모내부거래관련공시')
         self.assertEqual(state, SelectionState.TARGET)
+
+
+class AuditAmountsCommandTest(TestCase):
+    """금액 병기 전수 대조 — 검증기가 보지 않는 각도를 본다.
+
+    실제 사고: `40,023,070,290,000원(약 4조 원)` 이 **경고 0건으로 게시**됐다.
+    검증기는 앞의 숫자가 원문에 있다는 것만 봤고 괄호 안이 10배 틀린 것은 보지 않았다.
+    그 오류는 사람이 병기를 손으로 대조하다 **우연히** 찾았다. 우연을 명령으로 바꾼다.
+    """
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='000660', name='SK하이닉스',
+        )
+        self.disclosure = Disclosure.objects.create(
+            company=company, rcept_no='20260710000008',
+            report_name='유상증자결정', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 10), dart_url=dart_viewer_url('20260710000008'),
+            raw_content='실제발행금액 | 40,023,070,290,000', raw_fetched=True,
+        )
+
+    def _summary(self, one_line):
+        return DisclosureSummary.objects.create(
+            disclosure=self.disclosure, one_line=one_line, easy_explanation='설명이다.',
+            why_important='중요하다.', importance='high', model_name='gpt-5.6-luna',
+        )
+
+    def _run(self, **options):
+        out = StringIO()
+        call_command('audit_amounts', stdout=out, **options)
+        return out.getvalue()
+
+    def test_it_catches_the_error_that_reached_the_web(self):
+        """이 케이스를 놓치면 이 명령은 존재할 이유가 없다."""
+        self._summary('실제발행금액은 40,023,070,290,000원(약 4조 원)으로 확정됐다.')
+
+        output = self._run()
+
+        self.assertIn('불일치 1건', output)
+        self.assertIn('20260710000008', output)
+        self.assertIn('약 40조 230억 원', output)  # 정답을 함께 알려준다
+
+    def test_a_correct_annotation_passes(self):
+        self._summary('실제발행금액은 40,023,070,290,000원(약 40조 230억 원)으로 확정됐다.')
+
+        self.assertIn('불일치 없음', self._run())
+
+    def test_spacing_differences_are_not_treated_as_errors(self):
+        """검수자가 띄어쓰기를 고칠 수 있다. 그걸로 경보를 울리면 명령을 안 쓰게 된다."""
+        self._summary('금액은 40,023,070,290,000원 ( 약  40조 230억 원 )으로 확정됐다.')
+
+        self.assertIn('불일치 없음', self._run())
+
+    def test_it_never_calls_the_model(self):
+        """대조는 코드가 만든 정답과 비교하는 것이다 — LLM이 낄 자리가 없다."""
+        self._summary('금액은 40,023,070,290,000원(약 4조 원)이다.')
+
+        with patch.object(summarizer, '_call_openai') as mock_call:
+            self._run()
+
+        mock_call.assert_not_called()
+
+    def test_it_reports_how_much_it_actually_checked(self):
+        """대조한 개수를 안 밝히면 0개를 보고 '불일치 없음'이라 읽게 된다."""
+        self._summary('금액은 40,023,070,290,000원(약 40조 230억 원)이다.')
+
+        self.assertIn('병기 1개를 대조했다', self._run())
 
 
 class RevalidateSummariesCommandTest(TestCase):
@@ -3116,12 +3199,26 @@ class ScalePathToleranceTest(TestCase):
 
         직접 대조는 근사에 5%를 허용하는데 배수 경로만 1%를 요구하던 비대칭이 원인이다.
         배수를 곱하는 것과 근사로 반올림하는 것은 서로 독립인 오차다.
+
+        2026-08-23 좁히기 이후로는 배수가 **선언되어 있어야** 이 경로가 열린다.
         """
-        self.assertTrue(verification._value_supported(7e8, [736.0], True))
+        self.assertTrue(verification._value_supported(
+            7e8, [736.0], True, quote_scales={10 ** 6}))
+
+    def test_the_document_check_keeps_this_case_published(self):
+        """좁히기가 과잉 차단으로 돌아오지 않는지 — 비대칭 설계의 존재 이유다.
+
+        선언을 못 찾아 인용문 대조에 실패해도, 게시를 막는 원문 대조는 넓게 잡아
+        **값이 맞는 요약을 내리지 않는다.** 경고는 붙되 웹에는 남는다.
+        """
+        self.assertTrue(verification._value_supported(
+            7e8, [736.0], True,
+            quote_scales=set(verification._DOCUMENT_SCALE_MULTIPLIERS)))
 
     def test_without_approximation_the_tight_tolerance_still_applies(self):
         """'약' 없이 단정한 수치에까지 5%를 열어 주면 탐지력을 그냥 내주는 것이다."""
-        self.assertFalse(verification._value_supported(7e8, [736.0], False))
+        self.assertFalse(verification._value_supported(
+            7e8, [736.0], False, quote_scales={10 ** 6}))
 
     def test_ten_fold_errors_are_still_caught_after_the_widening(self):
         """넓힌 허용오차가 진짜 오류를 통과시키지 않는지 — 이게 양방향의 반대쪽이다."""
@@ -3199,28 +3296,130 @@ class PublicationBlockingTest(TestCase):
             verification.SENTENCE_COUNT_PREFIX,
             verification.PUBLICATION_BLOCKING_PREFIXES)
 
+    def test_uncited_but_correct_numbers_are_shown_not_hidden(self):
+        """값이 원문과 일치하면 인용이 빠졌다는 이유로 감추지 않는다.
 
-class KnownDetectionGapTest(TestCase):
-    """**지금 못 잡는 것**을 기록한다. 통과가 정상이라는 뜻이 아니다.
+        v3 재요약(2026-08-23) 직후 자동 미게시 10건 중 8건이 여기였다. 경고 대상 수치
+        16개를 전수 확인한 결과 **16개 모두 원문에 존재했다** — 정확한 요약을 형식 때문에
+        감추고 있었다. 알리는 것과 감추는 것은 다른 판단이다.
+        """
+        uncited = verification.UNCITED_NUMBER_PREFIX + '298,482,087,516'
+        self.assertEqual(verification.blocking_warnings([uncited]), [])
+        self.assertIn(
+            verification.UNCITED_NUMBER_PREFIX, verification.ACCURACY_WARNING_PREFIXES)
+        self.assertNotIn(
+            verification.UNCITED_NUMBER_PREFIX,
+            verification.PUBLICATION_BLOCKING_PREFIXES)
 
-    아래 테스트가 실패하면 미탐이 **고쳐진** 것이다. 그때 기대값을 뒤집고 이 클래스를
-    지우면 된다. 고쳐지지 않은 채 조용히 잊히는 것을 막기 위한 장치다.
+    def test_the_two_number_prefixes_do_not_shadow_each_other(self):
+        """접두어 매칭으로 종류를 되읽으므로, 한쪽이 다른 쪽의 접두어면 판정이 뒤집힌다."""
+        self.assertFalse(
+            verification.UNCITED_NUMBER_PREFIX.startswith(
+                verification.UNSUPPORTED_NUMBER_PREFIX))
+        self.assertFalse(
+            verification.UNSUPPORTED_NUMBER_PREFIX.startswith(
+                verification.UNCITED_NUMBER_PREFIX))
+
+
+class UncitedNumberSplitTest(TestCase):
+    """인용 대조에 실패한 수치를 **원문에 있는가**로 가른다.
+
+    하나로 묶어 전부 막던 것이 실제 손해를 냈다. 그렇다고 전부 통과시키면 39조를 3조로
+    적은 요약이 다시 웹에 오른다. 가르는 기준이 이 두 가지를 동시에 만족시키는지 본다.
     """
 
-    def test_hundred_fold_errors_still_pass_the_multiplier_menu(self):
-        """남은 배수(10^3~10^8)는 여전히 무조건 허용된다 — 백만 배 틀려도 통과한다.
+    RAW = (
+        '주요사항보고서(유상증자결정)\n'
+        '1. 신주의 종류와 수 | 보통주식 | 17,790,000\n'
+        '2. 실제발행금액 | 39,890,534,790,000\n'
+    )
 
-        진짜 오류 7토큰이 걸린 것은 순전히 **10배가 목록에 없어서**다.
-        `10**5`·`10**1` 을 목록에 넣으면 진짜 오류가 전부 통과하므로 **절대 넣지 말 것**.
-        조(10^12)만 문서 선언 게이트로 닫았다(`ScaleGateTest`). 나머지를 마저 닫으려면
-        v2 잔재가 사라진 뒤 재측정해야 한다 — 지금 닫으면 새 오탐 25건이 생긴다.
-        """
-        # 같은 근거 값 7,348 에 대해 7.348e9(십억원 표) 와 7.348e12(백만원 표)가
-        # **둘 다 정답으로 인정된다.** 천 배 차이인데 검증기는 구별하지 못한다.
-        self.assertTrue(verification._value_supported(7.348e9, [7348.0], False))
-        self.assertTrue(verification._value_supported(7.348e12, [7348000.0], False))
-        self.assertNotIn(10 ** 5, verification._SCALE_MULTIPLIERS)
-        self.assertNotIn(10 ** 1, verification._SCALE_MULTIPLIERS)
+    def _split(self, summary_text, quote):
+        data = {
+            'one_line': summary_text, 'easy_explanation': '설명이다.',
+            'why_important': '중요하다.', 'importance': 'high',
+            'evidence': [{'claim': '금액', 'quote': quote}],
+        }
+        return verification.validate_summary(data, self.RAW)
+
+    def test_a_value_that_exists_in_the_document_is_not_blocked(self):
+        """인용문에는 없지만 원문에 인쇄된 값 — 근거만 빠졌다."""
+        result = self._split(
+            '신주 17,790,000주를 발행한다.', '2. 실제발행금액 | 39,890,534,790,000')
+
+        self.assertIn('17,790,000', result['uncited_numbers'])
+        self.assertEqual(result['unsupported_numbers'], [])
+        self.assertEqual(
+            verification.blocking_warnings(verification.build_review_warnings(result)), [])
+
+    def test_the_ten_fold_error_that_reached_the_web_still_blocks(self):
+        """39조 8,905억을 3조 9,891억으로 적은 요약. 이걸 놓치면 이 변경은 실패다."""
+        result = self._split(
+            '실제발행금액은 3조 9,891억 원이다.', '1. 신주의 종류와 수 | 보통주식 | 17,790,000')
+
+        self.assertIn('3조 9,891억', result['unsupported_numbers'])
+        self.assertEqual(result['uncited_numbers'], [])
+        self.assertTrue(
+            verification.blocking_warnings(verification.build_review_warnings(result)))
+
+    def test_a_hundred_fold_error_still_blocks(self):
+        result = self._split(
+            '실제발행금액은 398조 9,050억 원이다.', '1. 신주의 종류와 수 | 보통주식 | 17,790,000')
+
+        self.assertTrue(result['unsupported_numbers'])
+
+    def test_a_value_absent_from_the_document_still_blocks(self):
+        """지어낸 수치는 원문 대조도 통과하지 못한다."""
+        result = self._split(
+            '계약금액은 777,777,777,777원이다.', '2. 실제발행금액 | 39,890,534,790,000')
+
+        self.assertIn('777,777,777,777', result['unsupported_numbers'])
+
+    def test_a_quoted_value_produces_no_warning_at_all(self):
+        """인용까지 붙은 정상 요약은 두 목록 모두 비어 있어야 한다."""
+        result = self._split(
+            '실제발행금액은 39,890,534,790,000원이다.',
+            '2. 실제발행금액 | 39,890,534,790,000')
+
+        self.assertEqual(result['unsupported_numbers'], [])
+        self.assertEqual(result['uncited_numbers'], [])
+
+    def test_the_two_warning_kinds_carry_different_wording(self):
+        """"원문 근거를 찾지 못했다"를 값이 맞는 수치에 쓰면 사실과 다른 말이 된다."""
+        result = self._split(
+            '신주 17,790,000주를 발행한다.', '2. 실제발행금액 | 39,890,534,790,000')
+        warnings = verification.build_review_warnings(result)
+
+        self.assertTrue(any(
+            w.startswith(verification.UNCITED_NUMBER_PREFIX) for w in warnings))
+        self.assertFalse(any(
+            w.startswith(verification.UNSUPPORTED_NUMBER_PREFIX) for w in warnings))
+
+
+class ClosedDetectionGapTest(TestCase):
+    """**한때 못 잡던 것**을 기록한다. 이전 이름은 KnownDetectionGapTest 였다.
+
+    `test_hundred_fold_errors_still_pass_the_multiplier_menu` 가 그 자리에 있었고,
+    "v2 잔재가 사라진 뒤 재측정하라"는 조건을 달아 뒀다. 2026-08-23 전량 v3 재요약으로
+    조건이 충족되어 재측정했고(전면 좁히기 결과 새 오탐 +1), 닫았다.
+    기대값을 뒤집어 **다시 열리지 않도록** 고정한다.
+    """
+
+    def test_the_thousand_fold_hole_is_closed(self):
+        """무조건 허용하던 배수가 사라졌다 — 근거 없는 자릿수 차이는 통과하지 못한다."""
+        self.assertEqual(verification._SCALE_MULTIPLIERS, ())
+        self.assertFalse(verification._value_supported(7.348e9, [7348.0], False))
+        self.assertFalse(verification._value_supported(7.348e12, [7348000.0], False))
+
+    def test_a_declared_unit_header_still_passes(self):
+        """구멍을 막느라 정상 표를 막으면 안 된다 — 선언된 배수는 살아 있다."""
+        self.assertTrue(verification._value_supported(
+            7.348e9, [7348.0], False, quote_scales={10 ** 6}))
+
+    def test_the_declaration_must_come_from_the_document_not_the_number(self):
+        """선언이 없으면 같은 값이라도 인정하지 않는다. 이것이 게이트의 전부다."""
+        self.assertFalse(verification._value_supported(
+            7.348e9, [7348.0], False, quote_scales={10 ** 3}))
 
 
 class ScaleGateTest(TestCase):
@@ -3443,9 +3642,17 @@ class CorrectionMessageTest(TestCase):
         self.assertEqual(
             set(summarizer.CORRECTION_ACTIONS),
             {verification.UNSUPPORTED_NUMBER_PREFIX,
+             verification.UNCITED_NUMBER_PREFIX,
              verification.UNVERIFIED_QUOTE_PREFIX,
              verification.SENTENCE_COUNT_PREFIX},
         )
+
+    def test_the_uncited_action_tells_the_model_not_to_change_the_value(self):
+        """값은 맞고 근거만 빠진 경우다. 고치라고 하면 멀쩡한 수치를 망친다."""
+        action = summarizer.CORRECTION_ACTIONS[verification.UNCITED_NUMBER_PREFIX]
+
+        self.assertIn('지우거나 고치지 마라', action)
+        self.assertIn('quote', action)
 
     def test_schema_only_strips_diagnostic_fields(self):
         """되먹이는 직전 출력에 우리가 붙인 진단 필드가 남으면 strict 스키마와 어긋난다."""
