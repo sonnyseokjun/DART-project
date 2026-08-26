@@ -13,6 +13,40 @@
 
 ---
 
+## 0. 로컬에서 먼저 확인하기 (AWS 없이)
+
+서버에 올리기 전에 운영 설정(`DEBUG=false`) 그대로 로컬에서 돌려본다.
+도메인이 없어 Caddy는 인증서를 못 받으므로 web만 띄운다.
+
+```bash
+mkdir -p data && cp db.sqlite3 data/db.sqlite3      # 개발 DB 사본으로 확인
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build web
+# http://127.0.0.1:8000/
+
+docker compose -f docker-compose.yml -f docker-compose.local.yml exec web python manage.py test disclosures
+docker compose -f docker-compose.yml -f docker-compose.local.yml down
+```
+
+Caddyfile은 컨테이너를 띄우지 않고도 문법을 검사할 수 있다.
+
+```bash
+docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro"     -e SITE_DOMAIN=example.duckdns.org -e ADMIN_ALLOWED_IP=203.0.113.7     caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+```
+
+**2026-08-26 실측 (Windows / Docker Desktop)**
+
+| 항목 | 값 |
+|---|---|
+| 이미지 크기 | 364MB |
+| 컨테이너 메모리 (gunicorn 2워커 유휴) | **107.6MB** |
+| 테스트 | 333건 통과 |
+| 정적 파일 | 해시 파일명(`style.39e2cff7121e.css`) 정상 서빙 |
+| admin IP 제한 | 허용목록 밖 → 404 / 안 → 200 (양쪽 확인) |
+
+PLAN.md 9.2의 상시 메모리 예산 445MB는 Caddy(~30MB)와 OS를 포함한 값이다.
+
+---
+
 ## 1. 구성 개요
 
 ```

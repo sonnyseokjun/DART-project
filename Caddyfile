@@ -16,10 +16,9 @@
 	}
 	respond @admin_blocked 404
 
-	reverse_proxy web:8000 {
-		# Django가 원 요청이 HTTPS였는지 판단하는 근거(SECURE_PROXY_SSL_HEADER).
-		header_up X-Forwarded-Proto {scheme}
-	}
+	# X-Forwarded-Proto는 Caddy가 자동으로 붙인다(명시하면 중복 경고가 뜬다).
+	# Django는 이 헤더로 원 요청이 HTTPS였는지 판단한다(SECURE_PROXY_SSL_HEADER).
+	reverse_proxy web:8000
 
 	log {
 		output stdout
