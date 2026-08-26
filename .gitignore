@@ -10,6 +10,11 @@ venv/
 db.sqlite3
 /staticfiles/
 
+# 컨테이너가 DB를 두는 마운트 지점 (6단계 배포)
+/data/
+# dumpdata 산출물 — 초기 데이터 이관용 임시 파일
+seed.json
+
 # 테스트 커버리지 (측정할 때마다 새로 생기는 산출물)
 .coverage
 htmlcov/

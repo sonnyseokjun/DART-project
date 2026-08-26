@@ -1,0 +1,14 @@
+# 로컬 확인용 오버레이. 도메인도 인증서도 없이 운영 설정(DEBUG=false)을 검증한다.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build web
+#   → http://127.0.0.1:8000/
+#
+# Caddy는 띄우지 않는다(공인 도메인이 없어 인증서를 못 받는다).
+services:
+  web:
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # 로컬은 http로 접속하므로 Secure 쿠키를 켜면 admin 로그인이 안 된다.
+      DJANGO_BEHIND_HTTPS_PROXY: "false"
+      DJANGO_ALLOWED_HOSTS: "127.0.0.1,localhost"

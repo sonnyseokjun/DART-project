@@ -4,3 +4,8 @@ requests>=2.32
 python-dotenv>=1.0
 openai>=2.48
 tiktoken>=0.13
+
+# 배포 (6단계) — 로컬 개발에서는 runserver를 쓰므로 gunicorn은 쓰이지 않지만,
+# 컨테이너와 같은 의존성 집합을 유지하기 위해 여기에 둔다.
+gunicorn>=23.0
+whitenoise>=6.8

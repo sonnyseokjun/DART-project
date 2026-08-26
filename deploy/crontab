@@ -1,0 +1,31 @@
+# DART 공시 요약 서비스 — 무인 파이프라인 (PLAN.md 9.2)
+#
+# 설치:  crontab deploy/crontab
+# 확인:  crontab -l
+#
+# ⚠ 요약 생성 명령은 이 프로젝트에서 유일하게 돈이 나가는 경로다.
+#   --limit 20이 안전장치다. 평소 하루 1~2건이지만 백필 등으로 대상이 밀리면
+#   상한이 없을 때 한 번에 다 태워버린다. 요약 1건당 $0.023 → 상한에 걸려도
+#   하루 $0.46에서 멈춘다. AWS Budgets·OpenAI 사용량 알람과 함께 2중으로 건다.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PROJECT_DIR=/home/ubuntu/DART-project
+DC=/usr/bin/docker compose
+
+# --- 수집 파이프라인 (매일 아침) ---------------------------------------
+# DART 공시는 장 시작 전후에 몰린다. 전날치를 확실히 담으려고 --days 2로 겹쳐 받는다
+# (rcept_no unique 덕에 중복 적재는 무해하다).
+0  7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py poll_dart --days 2         >> /var/log/dart/poll.log 2>&1
+10 7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py apply_selection            >> /var/log/dart/select.log 2>&1
+20 7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py fetch_documents --limit 20 >> /var/log/dart/fetch.log 2>&1
+30 7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py summarize_disclosures --limit 20 >> /var/log/dart/summarize.log 2>&1
+
+# --- 재검증 (매일 새벽, LLM 미호출·무료) --------------------------------
+0  3 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py revalidate_summaries       >> /var/log/dart/revalidate.log 2>&1
+
+# --- 백업 (매일 새벽) ---------------------------------------------------
+0  4 * * *  cd $PROJECT_DIR && ./deploy/backup.sh                                          >> /var/log/dart/backup.log 2>&1
+
+# --- 로그 정리 (매주 일요일) --------------------------------------------
+0  5 * * 0  find /var/log/dart -name '*.log' -mtime +30 -delete
