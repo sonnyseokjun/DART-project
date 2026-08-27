@@ -1510,6 +1510,21 @@ class PageRenderingTest(WebViewTestBase):
                 self.assertIn('투자 자문이 아니며', content)
                 self.assertIn('DART 원문', content)
 
+    def test_source_and_affiliation_notice_on_every_page(self):
+        """출처와 비제휴 고지도 상시 노출한다.
+
+        OpenDART 이용약관(제16조·제23조)은 재배포 조건과 출처표시를 따로
+        규정하지 않는다. 다만 사이트 저작권 표시가 'all rights reserved'이고
+        공공누리 표시가 없어, 출처를 명확히 밝히는 쪽으로 간다.
+        비제휴 고지가 더 중요한데, 출처만 적으면 금융감독원 공식 서비스로
+        오인될 수 있기 때문이다.
+        """
+        for url in self._all_urls():
+            with self.subTest(url=url):
+                content = self.client.get(url).content.decode()
+                self.assertIn('금융감독원 전자공시시스템(DART)', content)
+                self.assertIn('금융감독원과 무관한', content)
+
     def test_dart_link_is_shown_on_card_and_detail(self):
         """요약이 보이는 곳에는 반드시 원문 링크가 함께 있어야 한다."""
         expected = dart_viewer_url('20260701000001')
