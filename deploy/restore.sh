@@ -10,10 +10,9 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/home/ubuntu/DART-project}"
 cd "$PROJECT_DIR"
 
-set -a
 # shellcheck disable=SC1091
-source .env
-set +a
+. ./deploy/_load_env.sh
+_load_env .env
 
 : "${S3_BACKUP_BUCKET:?S3_BACKUP_BUCKET이 .env에 없습니다}"
 

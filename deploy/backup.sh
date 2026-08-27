@@ -11,10 +11,9 @@ cd "$PROJECT_DIR"
 
 # .env에서 S3_BACKUP_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
 # AWS_DEFAULT_REGION을 읽는다.
-set -a
 # shellcheck disable=SC1091
-source .env
-set +a
+. ./deploy/_load_env.sh
+_load_env .env
 
 : "${S3_BACKUP_BUCKET:?S3_BACKUP_BUCKET이 .env에 없습니다}"
 
