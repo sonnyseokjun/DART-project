@@ -45,6 +45,21 @@ docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro"     -e SITE_DOMAIN=e
 
 PLAN.md 9.2의 상시 메모리 예산 445MB는 Caddy(~30MB)와 OS를 포함한 값이다.
 
+**2026-08-27 실측 (Lightsail 1GB · Ubuntu 24.04 · 배포 직후 유휴)**
+
+| 항목 | 값 |
+|---|---|
+| 호스트 메모리 | **549MB 사용 / 911MB 가용** (스왑 2.0GB 중 76MB) |
+| 컨테이너 | web **113MB** + Caddy **26MB** |
+| DB 파일 | 5.8MB (`loaddata`로 새로 채워 로컬 10.7MB보다 조밀하다) |
+| 백업 (gzip) | 1.06MB |
+| 데이터 | 기업 10 · 공시 963 · 요약 140 (게시중 140) |
+| 인증서 | Let's Encrypt, 2026-11-25 만료 |
+| 백업 무결성 | `PRAGMA integrity_check` = ok, 건수 일치 확인 |
+
+호스트가 예산보다 약 100MB 무겁다. 컨테이너는 예상대로이므로 원인은 OS 쪽이다.
+요약 피크를 더하면 약 706MB(78%)로, 여유는 있으나 예산만큼 넉넉하지는 않다.
+
 ---
 
 ## 1. 구성 개요
