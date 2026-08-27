@@ -267,6 +267,7 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | 백업 즉시 실행 | `./deploy/backup.sh` |
 | 메모리 확인 | `free -h && docker stats --no-stream` |
 | 컨테이너 상태 | `docker compose ps` |
+| 디스크 여유 | `df -h /` · `docker system df` |
 
 **요약 생성은 돈이 나간다.** cron이 `--limit 20`으로 돌린다. 수동 실행할 때도
 반드시 `--limit`을 붙이고, 붙이기 전에 대상 건수를 먼저 확인한다.
