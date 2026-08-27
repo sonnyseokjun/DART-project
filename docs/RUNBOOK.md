@@ -209,7 +209,7 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | `DJANGO_SECRET_KEY` | (50자 이상 난수) | `python -c "from django.core.management.utils import get_random_secret_key as g; print(g())"` |
 | `DJANGO_ALLOWED_HOSTS` | `dart-xxx.duckdns.org` | 쉼표 구분 |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | `https://dart-xxx.duckdns.org` | **스킴 포함**. 없으면 admin 로그인이 CSRF로 막힌다 |
-| `SITE_DOMAIN` | `dart-xxx.duckdns.org` | Caddy가 인증서를 받을 도메인 |
+| `SITE_DOMAIN` | `dart-xxx.duckdns.org` | Caddy가 인증서를 받을 도메인. **스킴을 붙이지 말 것** |
 | `ADMIN_ALLOWED_IP` | `203.0.113.7` | `/admin`을 열어줄 IP. 공백 구분으로 여러 개, CIDR 가능 |
 | `S3_BACKUP_BUCKET` | `dart-project-backup` | 백업 버킷 이름 |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | | 백업 전용 IAM 사용자 |
@@ -217,6 +217,27 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 
 `DJANGO_DEBUG` · `DJANGO_BEHIND_HTTPS_PROXY` · `DJANGO_STATIC_MANIFEST` · `DJANGO_DB_PATH`는
 `docker-compose.yml`이 고정하므로 `.env`에 적지 않는다.
+
+### ⚠ 도메인 3개 항목의 형식이 서로 다르다
+
+실제 배포에서 여기서 한 번 막혔다(2026-08-27).
+
+| 항목 | 형식 | 비교 대상 |
+|---|---|---|
+| `SITE_DOMAIN` | `example.com` | Caddy 사이트 주소 |
+| `DJANGO_ALLOWED_HOSTS` | `example.com` | HTTP **Host** 헤더 (스킴이 없다) |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | `https://example.com` | **Origin** 헤더 (스킴이 있다) |
+
+`SITE_DOMAIN`에 `http://`를 붙이면 **Caddy가 TLS 없이 HTTP로만 서비스한다.**
+오류가 아니라 "그 프로토콜로 고정하라"는 유효한 지시이기 때문에, 조용히
+인증서 없는 상태로 뜬다. 증상은 로그의 이 줄이다:
+
+```
+"server is listening only on the HTTP port, so no automatic HTTPS will be applied"
+```
+
+`DJANGO_ALLOWED_HOSTS`에 스킴을 붙이면 Host 헤더와 영원히 일치하지 않아
+모든 요청이 **400**이 된다.
 
 ---
 
