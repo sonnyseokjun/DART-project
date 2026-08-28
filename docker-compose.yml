@@ -1,0 +1,91 @@
+# 6단계 배포 (PLAN.md 9.2). Lightsail 인스턴스에서 이 파일 하나로 서비스를 띄운다.
+#
+#   docker compose up -d --build          기동 / 재배포
+#   docker compose logs -f                로그
+#   docker compose exec web python manage.py <명령>
+#
+# 로컬에서 도메인 없이 확인할 때는 docker-compose.local.yml을 겹쳐 쓴다.
+services:
+  web:
+    build: .
+    image: dart-project-web
+    container_name: dart-web
+    restart: unless-stopped
+
+    # DART_API_KEY / OPENAI_API_KEY / DJANGO_SECRET_KEY 등.
+    # 이 파일은 저장소에 없다 — .env.example을 복사해 서버에서 채운다.
+    env_file:
+      - .env
+
+    # 배포 환경에서 고정되는 값. .env에 중복해 적지 않는다.
+    environment:
+      DJANGO_DEBUG: "false"
+      DJANGO_BEHIND_HTTPS_PROXY: "true"
+      DJANGO_STATIC_MANIFEST: "true"
+      DJANGO_DB_PATH: /app/data/db.sqlite3
+
+    volumes:
+      # ⚠ 이 마운트가 빠지면 재배포할 때마다 요약이 통째로 사라진다.
+      # 호스트에서 `sudo chown -R 1000:1000 ./data`를 먼저 해둘 것 (컨테이너는 uid 1000).
+      - ./data:/app/data
+
+    # 호스트 포트를 열지 않는다. Caddy만 컴포즈 네트워크로 web:8000에 붙는다.
+    # 호스트에 열면 Caddy의 admin IP 제한을 우회할 수 있고,
+    # SECURE_PROXY_SSL_HEADER(X-Forwarded-Proto)를 위조당할 수 있다.
+    expose:
+      - "8000"
+
+    # 도커 기본 로그 드라이버는 크기 제한이 없다. Caddy가 요청마다 수 KB짜리
+    # JSON을 남기고 봇 트래픽이 끊이지 않으므로, 놔두면 디스크(40GB)를 채운다.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      # ALLOWED_HOSTS에 도메인만 넣기 때문에 Host 헤더를 맞춰 보내야 한다.
+      # 그냥 127.0.0.1로 부르면 Django가 400(DisallowedHost)으로 답해 항상 실패한다.
+      test: ["CMD", "python", "/app/deploy/healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: dart-caddy
+    restart: unless-stopped
+
+    # SITE_DOMAIN / ADMIN_ALLOWED_IP를 Caddyfile의 {$VAR}로 넘긴다.
+    # 호스트에 apt로 설치하지 않고 컨테이너로 두는 이유가 이것이다 —
+    # systemd 유닛을 손대지 않고도 설정값이 .env 한 곳에 모인다.
+    env_file:
+      - .env
+
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 발급받은 인증서. 날리면 Let's Encrypt에 재발급을 요청하게 되는데
+      # 같은 도메인 중복 발급은 주당 5회 제한이 있으니 함부로 지우지 말 것.
+      - caddy_data:/data
+      - caddy_config:/config
+
+    # 도커 기본 로그 드라이버는 크기 제한이 없다. Caddy가 요청마다 수 KB짜리
+    # JSON을 남기고 봇 트래픽이 끊이지 않으므로, 놔두면 디스크(40GB)를 채운다.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    depends_on:
+      - web
+
+volumes:
+  caddy_data:
+  caddy_config:

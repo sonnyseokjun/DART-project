@@ -68,6 +68,14 @@ main { padding: 28px 0 56px; }
   font-size: 13px;
 }
 
+/* 비제휴 고지. 출처 표기보다 한 단계 작게 두되 읽을 수는 있어야 한다 —
+   법적 고지를 읽지 못할 크기로 넣는 건 안 넣은 것과 같다. */
+.site-footer .footer-note {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* --- 공통 요소 ---------------------------------------------------------- */
 
 h1 { font-size: 26px; margin: 0 0 8px; }

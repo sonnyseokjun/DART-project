@@ -1,0 +1,27 @@
+# HTTPS 종단 + 리버스 프록시. 인증서 발급·갱신은 Caddy가 알아서 한다.
+#
+# SITE_DOMAIN       예) dart-summary.duckdns.org  (도메인 구입 후 이 값만 바꾼다)
+# ADMIN_ALLOWED_IP  예) 203.0.113.7  또는 CIDR 203.0.113.0/24
+#                   여러 개면 공백으로 구분한다: "203.0.113.7 198.51.100.9"
+# 둘 다 .env에서 온다 (docker-compose.yml의 env_file).
+
+{$SITE_DOMAIN} {
+	encode zstd gzip
+
+	# 검수 화면은 지정한 IP에서만 연다.
+	# 403이 아니라 404로 답한다 — 존재 자체를 알리지 않는 편이 낫다.
+	@admin_blocked {
+		path /admin /admin/*
+		not remote_ip {$ADMIN_ALLOWED_IP}
+	}
+	respond @admin_blocked 404
+
+	# X-Forwarded-Proto는 Caddy가 자동으로 붙인다(명시하면 중복 경고가 뜬다).
+	# Django는 이 헤더로 원 요청이 HTTPS였는지 판단한다(SECURE_PROXY_SSL_HEADER).
+	reverse_proxy web:8000
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,0 +1,10 @@
+# 이 저장소는 Windows에서 개발하고 Linux 컨테이너에서 실행한다.
+# core.autocrlf=true 환경에서 셸 스크립트가 CRLF로 체크아웃되면
+# 컨테이너 안에서 `#!/bin/sh\r`를 해석하지 못해 "exec format error"로 죽는다.
+# 리눅스에서 실행되는 파일은 줄바꿈을 LF로 못박는다.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Caddyfile text eol=lf
+docker-compose*.yml text eol=lf
+deploy/crontab text eol=lf
+.dockerignore text eol=lf

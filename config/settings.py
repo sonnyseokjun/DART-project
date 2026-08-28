@@ -37,6 +37,28 @@ DEBUG = os.getenv('DJANGO_DEBUG', 'true').lower() == 'true'
 
 ALLOWED_HOSTS = [h for h in os.getenv('DJANGO_ALLOWED_HOSTS', '').split(',') if h]
 
+# HTTPS 리버스 프록시(Caddy) 뒤에서 돌 때만 켜는 스위치.
+# `not DEBUG`를 조건으로 쓰면 안 된다 — Django 테스트 러너가 DEBUG=False로 돌기 때문에
+# 테스트 클라이언트(http)가 Secure 쿠키를 못 받아 로그인 관련 테스트가 깨진다.
+BEHIND_HTTPS_PROXY = os.getenv('DJANGO_BEHIND_HTTPS_PROXY', 'false').lower() == 'true'
+
+if BEHIND_HTTPS_PROXY:
+    # Caddy가 붙여주는 헤더로 원 요청이 HTTPS였음을 인식한다.
+    # 이 설정은 신뢰할 수 있는 프록시 뒤에서만 유효하다 — gunicorn을 외부에 직접
+    # 노출하면 클라이언트가 헤더를 위조할 수 있으므로, 컨테이너 포트는 127.0.0.1에만 묶는다.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    # HSTS(SECURE_HSTS_SECONDS)는 의도적으로 켜지 않는다. 브라우저가 정책을 캐시해
+    # 문제가 생겨도 되돌리기 어렵다. 운영이 안정된 뒤 별도로 검토한다.
+    # SECURE_SSL_REDIRECT도 불필요하다 — Caddy가 http를 https로 이미 돌린다.
+
+# HTTPS 도메인에서 admin 폼을 제출하려면 Origin이 여기 등록되어 있어야 한다.
+# 예: https://example.duckdns.org
+CSRF_TRUSTED_ORIGINS = [
+    o for o in os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS', '').split(',') if o
+]
+
 # DART OpenAPI (https://opendart.fss.or.kr/)
 DART_API_KEY = os.getenv('DART_API_KEY', '')
 
@@ -60,6 +82,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # 정적 파일 서빙. SecurityMiddleware 바로 다음이어야 한다(whitenoise 공식 권장).
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -91,10 +115,21 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+# 운영에서도 SQLite를 쓴다. 근거와 PostgreSQL 전환 트리거는 PLAN.md 9.2 참조.
+# 컨테이너에서는 DB 파일이 마운트된 볼륨에 있어야 한다 — 이미지 안에 두면
+# 재배포 때 요약이 통째로 사라진다.
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': os.getenv('DJANGO_DB_PATH') or BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            # WAL: 읽기가 쓰기를 막지 않는다. 웹(읽기 전용)과 cron 파이프라인(쓰기)이
+            # 같은 파일을 보는 구성이라 이게 있어야 조회가 잠기지 않는다.
+            # journal_mode는 DB 파일에 저장되는 영구 속성이라 매 연결 실행해도 무해하다.
+            'init_command': 'PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;',
+            # 쓰기 잠금 대기 시간. 기본 5초로는 요약 배치와 admin 저장이 겹칠 때 부족하다.
+            'timeout': 20,
+        },
     }
 }
 
@@ -134,6 +169,22 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# collectstatic 산출물. whitenoise가 이 디렉터리를 서빙한다.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# 파일명에 해시를 붙여 캐시를 무효화하는 저장소. collectstatic을 먼저 돌려야
+# 동작하므로 기본값은 꺼둔다 — 켠 채로 테스트를 돌리면 매니페스트가 없어 깨진다.
+# 컨테이너 이미지 빌드 시점에 켜고 collectstatic을 실행한다(Dockerfile).
+if os.getenv('DJANGO_STATIC_MANIFEST', 'false').lower() == 'true':
+    STORAGES = {
+        'default': {
+            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        },
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        },
+    }
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

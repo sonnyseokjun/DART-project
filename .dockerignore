@@ -1,0 +1,34 @@
+# 가상환경 — 이미지 안에서는 requirements.txt로 새로 설치한다.
+venv/
+.venv/
+
+# 비밀 값. 컨테이너에는 env_file/environment로 주입한다.
+.env
+
+# 로컬 DB. 운영 DB는 마운트된 볼륨(/app/data)에 있다.
+# 이미지에 넣으면 개발 데이터가 서버로 딸려 간다.
+db.sqlite3
+db.sqlite3-shm
+db.sqlite3-wal
+data/
+
+# 빌드 시점에 collectstatic으로 다시 만든다.
+staticfiles/
+
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.coverage
+htmlcov/
+
+# 개발 도구·기획 문서. 런타임에 필요 없다.
+.claude/
+_workspace/
+_workspace_*/
+PLAN.md
+CLAUDE.md
+docs/
+.vscode/
+.idea/
+Thumbs.db
