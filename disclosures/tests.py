@@ -1395,6 +1395,77 @@ class AuditAmountsCommandTest(TestCase):
         self.assertIn('병기 1개를 대조했다', self._run())
 
 
+class EvidenceStatsCommandTest(TestCase):
+    """근거 적재 상태 집계. 재요약 전후를 이 수치로 비교하므로 오답이 곧 잘못된 판단이다."""
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자',
+        )
+
+    def _summary(self, rcept_no, evidence, warnings=None):
+        disclosure = Disclosure.objects.create(
+            company=self.company, rcept_no=rcept_no, report_name='기업설명회(IR)개최',
+            disclosure_type='거래소공시', filed_at=date(2026, 7, 1),
+            dart_url=dart_viewer_url(rcept_no),
+        )
+        return DisclosureSummary.objects.create(
+            disclosure=disclosure, one_line='한 줄', easy_explanation='설명',
+            why_important='이유', importance=DisclosureSummary.Importance.MEDIUM,
+            evidence=evidence, review_warnings=warnings or [], prompt_version='v4',
+        )
+
+    def _run(self):
+        out = StringIO()
+        call_command('evidence_stats', stdout=out)
+        return out.getvalue()
+
+    def test_counts_duplicates_including_index_zero(self):
+        """첫 근거와 겹치면 duplicate_of 가 0이다. 참/거짓으로 세면 조용히 빠진다."""
+        self._summary('20260701000001', [
+            {'quote': 'A', 'duplicate_of': None},
+            {'quote': 'A', 'duplicate_of': 0},
+        ])
+        self._summary('20260701000002', [{'quote': 'B', 'duplicate_of': None}])
+
+        output = self._run()
+
+        self.assertIn('중복이 있는 요약 : 1건 (50%) · 중복 근거 1개', output)
+
+    def test_warns_when_duplicate_judgement_is_missing(self):
+        """판정 전 요약을 0건으로 세면 '중복이 없다'는 반대 결론이 나온다."""
+        self._summary('20260701000003', [{'quote': 'A'}])
+
+        self.assertIn('아직 판정 전', self._run())
+
+    def test_reports_summaries_that_hit_the_cap(self):
+        cap = summarizer.SUMMARY_JSON_SCHEMA['properties']['evidence']['maxItems']
+        self._summary('20260701000004', [
+            {'quote': f'인용{n}', 'duplicate_of': None} for n in range(cap)
+        ])
+
+        output = self._run()
+
+        self.assertIn(f'{cap:2d}칸 :   1건', output)
+        self.assertIn('상한에 닿은 요약 : 1건 (100%)', output)
+
+    def test_groups_warnings_by_kind_ignoring_embedded_values(self):
+        """경고 문구에 수치가 박혀 있어 그대로 세면 전부 다른 유형이 된다."""
+        self._summary('20260701000005', [{'quote': 'A', 'duplicate_of': None}], warnings=[
+            '인용에 없는 수치(원문에는 있음): 1,234',
+            '원문에서 찾지 못한 인용 (근거 3번): 계약금액 1,234',
+        ])
+        self._summary('20260701000006', [{'quote': 'B', 'duplicate_of': None}], warnings=[
+            '인용에 없는 수치(원문에는 있음): 9,999,999',
+        ])
+
+        output = self._run()
+
+        self.assertIn('2  인용에 없는 수치(원문에는 있음)', output)
+        self.assertIn('1  원문에서 찾지 못한 인용', output)
+
+
 class RevalidateSummariesCommandTest(TestCase):
     """재검증은 LLM을 부르지 않고 판정만 갱신한다."""
 
