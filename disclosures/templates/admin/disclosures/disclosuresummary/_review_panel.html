@@ -273,6 +273,11 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
                   </span>
                 {% endif %}
               {% endif %}
+              {% with duplicate=item|duplicate_of_label %}
+                {% if duplicate %}
+                  <span class="rp-badge rp-badge-dup">{{ duplicate }}</span>
+                {% endif %}
+              {% endwith %}
             </div>
             {% if item.claim %}<p class="rp-evidence-claim">{{ item.claim }}</p>{% endif %}
             <blockquote class="rp-evidence-quote">{{ item.quote }}</blockquote>

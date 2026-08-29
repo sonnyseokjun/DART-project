@@ -422,6 +422,35 @@ def count_sentences(text):
     return len(parts)
 
 
+def _duplicate_indexes(evidence):
+    """앞선 근거가 이미 담고 있는 근거를 찾아 {인덱스: 앞선 인덱스} 로 돌려준다.
+
+    **완전 일치가 아니라 포함 관계로 본다.** 실측에서 완전 일치만 세면 85쌍인데
+    포함까지 세면 184쌍이다. 차이의 대부분은 표에서 온다 — LLM이 같은 행을 한 번은
+    짧게, 한 번은 뒤 열까지 붙여 두 번 인용한다. 짧은 쪽은 긴 쪽 안에 통째로 들어
+    있으므로 새로 보태는 근거가 없다. 완전 일치만 보면 이 절반을 놓친다.
+
+    비교 전에 공백을 지운다. 같은 구간인데 줄바꿈만 다른 인용이 흔하고, 그걸
+    다른 근거로 세면 이 함수는 있으나 마나다.
+    """
+    normalized = [
+        re.sub(r'\s+', '', item.get('quote', '') or '')
+        for item in evidence
+    ]
+    found = {}
+    for idx, quote in enumerate(normalized):
+        if not quote:
+            continue
+        for earlier, other in enumerate(normalized[:idx]):
+            if not other:
+                continue
+            # 어느 쪽이 길든 한쪽이 다른 쪽을 품으면 뒤에 온 것이 중복이다.
+            if quote in other or other in quote:
+                found[idx] = earlier
+                break
+    return found
+
+
 def verify_evidence(evidence, raw_text):
     """근거 항목을 원문과 대조한다. QA 숫자 대조의 기계적 1차 관문.
 
@@ -430,6 +459,8 @@ def verify_evidence(evidence, raw_text):
                      False면 인용에 원문에 없는 내용이 섞인 것이다.
       numbers_ok   — claim 에 등장하는 수치가 **근거 전체**로 뒷받침되는가.
                      진단용 필드이며 경고를 만들지 않는다(아래 참고).
+      duplicate_of — 앞선 근거가 이미 담고 있는 구간이면 그 항목의 0-기준 인덱스,
+                     아니면 None. 이것도 진단용이며 경고를 만들지 않는다(아래 참고).
     반환: (판정이 붙은 evidence 리스트, 경고 문자열 리스트)
 
     ## numbers_ok 로는 경고를 만들지 않는 이유
@@ -439,6 +470,18 @@ def verify_evidence(evidence, raw_text):
     검수 게이트는 그쪽에 맡기고, 여기서는 판정 결과만 기록해 원인 추적에 쓴다.
     대조 범위를 자기 인용문이 아니라 **전체 인용문**으로 둔 것도 같은 이유다
     (실측: 자기 인용문 대조는 55건 오탐, 전체 대조는 13건).
+
+    ## duplicate_of 로도 경고를 만들지 않는 이유
+
+    `needs_review` 가 `bool(review_warnings)` 이므로 경고를 하나 만들면 그 요약은
+    곧바로 검수 큐에 들어간다. v3 요약 140건에서 중복 인용은 **91건(65%)** 에서 나온다.
+    경고로 만들면 검수 큐가 한 번에 세 배로 부풀어 원래 봐야 할 수치 오류가 묻힌다.
+    중복은 **요약이 틀렸다는 신호가 아니라 근거 칸을 낭비했다는 신호**다.
+    성격이 다른 것을 같은 통에 넣으면 통이 못 쓰게 된다.
+
+    그래서 numbers_ok 와 같이 판정만 남긴다. 이 필드는 두 곳에 쓰인다.
+      - 검수 화면에서 어느 근거가 앞과 겹치는지 표시(원인 추적용)
+      - 프롬프트 개정(v4)이 중복을 실제로 줄였는지 측정
     """
     raw_content = _content_only(_normalize(raw_text))
     all_quote_values = []
@@ -449,6 +492,8 @@ def verify_evidence(evidence, raw_text):
     quote_scales = declared_scales(
         item.get('quote', '') for item in evidence
     ) | document_scales(raw_text)
+
+    duplicates = _duplicate_indexes(evidence)
 
     checked = []
     warnings = []
@@ -465,6 +510,7 @@ def verify_evidence(evidence, raw_text):
         result['quote_found'] = verdict is not False
         result['numbers_ok'] = not missing
         result['missing_numbers'] = missing
+        result['duplicate_of'] = duplicates.get(idx)
         checked.append(result)
         if verdict is False:
             warnings.append(f'evidence[{idx}]: 인용문이 원문에서 발견되지 않음')

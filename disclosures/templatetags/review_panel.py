@@ -136,6 +136,22 @@ def evidence_field_label(value):
 
 
 @register.filter
+def duplicate_of_label(item):
+    """중복 인용 배지 문구. 중복이 아니면 빈 문자열이다.
+
+    `duplicate_of` 는 0-기준 인덱스라 첫 근거와 겹치면 값이 `0` 이다. 템플릿에서
+    `{% if item.duplicate_of %}` 로 쓰면 그 경우가 조용히 사라지므로, 판정과 표기를
+    여기서 함께 처리해 템플릿에는 문자열 하나만 넘긴다.
+    """
+    if not isinstance(item, dict):
+        return ''
+    index = item.get('duplicate_of')
+    if not isinstance(index, int) or isinstance(index, bool):
+        return ''
+    return '근거 %d번과 중복' % (index + 1)
+
+
+@register.filter
 def has_key(value, key):
     """dict에 키가 실제로 있는지. 값의 참/거짓과 '키 자체가 없음'을 구분하기 위한 것.
 
