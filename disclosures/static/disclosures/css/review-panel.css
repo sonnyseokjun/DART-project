@@ -50,6 +50,8 @@
 .rp-badge-medium { background: #fdf3e3; color: #b46a00; }
 .rp-badge-low { background: #eef0f3; color: #4a5568; }
 .rp-badge-todo { background: #f0f0f0; color: #666; border: 1px dashed #bbb; }
+/* 중복 인용은 오류가 아니라 근거 칸 낭비다. 빨강(오류)과 구분되는 색을 쓴다. */
+.rp-badge-dup { background: #fff4e5; color: #8a5a00; border: 1px solid #f0c98a; }
 .rp-badge-done { background: var(--rp-ok-bg); color: var(--rp-ok); }
 .rp-badge-human { background: var(--rp-ok-bg); color: var(--rp-ok); border: 1px solid #9ed3b6; }
 /* 미게시 배지 두 종은 **한눈에 달라야** 한다. 검수자가 할 일이 정반대이기 때문이다.

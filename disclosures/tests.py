@@ -36,7 +36,7 @@ from disclosures.management.commands import (
 from disclosures.management.commands.seed_companies import TARGET_COMPANIES
 from disclosures.models import Company, Disclosure, DisclosureSummary, Sector
 from disclosures.templatetags.review_panel import (
-    evidence_field_label, has_key, highlight_terms,
+    duplicate_of_label, evidence_field_label, has_key, highlight_terms,
 )
 from disclosures import review_policy, summarizer, units, verification, views
 from disclosures.review_policy import (
@@ -1153,6 +1153,103 @@ class EvidenceScopeTest(TestCase):
         self.assertEqual(warnings, [])
 
 
+class DuplicateQuoteTest(TestCase):
+    """앞선 근거가 이미 담고 있는 인용은 duplicate_of 로 기록한다.
+
+    v3 요약 140건 중 101건이 evidence 8칸을 꽉 채웠는데, 그 중 상당수가 같은 구간을
+    두 번 인용하며 칸을 낭비하고 있었다. v4에서 상한을 12로 올리면서 중복 금지를
+    함께 넣은 배경이다(summarizer.PROMPT_VERSION 주석 참고).
+    """
+
+    RAW = ('구분 | 당기실적 | 전기실적\n'
+           '매출액 | 54,879 | 52,280\n'
+           '영업이익 | -7,031 | -12,581')
+
+    def test_identical_quote_is_marked(self):
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+            {'field': 'why_important', 'claim': '매출 54,879', 'quote': '매출액 | 54,879'},
+        ], self.RAW)
+
+        self.assertIsNone(checked[0]['duplicate_of'])
+        self.assertEqual(checked[1]['duplicate_of'], 0)
+
+    def test_quote_contained_in_earlier_one_is_marked(self):
+        """실제 데이터에서 가장 흔한 형태 — 같은 표 행을 짧게 한 번, 길게 한 번 인용한다."""
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '매출액 54,879 · 전기 52,280',
+             'quote': '매출액 | 54,879 | 52,280'},
+            {'field': 'why_important', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+        ], self.RAW)
+
+        self.assertEqual(checked[1]['duplicate_of'], 0)
+
+    def test_whitespace_only_difference_is_still_duplicate(self):
+        """줄바꿈만 다른 인용을 다른 근거로 세면 이 판정은 있으나 마나다."""
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+            {'field': 'why_important', 'claim': '매출액 54,879', 'quote': '매출액|54,879'},
+        ], self.RAW)
+
+        self.assertEqual(checked[1]['duplicate_of'], 0)
+
+    def test_distinct_quotes_are_not_marked(self):
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+            {'field': 'why_important', 'claim': '영업이익 -7,031', 'quote': '영업이익 | -7,031'},
+        ], self.RAW)
+
+        self.assertIsNone(checked[0]['duplicate_of'])
+        self.assertIsNone(checked[1]['duplicate_of'])
+
+    def test_empty_quotes_are_not_duplicates_of_each_other(self):
+        """빈 인용끼리 서로 중복이라고 하면 원인 추적에 방해만 된다."""
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '매출액', 'quote': ''},
+            {'field': 'why_important', 'claim': '영업이익', 'quote': ''},
+        ], self.RAW)
+
+        self.assertIsNone(checked[1]['duplicate_of'])
+
+    def test_duplicate_creates_no_warning(self):
+        """중복은 요약이 틀렸다는 신호가 아니라 근거 칸을 낭비했다는 신호다.
+
+        경고로 만들면 needs_review 가 bool(review_warnings) 이므로 검수 큐가 통째로
+        부풀어 정작 봐야 할 수치 오류가 묻힌다.
+        """
+        checked, warnings = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+            {'field': 'why_important', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+        ], self.RAW)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(summarizer.build_review_warnings({'evidence': checked}), [])
+
+    def test_duplicate_does_not_block_publication(self):
+        checked, _ = summarizer.verify_evidence([
+            {'field': 'one_line', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+            {'field': 'why_important', 'claim': '매출액 54,879', 'quote': '매출액 | 54,879'},
+        ], self.RAW)
+        warnings = summarizer.build_review_warnings({'evidence': checked})
+
+        self.assertEqual(verification.blocking_warnings(warnings), [])
+
+
+class EvidenceCapacityTest(TestCase):
+    """근거 칸 수는 프롬프트가 아니라 스키마가 강제한다."""
+
+    def test_schema_allows_twelve_evidence_items(self):
+        """상한 8은 병목이었다 — v3 요약 140건 중 101건(72%)이 정확히 8칸에서 멈췄다."""
+        evidence = summarizer.SUMMARY_JSON_SCHEMA['properties']['evidence']
+
+        self.assertEqual(evidence['maxItems'], 12)
+        self.assertEqual(evidence['minItems'], 1)
+
+    def test_prompt_version_bumped_for_schema_change(self):
+        """스키마·프롬프트를 고치면 버전을 올려야 --stale-prompt 가 재요약 대상을 찾는다."""
+        self.assertEqual(summarizer.PROMPT_VERSION, 'v4')
+
+
 class ReviewWarningBuilderTest(TestCase):
     """생성·재검증 두 경로가 같은 경고를 만들도록 build_review_warnings가 단일 출처다."""
 
@@ -1296,6 +1393,77 @@ class AuditAmountsCommandTest(TestCase):
         self._summary('금액은 40,023,070,290,000원(약 40조 230억 원)이다.')
 
         self.assertIn('병기 1개를 대조했다', self._run())
+
+
+class EvidenceStatsCommandTest(TestCase):
+    """근거 적재 상태 집계. 재요약 전후를 이 수치로 비교하므로 오답이 곧 잘못된 판단이다."""
+
+    def setUp(self):
+        sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=sector, corp_code=TRACKED_CORP, stock_code='005930', name='삼성전자',
+        )
+
+    def _summary(self, rcept_no, evidence, warnings=None):
+        disclosure = Disclosure.objects.create(
+            company=self.company, rcept_no=rcept_no, report_name='기업설명회(IR)개최',
+            disclosure_type='거래소공시', filed_at=date(2026, 7, 1),
+            dart_url=dart_viewer_url(rcept_no),
+        )
+        return DisclosureSummary.objects.create(
+            disclosure=disclosure, one_line='한 줄', easy_explanation='설명',
+            why_important='이유', importance=DisclosureSummary.Importance.MEDIUM,
+            evidence=evidence, review_warnings=warnings or [], prompt_version='v4',
+        )
+
+    def _run(self):
+        out = StringIO()
+        call_command('evidence_stats', stdout=out)
+        return out.getvalue()
+
+    def test_counts_duplicates_including_index_zero(self):
+        """첫 근거와 겹치면 duplicate_of 가 0이다. 참/거짓으로 세면 조용히 빠진다."""
+        self._summary('20260701000001', [
+            {'quote': 'A', 'duplicate_of': None},
+            {'quote': 'A', 'duplicate_of': 0},
+        ])
+        self._summary('20260701000002', [{'quote': 'B', 'duplicate_of': None}])
+
+        output = self._run()
+
+        self.assertIn('중복이 있는 요약 : 1건 (50%) · 중복 근거 1개', output)
+
+    def test_warns_when_duplicate_judgement_is_missing(self):
+        """판정 전 요약을 0건으로 세면 '중복이 없다'는 반대 결론이 나온다."""
+        self._summary('20260701000003', [{'quote': 'A'}])
+
+        self.assertIn('아직 판정 전', self._run())
+
+    def test_reports_summaries_that_hit_the_cap(self):
+        cap = summarizer.SUMMARY_JSON_SCHEMA['properties']['evidence']['maxItems']
+        self._summary('20260701000004', [
+            {'quote': f'인용{n}', 'duplicate_of': None} for n in range(cap)
+        ])
+
+        output = self._run()
+
+        self.assertIn(f'{cap:2d}칸 :   1건', output)
+        self.assertIn('상한에 닿은 요약 : 1건 (100%)', output)
+
+    def test_groups_warnings_by_kind_ignoring_embedded_values(self):
+        """경고 문구에 수치가 박혀 있어 그대로 세면 전부 다른 유형이 된다."""
+        self._summary('20260701000005', [{'quote': 'A', 'duplicate_of': None}], warnings=[
+            '인용에 없는 수치(원문에는 있음): 1,234',
+            '원문에서 찾지 못한 인용 (근거 3번): 계약금액 1,234',
+        ])
+        self._summary('20260701000006', [{'quote': 'B', 'duplicate_of': None}], warnings=[
+            '인용에 없는 수치(원문에는 있음): 9,999,999',
+        ])
+
+        output = self._run()
+
+        self.assertIn('2  인용에 없는 수치(원문에는 있음)', output)
+        self.assertIn('1  원문에서 찾지 못한 인용', output)
 
 
 class RevalidateSummariesCommandTest(TestCase):
@@ -2730,6 +2898,20 @@ class ReviewPanelFilterTest(TestCase):
             with self.subTest(value=value):
                 self.assertFalse(has_key(value, 'quote_found'))
 
+    def test_duplicate_label_survives_index_zero(self):
+        """첫 근거와 겹치면 duplicate_of 가 0이다. 참/거짓으로 판정하면 사라진다."""
+        self.assertEqual(duplicate_of_label({'duplicate_of': 0}), '근거 1번과 중복')
+        self.assertEqual(duplicate_of_label({'duplicate_of': 2}), '근거 3번과 중복')
+
+    def test_duplicate_label_is_blank_when_not_duplicated(self):
+        self.assertEqual(duplicate_of_label({'duplicate_of': None}), '')
+        self.assertEqual(duplicate_of_label({}), '')
+        self.assertEqual(duplicate_of_label('근거'), '')
+
+    def test_duplicate_label_rejects_boolean(self):
+        """bool은 int의 하위형이다. True를 인덱스로 읽으면 '근거 2번과 중복'이 된다."""
+        self.assertEqual(duplicate_of_label({'duplicate_of': True}), '')
+
     def test_evidence_field_label_translates_model_field_names(self):
         self.assertEqual(evidence_field_label('one_line'), '한 줄 요약')
         self.assertEqual(evidence_field_label('easy_explanation'), '쉬운 설명')
@@ -3755,11 +3937,16 @@ class CostEstimateAccuracyTest(TestCase):
     MEASURED = {'input': 221_283, 'cached': 85_976, 'output': 22_762, 'usd': 0.4495}
 
     def test_static_prefix_matches_the_measured_cache_hit(self):
-        """캐시 적중 토큰은 27회 호출 모두 정확히 3,908이었다.
+        """정적 접두사 토큰 수를 못 박는다. 어긋나면 캐시 할인 몫을 잘못 계산한다.
 
-        접두사 추정이 실제와 어긋나면 캐시 할인 몫을 잘못 계산한다.
+        v3(3,908)는 **실측값**이었다 — 27회 호출 모두 캐시 적중 토큰이 정확히 3,908로
+        보고됐다. v4(4,017)는 아직 **계산값**이다. 중복 인용 금지 지침을 넣으면서
+        프롬프트가 109토큰 늘었고, 그만큼 매 호출의 캐시 적중분도 늘어난다.
+
+        v4 전량 재요약 후 usage 의 cached_tokens 와 대조해 실측으로 바꿔야 한다.
+        지금 이 값은 "프롬프트를 의도 없이 건드리면 걸린다"는 회귀 고정 역할만 한다.
         """
-        self.assertEqual(summarizer.static_prefix_tokens(), 3908)
+        self.assertEqual(summarizer.static_prefix_tokens(), 4017)
 
     def test_the_pricing_model_reproduces_the_real_invoice(self):
         """실측 토큰 수를 넣으면 실제 청구액이 나와야 한다 — 단가표의 회귀 고정."""
