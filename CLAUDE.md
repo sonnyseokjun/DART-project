@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DART 전자공시를 AI가 일반인 친화적으로 요약해 보여주는 Django 웹서비스. **`PLAN.md`가 전체 기획의 단일 출처**이며, 아키텍처 결정(스키마, 폴링 전략, 확장 설계, 로드맵)은 반드시 PLAN.md와 일치시켜야 한다.
 
-**진행 상황 (PLAN.md 9장 기준):** 0단계 셋업 · 1단계 수집 · 2단계 AI 요약 · 3단계 웹 조회 · 4단계 검수 워크플로우 · 5단계 요약 자동 교정까지 **완료**(PR #15까지 머지, 요약 140건 전량 v3). 로드맵이 한 번 재편되었다 — 5단계가 신설되면서 배포가 6단계로 밀렸다(PLAN.md 9.1). 현재 **6단계 배포** 진행 중(이슈 #16): Lightsail 1GB + Ubuntu 24.04 + Docker Compose + SQLite(WAL) + Caddy + 호스트 cron. 구성 근거와 기각한 대안은 **PLAN.md 9.2**에 있으니 배포 관련 판단은 거기서 확인할 것. 배포 문서는 셋으로 나뉜다 — **PLAN.md 9.2**(결정 기록) · **DEPLOY.md**(무엇을 왜 이렇게 만들었나, 소개용) · **docs/RUNBOOK.md**(구축·장애 대응·복원 절차). **미착수:** 준실시간화(7단계), Celery/Redis — 6단계에서는 cron으로 돌리고, 쓰기 주체가 둘 이상이 되는 7단계에 Celery와 PostgreSQL을 함께 검토한다.
+**진행 상황 (PLAN.md 9장 기준):** 0단계 셋업 · 1단계 수집 · 2단계 AI 요약 · 3단계 웹 조회 · 4단계 검수 워크플로우 · 5단계 요약 자동 교정 · 6단계 배포까지 **완료**(PR #17까지 머지, 요약 140건 전량 v3). 로드맵이 한 번 재편되었다 — 5단계가 신설되면서 배포가 6단계로 밀렸다(PLAN.md 9.1). **서비스는 https://dartaisite.duckdns.org 에서 상시 운영 중이다**(이슈 #16 → PR #17): Lightsail 1GB + Ubuntu 24.04 + Docker Compose + SQLite(WAL) + Caddy + 호스트 cron. 구성 근거와 기각한 대안은 **PLAN.md 9.2**에 있으니 배포 관련 판단은 거기서 확인할 것. 배포 문서는 셋으로 나뉜다 — **PLAN.md 9.2**(결정 기록) · **DEPLOY.md**(무엇을 왜 이렇게 만들었나, 소개용) · **docs/RUNBOOK.md**(구축·장애 대응·복원 절차). **다음 작업은 요약 근거 인용 보강**이고, 그다음이 7단계 준실시간화다(PLAN.md 13장). **미착수:** 준실시간화(7단계), Celery/Redis — 6단계에서는 cron으로 돌리고, 쓰기 주체가 둘 이상이 되는 7단계에 Celery와 PostgreSQL을 함께 검토한다. **주의:** 재구축 리허설은 6단계에서 범위 밖으로 뺐다 — 복원 절차는 문서화됐을 뿐 실행 검증된 적이 없다(PLAN.md 9.1-(4)).
 
 ## 명령어
 
