@@ -1907,7 +1907,12 @@ class PageRenderingTest(WebViewTestBase):
 
 
 class ExposurePolicyTest(WebViewTestBase):
-    """요약이 있는 공시만 노출한다 — published_disclosures()가 단일 출처."""
+    """노출 정책 — published_disclosures()가 단일 출처.
+
+    7단계에서 "요약이 준비된 것만"에서 "요약을 기다리는 것도"로 넓혔다
+    (낙관적 렌더링 → OptimisticRenderingTest). 여기서는 그와 무관하게 유지돼야 하는
+    규칙을 본다 — 선별에서 제외된 공시는 여전히 어느 화면에도 나오지 않는다.
+    """
 
     def test_unsummarized_disclosure_is_hidden_from_lists(self):
         for url in (
@@ -2022,6 +2027,120 @@ class ExposurePolicyTest(WebViewTestBase):
             reverse('disclosures:disclosure_detail', args=['20260701000001']))
         self.assertContains(response, '원문에 있는 구절')
         self.assertNotContains(response, '원문에서 찾지 못한 구절')
+
+
+class OptimisticRenderingTest(WebViewTestBase):
+    """요약 전 공시를 "AI가 정리 중"으로 먼저 노출한다 (이슈 #22 · PLAN.md 9.3).
+
+    노출 범위를 넓히는 변경이라 **잘못 넓히면 조용히 새는 쪽**이 위험하다.
+    제외된 공시가 새어 나오거나, 검수자가 내린 요약이 "정리 중"으로 되살아나면
+    사용자에게 잘못된 신호가 간다. 그래서 "보인다"보다 "안 보인다"를 더 촘촘히 고정한다.
+    """
+
+    PENDING_TEXT = 'AI가 정리 중'
+
+    def setUp(self):
+        super().setUp()
+        # 원문까지 확보됐고 요약만 없는 공시 — 이 PR이 새로 노출하는 대상이다.
+        self.pending = Disclosure.objects.create(
+            company=self.samsung, rcept_no='20260704000001',
+            report_name='유상증자결정', disclosure_type='주요사항보고',
+            filed_at=date(2026, 7, 4), dart_url=dart_viewer_url('20260704000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content='원문',
+        )
+
+    def _sector_page(self):
+        return self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']))
+
+    # --- 보인다 ---------------------------------------------------------
+
+    def test_pending_disclosure_appears_in_the_list(self):
+        response = self._sector_page()
+
+        self.assertContains(response, self.pending.report_name)
+        self.assertContains(response, self.PENDING_TEXT)
+
+    def test_pending_detail_is_not_404(self):
+        """목록에 카드가 보이는데 눌렀더니 404면 사용자에게는 고장으로 읽힌다."""
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260704000001']))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.PENDING_TEXT)
+
+    def test_pending_detail_still_offers_the_dart_link(self):
+        """요약이 없을수록 원문 경로가 더 필요하다 (PLAN.md 5.3)."""
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260704000001']))
+
+        self.assertContains(response, self.pending.dart_url)
+        self.assertContains(response, '투자 자문이 아니며')
+
+    # --- 안 보인다 ------------------------------------------------------
+
+    def test_disclosure_without_raw_content_is_not_shown(self):
+        """원문을 못 받은 공시는 노출하지 않는다.
+
+        재시도는 상한에서 멈추는데(fetch_documents.MAX_FETCH_ATTEMPTS) 카드는 멈추지
+        않으므로, 감지 즉시 노출하면 "정리 중"인 채로 영원히 남는 공시가 생긴다.
+        """
+        self.pending.raw_fetched = False
+        self.pending.save(update_fields=['raw_fetched'])
+
+        self.assertNotContains(self._sector_page(), self.pending.report_name)
+        self.assertEqual(
+            self.client.get(
+                reverse('disclosures:disclosure_detail',
+                        args=['20260704000001'])).status_code, 404)
+
+    def test_excluded_disclosure_is_not_shown_even_with_raw_content(self):
+        """선별에서 제외된 공시는 원문이 있어도 나오지 않는다."""
+        self.pending.selection_state = SelectionState.EXCLUDED
+        self.pending.save(update_fields=['selection_state'])
+
+        self.assertNotContains(self._sector_page(), self.pending.report_name)
+
+    def test_hidden_summary_does_not_come_back_as_pending(self):
+        """핵심: 내려진 요약을 "정리 중"으로 되살리지 않는다.
+
+        요약을 만들었으나 내보낼 수 없다는 뜻이지 아직 만드는 중이라는 뜻이 아니다.
+        그렇게 표시하면 사용자에게 **오지 않을 것을 기다리게** 한다.
+        """
+        summary = self.high.summary
+        summary.is_published = False
+        summary.hidden_by = DisclosureSummary.HiddenBy.AUTO
+        summary.save(update_fields=['is_published', 'hidden_by'])
+
+        response = self._sector_page()
+        self.assertNotContains(response, self.high.report_name)
+        self.assertEqual(
+            self.client.get(
+                reverse('disclosures:disclosure_detail',
+                        args=['20260701000001'])).status_code, 404)
+
+    def test_importance_filter_excludes_pending(self):
+        """중요도는 요약이 매기는 값이라 아직 없다. 필터가 거짓말을 하면 안 된다."""
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'importance': DisclosureSummary.Importance.HIGH},
+        )
+
+        self.assertContains(response, self.high.report_name)
+        self.assertNotContains(response, self.pending.report_name)
+
+    def test_pending_is_not_promoted_to_highlights(self):
+        """메인 상단 주요 공시는 중요도 '높음'으로 뽑는다. 미상이 섞이면 안 된다."""
+        self.assertNotContains(
+            self.client.get(reverse('disclosures:sector_list')),
+            self.pending.report_name)
+
+    # --- 판정 속성 ------------------------------------------------------
+
+    def test_is_summary_pending_property(self):
+        self.assertTrue(self.pending.is_summary_pending)
+        self.assertFalse(self.high.is_summary_pending)
 
 
 class FilterAndPaginationTest(WebViewTestBase):

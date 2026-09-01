@@ -98,6 +98,20 @@ class Disclosure(models.Model):
     def is_summary_target(self):
         return self.selection_state == SelectionState.TARGET
 
+    @property
+    def is_summary_pending(self):
+        """요약이 아직 없어 화면에 "정리 중"으로 보일 상태인지 (PLAN.md 9.3).
+
+        노출 대상인지는 views.published_disclosures()가 이미 걸러서 온다. 여기서
+        선별 상태나 원문 확보 여부를 다시 보지 않는 이유는, 판정이 두 곳에 있으면
+        한쪽만 고쳤을 때 조용히 어긋나기 때문이다. 이 속성은 **"요약이 있는가"만**
+        답한다.
+
+        hasattr을 쓰는 것은 역방향 OneToOne이 없을 때 예외를 던지기 때문이다.
+        목록은 select_related('summary')로 가져오므로 추가 쿼리가 발생하지 않는다.
+        """
+        return not hasattr(self, 'summary')
+
 
 class DisclosureSummary(models.Model):
     #: 사람이 검수 화면에서 직접 고칠 수 있는 요약 본문 필드.
