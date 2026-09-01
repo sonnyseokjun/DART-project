@@ -46,15 +46,5 @@
     {% endif %}
   </form>
 
-  <p class="result-count">공시 {{ total_count }}건</p>
-
-  <div class="card-list">
-    {% for disclosure in page_obj %}
-      {% include 'disclosures/_disclosure_card.html' %}
-    {% empty %}
-      <p class="empty">조건에 맞는 공시가 없습니다.</p>
-    {% endfor %}
-  </div>
-
-  {% include 'disclosures/_pagination.html' %}
+  {% include 'disclosures/_disclosure_feed.html' %}
 {% endblock %}

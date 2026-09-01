@@ -10,11 +10,12 @@ import re
 import subprocess
 import sys
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -29,7 +30,7 @@ from disclosures.dart import (
     DartApiError, dart_viewer_url, extract_key_sections, is_dart_xml,
     preprocess_document, split_date_range, strip_markup,
 )
-from disclosures import models
+from disclosures import models, views
 from disclosures.admin import (
     DEFAULT_HIDDEN_REASON, DisclosureSummaryAdmin, DisclosureSummaryInline,
 )
@@ -2142,6 +2143,155 @@ class OptimisticRenderingTest(WebViewTestBase):
     def test_is_summary_pending_property(self):
         self.assertTrue(self.pending.is_summary_pending)
         self.assertFalse(self.high.is_summary_pending)
+
+
+class LiveUpdateTest(WebViewTestBase):
+    """목록 화면 자동 갱신 (이슈 #22 · PLAN.md 9.3).
+
+    서버가 밀어주는 방식(WebSocket/SSE) 대신 브라우저가 주기적으로 물어본다.
+    이 경로는 **사용자 트래픽에 비례해 호출되는 유일한 새 경로**라, 두 가지를
+    특히 촘촘히 고정한다 — DART를 부르지 않는다는 것과, 쿼리가 늘지 않는다는 것.
+    """
+
+    def _status(self):
+        return self.client.get(reverse('disclosures:latest_status')).json()
+
+    def _signature(self):
+        return self._status()['signature']
+
+    # --- 서명 -----------------------------------------------------------
+
+    def test_signature_is_stable_when_nothing_changes(self):
+        self.assertEqual(self._signature(), self._signature())
+
+    def test_signature_changes_when_a_disclosure_appears(self):
+        before = self._signature()
+
+        self._disclosure(
+            self.samsung, '20260705000001', '유상증자결정',
+            importance=DisclosureSummary.Importance.HIGH,
+        )
+
+        self.assertNotEqual(self._signature(), before)
+
+    def test_signature_changes_when_a_pending_card_gets_its_summary(self):
+        """놓치기 쉬운 경우 — 건수도 최신 접수번호도 그대로다.
+
+        "정리 중" 카드에 요약이 붙는 것은 사용자가 기다리던 바로 그 변화인데,
+        서명에 요약 건수가 없으면 앞의 두 값이 같아 화면이 계속 "정리 중"에 머문다.
+        """
+        pending = Disclosure.objects.create(
+            company=self.samsung, rcept_no='20260705000001',
+            report_name='유상증자결정', disclosure_type='주요사항보고',
+            filed_at=date(2026, 7, 5), dart_url=dart_viewer_url('20260705000001'),
+            selection_state=SelectionState.TARGET, raw_fetched=True, raw_content='원문',
+        )
+        before = self._signature()
+
+        DisclosureSummary.objects.create(
+            disclosure=pending, one_line='한 줄', easy_explanation='설명이다.',
+            why_important='이유다.', importance=DisclosureSummary.Importance.LOW,
+        )
+
+        self.assertNotEqual(self._signature(), before)
+
+    def test_signature_changes_when_a_summary_is_hidden(self):
+        before = self._signature()
+
+        summary = self.high.summary
+        summary.is_published = False
+        summary.save(update_fields=['is_published'])
+
+        self.assertNotEqual(self._signature(), before)
+
+    # --- 간격 -----------------------------------------------------------
+
+    def test_interval_is_short_during_weekday_business_hours(self):
+        # 2026-09-02는 수요일이다.
+        busy = timezone.make_aware(datetime(2026, 9, 2, 14, 0))
+
+        self.assertEqual(
+            views._poll_interval_seconds(busy),
+            settings.REALTIME_POLL_INTERVAL_SECONDS,
+        )
+
+    def test_interval_grows_outside_business_hours(self):
+        night = timezone.make_aware(datetime(2026, 9, 2, 3, 0))
+        weekend = timezone.make_aware(datetime(2026, 9, 5, 14, 0))   # 토요일
+
+        for when in (night, weekend):
+            with self.subTest(when=when):
+                self.assertEqual(
+                    views._poll_interval_seconds(when),
+                    settings.REALTIME_POLL_INTERVAL_SECONDS
+                    * settings.REALTIME_OFF_HOURS_MULTIPLIER,
+                )
+
+    def test_zero_setting_turns_polling_off(self):
+        """운영 중에 자동 갱신을 끌 수 있어야 한다 (.env 한 줄)."""
+        with self.settings(REALTIME_POLL_INTERVAL_SECONDS=0):
+            self.assertEqual(views._poll_interval_seconds(), 0)
+
+    def test_response_carries_the_interval(self):
+        self.assertGreater(self._status()['interval_seconds'], 0)
+
+    # --- 비용 -----------------------------------------------------------
+
+    def test_status_endpoint_is_one_query(self):
+        """방문자마다 주기적으로 호출되는 경로다. 쿼리가 늘면 그대로 부하가 된다."""
+        with self.assertNumQueries(1):
+            self.client.get(reverse('disclosures:latest_status'))
+
+    # --- 부분 렌더링 ----------------------------------------------------
+
+    def test_partial_returns_only_the_feed(self):
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'partial': '1'},
+        )
+
+        body = response.content.decode()
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-live-feed', body)
+        self.assertNotIn('<html', body)          # 껍데기 없이 조각만
+        self.assertIn(self.high.report_name, body)
+
+    def test_partial_keeps_the_current_filters(self):
+        """갱신은 지금 보고 있는 URL을 그대로 다시 받는다. 필터가 풀리면 안 된다."""
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'company': '005930', 'partial': '1'},
+        )
+
+        body = response.content.decode()
+        self.assertIn(self.high.report_name, body)        # 삼성전자
+        self.assertNotIn(self.medium.report_name, body)   # SK하이닉스
+
+    def test_company_partial_still_hides_the_company_name(self):
+        """hide_company를 컨텍스트에 둔 이유 — 조각만 다시 그려도 유지돼야 한다."""
+        response = self.client.get(
+            reverse('disclosures:company_detail', args=['005930']),
+            {'partial': '1'},
+        )
+
+        self.assertNotIn('card-company', response.content.decode())
+
+    # --- 배선 -----------------------------------------------------------
+
+    def test_pages_carry_the_endpoint_and_script(self):
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']))
+
+        body = response.content.decode()
+        self.assertIn('data-live-endpoint', body)
+        self.assertIn('live-updates.js', body)
+
+    def test_detail_page_has_no_feed_to_refresh(self):
+        """상세 화면에는 목록이 없다. 스크립트가 스스로 아무것도 하지 않아야 한다."""
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260701000001']))
+
+        self.assertNotIn('data-live-feed', response.content.decode())
 
 
 class FilterAndPaginationTest(WebViewTestBase):

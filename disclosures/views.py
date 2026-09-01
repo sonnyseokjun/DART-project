@@ -9,9 +9,12 @@
 
 이 규칙은 ViewsDoNotCallExternalApisTest 가 import 수준에서 고정한다.
 """
+from django.conf import settings
 from django.core.paginator import Paginator
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
+from django.utils import timezone
 
 from .models import (
     MAX_SUMMARY_ATTEMPTS, Company, Disclosure, DisclosureSummary, Sector,
@@ -101,6 +104,66 @@ def _paginate(request, queryset):
     return Paginator(queryset, PAGE_SIZE).get_page(request.GET.get('page'))
 
 
+def _render_feed(request, template, context):
+    """목록 화면을 그린다. `partial=1`이면 피드 조각만 돌려준다.
+
+    자동 갱신(live-updates.js)이 지금 보고 있는 URL을 그대로 다시 받아 목록만 바꿔
+    끼우기 위한 것이다. **같은 뷰·같은 템플릿 조각을 쓴다** — 갱신용 HTML을 따로
+    만들면 필터·페이지네이션 로직이 두 벌이 되어 한쪽만 고쳤을 때 조용히 어긋난다.
+    """
+    if request.GET.get('partial') == '1':
+        return render(request, 'disclosures/_disclosure_feed.html', context)
+    return render(request, template, context)
+
+
+def _poll_interval_seconds(now=None):
+    """지금 얼마나 자주 물어볼지(초). 파이프라인 주기에 맞춘다.
+
+    평일 09~18시에는 수집 파이프라인이 1분마다 돌지만 그 외에는 1시간마다다
+    (deploy/crontab). 새 공시가 나올 수 없는 시간대에 30초마다 묻는 것은 낭비다.
+
+    판단을 서버가 하는 이유: 주기 정책이 crontab·settings에 있으므로 한 곳에서만
+    바꾸면 되고, 브라우저 시계(사용자 시간대·오작동)에 의존하지 않아도 된다.
+    """
+    base = settings.REALTIME_POLL_INTERVAL_SECONDS
+    if base <= 0:
+        return 0
+    now = now or timezone.localtime()
+    busy = now.weekday() < 5 and 9 <= now.hour < 19
+    return base if busy else base * settings.REALTIME_OFF_HOURS_MULTIPLIER
+
+
+def latest_status(request):
+    """목록이 바뀌었는지 판단할 서명과 다음 확인 간격을 돌려준다.
+
+    ## DART를 호출하지 않는다
+
+    이 뷰는 사용자 요청 경로에 있으므로 **로컬 DB만 읽는다**(PLAN.md 12.1).
+    방문자가 늘어도 DART 호출은 0이고, 폴링 주기를 줄여도 마찬가지다.
+    이 성질이 깨지면 폴링 빈도가 곧 DART 호출량이 되어 설계가 무너진다.
+
+    ## 서명에 세 값을 넣는 이유
+
+    - `latest` — 새 공시가 들어오면 바뀐다
+    - `total` — 요약이 내려가 목록에서 빠지면 바뀐다
+    - `summarized` — **"정리 중"이던 카드에 요약이 붙으면** 바뀐다.
+      이것이 없으면 앞의 둘이 그대로라 화면이 "정리 중"에 머문다.
+
+    rcept_no는 자리수가 고정된 숫자 문자열이라 사전순 최댓값이 곧 최신이다.
+    """
+    stats = published_disclosures().aggregate(
+        total=Count('id'),
+        summarized=Count('summary'),
+        latest=Max('rcept_no'),
+    )
+    return JsonResponse({
+        'signature': '%s:%s:%s' % (
+            stats['latest'] or '', stats['total'], stats['summarized'],
+        ),
+        'interval_seconds': _poll_interval_seconds(),
+    })
+
+
 def _importance_options():
     """템플릿 필터 UI용 (값, 라벨) 목록."""
     return [
@@ -150,7 +213,7 @@ def sector_detail(request, slug):
     disclosures = _filter_by_company(disclosures, selected_company)
     disclosures = _filter_by_importance(disclosures, selected_importance)
 
-    return render(request, 'disclosures/sector_detail.html', {
+    return _render_feed(request, 'disclosures/sector_detail.html', {
         'sector': sector,
         'companies': companies,
         'page_obj': _paginate(request, disclosures),
@@ -171,8 +234,11 @@ def company_detail(request, stock_code):
     selected_importance = request.GET.get('importance', '')
     disclosures = _filter_by_importance(disclosures, selected_importance)
 
-    return render(request, 'disclosures/company_detail.html', {
+    return _render_feed(request, 'disclosures/company_detail.html', {
         'company': company,
+        # 카드에서 기업명을 감춘다. 템플릿의 include 인자가 아니라 컨텍스트에 두는
+        # 이유는, 자동 갱신이 피드 조각만 따로 렌더링할 때도 같은 값이 필요해서다.
+        'hide_company': True,
         'page_obj': _paginate(request, disclosures),
         'total_count': disclosures.count(),
         'selected_importance': selected_importance,

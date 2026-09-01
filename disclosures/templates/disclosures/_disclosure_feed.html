@@ -1,0 +1,33 @@
+{% comment %}
+공시 목록 피드 — 섹터 상세·기업 상세가 함께 쓴다.
+
+`data-live-feed`가 자동 갱신의 교체 지점이다(live-updates.js). 새 공시가 감지되면
+브라우저가 지금 URL을 `partial=1`로 다시 받아 이 안쪽만 바꿔 끼운다. 화면을 통째로
+새로고침하지 않는 이유는 읽던 위치와 스크롤이 날아가기 때문이다.
+
+**이 조각을 두 화면이 공유하는 것이 핵심이다.** 자동 갱신용 HTML을 따로 만들면
+필터·페이지네이션 로직이 두 벌이 되어 한쪽만 고쳤을 때 조용히 어긋난다.
+서버가 같은 뷰·같은 템플릿으로 그리므로 그럴 일이 없다.
+
+필요한 컨텍스트: `page_obj`, `total_count` (+ `_pagination.html`이 쓰는 값들).
+`hide_company`는 카드로 그대로 전달된다.
+{% endcomment %}
+<div data-live-feed>
+  {# 내용만 소리 없이 바뀌면 사용자가 알아채지 못한다. 갱신 직후 잠깐 뜬다.
+     role="status"는 화면 낭독기에도 조용히 알린다(방해하지 않는 알림). #}
+  <p class="live-note" data-live-note role="status" hidden>
+    새 공시가 반영되었습니다.
+  </p>
+
+  <p class="result-count">공시 {{ total_count }}건</p>
+
+  <div class="card-list">
+    {% for disclosure in page_obj %}
+      {% include 'disclosures/_disclosure_card.html' %}
+    {% empty %}
+      <p class="empty">조건에 맞는 공시가 없습니다.</p>
+    {% endfor %}
+  </div>
+
+  {% include 'disclosures/_pagination.html' %}
+</div>
