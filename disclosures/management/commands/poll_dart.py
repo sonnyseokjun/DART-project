@@ -17,6 +17,7 @@ corp_code 없는 조회는 검색기간이 3개월로 제한되므로(dart.MAX_L
 
 추후 Celery Beat 도입 시 이 로직을 그대로 태스크로 옮긴다.
 """
+import sys
 from datetime import date, datetime, timedelta
 
 from django.core.management.base import BaseCommand, CommandError
@@ -43,6 +44,18 @@ CALL_WARN_THRESHOLD = DAILY_CALL_LIMIT // 2
 # 하루 약 10페이지로 본다. 정확한 페이지 수는 조회 전에 알 수 없으므로 어림수다.
 EST_PAGES_PER_DAY = 10
 
+# --detect로 돌았는데 신규가 없어 아무것도 하지 않았을 때의 종료 코드.
+# deploy/pipeline.sh가 뒷단계(선별·원문·요약)를 건너뛸지 판단하는 신호다.
+#
+# 왜 0도 1도 아닌 별도 값인가:
+#   0으로 두면 "할 일 없음"과 "수집 완료"를 구분할 수 없어 매분 뒷단계가 헛돈다.
+#     특히 fetch_documents는 원문이 아직 안 올라온 공시를 매번 다시 부르므로
+#     (DART [014]), 1분 주기에서 그대로 두면 하루 수천 번의 헛호출이 된다.
+#   1은 CommandError의 종료 코드다. 네트워크 오류로 실패한 것과 새 공시가 없는 것을
+#     같은 값으로 만들면, 스크립트가 진짜 장애를 "평소와 같음"으로 삼켜 버린다.
+# grep이 "결과 없음"(1)과 "오류"(2)를 나누는 것과 같은 취지다.
+NOTHING_NEW_EXIT_CODE = 9
+
 
 class Command(BaseCommand):
     help = 'DART 공시 목록을 폴링해 신규 공시를 저장한다 (--bgn/--end로 임의 구간 백필)'
@@ -64,8 +77,9 @@ class Command(BaseCommand):
         parser.add_argument(
             '--detect', action='store_true',
             help='유형별 순회 전에 최신 %d건을 1회 호출로 훑어 신규가 있는지 먼저 본다. '
-                 '없으면 그대로 끝낸다(호출 1회). 1분 주기 폴링용이며 --bgn/--end와는 '
-                 '함께 쓸 수 없다' % DETECT_PAGE_COUNT,
+                 '없으면 종료 코드 %d로 끝낸다(호출 1회). 1분 주기 폴링용이며 '
+                 '--bgn/--end와는 함께 쓸 수 없다'
+                 % (DETECT_PAGE_COUNT, NOTHING_NEW_EXIT_CODE),
         )
 
     def handle(self, *args, **options):
@@ -82,7 +96,7 @@ class Command(BaseCommand):
             return
 
         if options['detect'] and not self._has_new(bgn, end, companies):
-            return
+            sys.exit(NOTHING_NEW_EXIT_CODE)
 
         chunks = split_date_range(bgn, end)
         total_days = (end - bgn).days + 1
