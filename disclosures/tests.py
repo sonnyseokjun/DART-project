@@ -29,6 +29,7 @@ from disclosures.dart import (
     DartApiError, dart_viewer_url, extract_key_sections, is_dart_xml,
     preprocess_document, split_date_range, strip_markup,
 )
+from disclosures import models
 from disclosures.admin import (
     DEFAULT_HIDDEN_REASON, DisclosureSummaryAdmin, DisclosureSummaryInline,
 )
@@ -4518,6 +4519,153 @@ class FetchRetryLimitTest(TestCase):
         mock_fetch = self._run_failing(rcept_no='20260701000001')
 
         mock_fetch.assert_called_once()
+
+
+class SummaryRetryLimitTest(TestCase):
+    """요약 실패 재시도 상한 (이슈 #22 · PLAN.md 9.3).
+
+    요약에 실패하면 DisclosureSummary 행이 만들어지지 않아 다음 실행에서 그대로 다시
+    대상이 된다. 하루 1회 폴링에서는 하루 1번이었지만, 파이프라인이 1분마다 도는
+    지금은 같은 공시로 **LLM을 매분 부른다**. 원문 확보 상한(FetchRetryLimitTest)과
+    같은 구조지만 **실패 비용이 실제 돈**이라 더 촘촘히 고정한다.
+    """
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+        self.target = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000001',
+            report_name='유상증자결정', disclosure_type='주요사항보고',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content='원문 본문',
+        )
+
+    def _run_failing(self, **options):
+        """요약 생성이 항상 실패하도록 두고 실행한다."""
+        def boom(**kwargs):
+            raise summarizer.SummarizerError('schema', '모델 응답이 스키마를 어겼습니다')
+
+        with patch.object(summarize_command, 'summarize_disclosure', side_effect=boom) as m:
+            call_command('summarize_disclosures', stdout=StringIO(), stderr=StringIO(),
+                         **options)
+        return m
+
+    def _age(self, minutes):
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempted_at=timezone.now() - timedelta(minutes=minutes)
+        )
+
+    # --- 기록과 대기 ----------------------------------------------------
+
+    def test_failure_is_recorded(self):
+        self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 1)
+        self.assertIn('스키마', self.target.summary_error)
+
+    def test_second_run_waits_and_does_not_call_the_model(self):
+        """핵심: 방금 실패한 건으로 곧바로 LLM을 다시 부르지 않는다."""
+        self._run_failing()
+
+        mock_summarize = self._run_failing()
+
+        mock_summarize.assert_not_called()
+
+    def test_retries_after_the_wait(self):
+        self._run_failing()
+        self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[0] + 1)
+
+        self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 2)
+
+    # --- 상한 -----------------------------------------------------------
+
+    def test_stops_at_the_limit(self):
+        for _ in range(models.MAX_SUMMARY_ATTEMPTS):
+            self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[-1] + 1)
+            self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, models.MAX_SUMMARY_ATTEMPTS)
+
+        self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[-1] + 1)
+        self.assertFalse(self._run_failing().called)
+
+    def test_llm_calls_are_bounded_over_an_hour_of_minutely_runs(self):
+        """1분마다 60번 돌려도 LLM 호출이 상한을 넘지 않는다 — 이 변경의 존재 이유다."""
+        calls = 0
+        for _ in range(60):
+            calls += self._run_failing().call_count
+            self._age(1)
+
+        self.assertLessEqual(calls, models.MAX_SUMMARY_ATTEMPTS)
+
+    # --- 화면 -----------------------------------------------------------
+
+    def test_stuck_disclosure_leaves_the_pending_list(self):
+        """만들어지지 않을 요약을 "정리 중"으로 계속 기다리게 하면 안 된다."""
+        from disclosures.views import published_disclosures
+
+        self.assertIn(self.target, published_disclosures())
+
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempts=models.MAX_SUMMARY_ATTEMPTS
+        )
+
+        self.assertNotIn(self.target, published_disclosures())
+
+    # --- 성공·운영 ------------------------------------------------------
+
+    def test_success_clears_the_record(self):
+        self._run_failing()
+        self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[0] + 1)
+
+        with patch.object(summarize_command, 'summarize_disclosure',
+                          side_effect=lambda **kw: _regen_result()):
+            call_command('summarize_disclosures', stdout=StringIO())
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 0)
+        self.assertEqual(self.target.summary_error, '')
+
+    def test_stuck_option_lists_without_calling_the_model(self):
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempts=models.MAX_SUMMARY_ATTEMPTS,
+            summary_error='SummarizerError: 스키마 위반',
+        )
+
+        out = StringIO()
+        with patch.object(summarize_command, 'summarize_disclosure') as m:
+            call_command('summarize_disclosures', stuck=True, stdout=out)
+
+        m.assert_not_called()
+        self.assertIn('20260701000001', out.getvalue())
+        self.assertIn('스키마 위반', out.getvalue())
+
+    def test_retry_stuck_revives_the_disclosure(self):
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempts=models.MAX_SUMMARY_ATTEMPTS
+        )
+
+        call_command('summarize_disclosures', retry_stuck=True, stdout=StringIO())
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 0)
+
+    def test_explicit_rcept_no_skips_the_wait(self):
+        """사람이 콕 집으면 대기를 건너뛴다. 정책은 자동 실행을 위한 것이다."""
+        self._run_failing()
+
+        mock_summarize = self._run_failing(rcept_no='20260701000001')
+
+        mock_summarize.assert_called_once()
 
 
 class SummarizeDisclosuresCommandTest(TestCase):

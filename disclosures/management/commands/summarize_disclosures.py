@@ -22,12 +22,13 @@
 추후 Celery 태스크로 옮길 때는 _summarize_one()을 그대로 태스크 본문으로 쓰면 된다.
 """
 import inspect
+from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
-from disclosures.models import Disclosure, DisclosureSummary
+from disclosures.models import MAX_SUMMARY_ATTEMPTS, Disclosure, DisclosureSummary
 from disclosures.review_policy import MAX_REGENERATION_ATTEMPTS, should_regenerate
 from disclosures.selection import SelectionState
 from disclosures.summarizer import (
@@ -41,6 +42,15 @@ from disclosures.summarizer import (
     summarize_disclosure,
 )
 from disclosures.verification import AUTO_HIDDEN_REASON, blocking_warnings
+
+#: 요약 실패 후 다음 시도까지 기다리는 시간(분). 인덱스 = 지금까지 쌓인 시도 횟수 - 1.
+#:
+#: 원문 확보(fetch_documents.RETRY_BACKOFF_MINUTES)보다 짧고 성깁니다 — 이유가 둘이다.
+#:   1. 실패 성격이 다르다. 원문 미공개는 시간이 해결하지만, 요약 실패는 스키마 위반이나
+#:      원문 과대 같은 **결정적 원인**이 많아 그냥 다시 불러도 같은 결과가 나온다.
+#:   2. 재시도 비용이 다르다. 원문 확보는 DART 호출 한도만 쓰지만 요약은 실제 돈이다.
+#: 상한(MAX_SUMMARY_ATTEMPTS=4)까지 가도 건당 최대 4회, 약 $0.09에서 멈춘다.
+SUMMARY_RETRY_BACKOFF_MINUTES = (10, 60, 360)
 
 #: 재생성을 요청할 때 summarize_disclosure 에 넘길 키워드 이름.
 #: 이 키워드가 시그니처에 있어야 재생성 경로가 살아난다(아래 _regeneration_supported 참고).
@@ -89,6 +99,16 @@ class Command(BaseCommand):
             help='LLM을 호출하지 않고 대상 건수와 예상 비용만 출력',
         )
         parser.add_argument(
+            '--stuck', action='store_true',
+            help=f'재시도 상한({MAX_SUMMARY_ATTEMPTS}회)에 걸려 멈춘 공시를 조회만 한다 '
+                 '(LLM을 호출하지 않는다)',
+        )
+        parser.add_argument(
+            '--retry-stuck', dest='retry_stuck', action='store_true',
+            help='상한에 걸린 공시의 시도 기록을 지워 다시 시도하게 한다. '
+                 '원인을 고친 뒤 손으로 되살리는 용도 — 비용이 발생한다',
+        )
+        parser.add_argument(
             '--model', default=DEFAULT_MODEL,
             help=f'사용할 모델 (기본 {DEFAULT_MODEL})',
         )
@@ -116,6 +136,12 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options['stuck']:
+            self._report_stuck()
+            return
+        if options['retry_stuck']:
+            self._reset_stuck()
+            return
         if options['limit'] is not None and options['limit'] < 1:
             raise CommandError('--limit은 1 이상이어야 합니다.')
         if options['only_warned'] and not options['resummarize']:
@@ -168,7 +194,13 @@ class Command(BaseCommand):
     # --- 대상 선정 -------------------------------------------------------
 
     def _select_targets(self, options):
-        """선별 대상 + 원문 확보 완료 + (요약 없음) 조건을 만족하는 공시."""
+        """선별 대상 + 원문 확보 완료 + (요약 없음) 조건을 만족하는 공시.
+
+        여기에 실패 재시도 정책이 함께 걸린다 — 실패한 공시를 곧바로 다시 부르지 않고,
+        상한에서 멈춘다. 사람이 명시적으로 지시한 실행(--rcept-no·--resummarize 계열)은
+        정책을 건너뛴다. 정책은 자동 실행(cron)을 위한 것이지 사람의 판단을 막는
+        장치가 아니다.
+        """
         qs = (
             Disclosure.objects
             .filter(selection_state=SelectionState.TARGET, raw_fetched=True)
@@ -190,9 +222,102 @@ class Command(BaseCommand):
             qs = qs.filter(disclosure_type=options['disclosure_type'])
         if options['rcept_no']:
             qs = qs.filter(rcept_no=options['rcept_no'])
+        explicit = options['rcept_no'] or options['resummarize']
+        if not explicit:
+            qs = self._apply_retry_policy(qs)
         if options['limit']:
             qs = qs[:options['limit']]
         return list(qs)
+
+    def _apply_retry_policy(self, queryset):
+        """실패 후 대기 중이거나 상한에 걸린 공시를 대상에서 뺀다.
+
+        대기 시간이 시도 횟수마다 달라 SQL 한 줄로 거르기 어렵다. 상한 미만인 것만
+        DB에서 좁힌 뒤(대부분 여기서 걸러진다) 대기 판정만 파이썬에서 한다.
+        """
+        now = timezone.now()
+        ready = []
+        for disclosure in queryset.filter(summary_attempts__lt=MAX_SUMMARY_ATTEMPTS):
+            attempts = disclosure.summary_attempts
+            if attempts and disclosure.summary_attempted_at:
+                index = min(attempts, len(SUMMARY_RETRY_BACKOFF_MINUTES)) - 1
+                due = disclosure.summary_attempted_at + timedelta(
+                    minutes=SUMMARY_RETRY_BACKOFF_MINUTES[index]
+                )
+                if now < due:
+                    continue
+            ready.append(disclosure)
+        return ready
+
+    # --- 실패 기록 · 멈춘 건 -------------------------------------------
+
+    def _record_failure(self, disclosure, exc):
+        """실패를 기록하고 누적 시도 횟수를 돌려준다."""
+        disclosure.summary_attempts += 1
+        disclosure.summary_attempted_at = timezone.now()
+        disclosure.summary_error = f'{type(exc).__name__}: {exc}'[:300]
+        disclosure.save(update_fields=[
+            'summary_attempts', 'summary_attempted_at', 'summary_error',
+        ])
+        return disclosure.summary_attempts
+
+    def _clear_failures(self, disclosure):
+        """성공했으니 실패 기록을 지운다.
+
+        남겨두면 --stuck 목록에 계속 나타나고, 나중에 --resummarize 로 다시 만들 때
+        지난 실패 횟수가 이어져 조기에 멈춘다.
+        """
+        if not (disclosure.summary_attempts or disclosure.summary_error):
+            return
+        disclosure.summary_attempts = 0
+        disclosure.summary_attempted_at = None
+        disclosure.summary_error = ''
+        disclosure.save(update_fields=[
+            'summary_attempts', 'summary_attempted_at', 'summary_error',
+        ])
+
+    def _stuck_queryset(self):
+        return (
+            Disclosure.objects
+            .filter(selection_state=SelectionState.TARGET, summary__isnull=True,
+                    summary_attempts__gte=MAX_SUMMARY_ATTEMPTS)
+            .select_related('company')
+            .order_by('filed_at', 'rcept_no')
+        )
+
+    def _report_stuck(self):
+        """상한에 걸려 멈춘 공시를 보여준다. LLM을 호출하지 않는다."""
+        stuck = list(self._stuck_queryset())
+        if not stuck:
+            self.stdout.write(self.style.SUCCESS(
+                f'재시도 상한({MAX_SUMMARY_ATTEMPTS}회)에 걸린 공시가 없습니다.'
+            ))
+            return
+
+        self.stdout.write(self.style.WARNING(
+            f'재시도 상한({MAX_SUMMARY_ATTEMPTS}회)에 걸려 멈춘 공시 {len(stuck):,}건 '
+            '— 화면에는 노출되지 않습니다'
+        ))
+        for disclosure in stuck:
+            attempted = disclosure.summary_attempted_at
+            when = f'{attempted:%Y-%m-%d %H:%M}' if attempted else '기록 없음'
+            self.stdout.write(
+                f'  {disclosure.rcept_no} [{disclosure.company.name}] '
+                f'({disclosure.disclosure_type}) {disclosure.report_name[:40]}'
+            )
+            self.stdout.write(f'    마지막 시도 {when} · {disclosure.summary_error}')
+        self.stdout.write('')
+        self.stdout.write(self.style.WARNING(
+            '원인을 고친 뒤 --retry-stuck 으로 되살릴 수 있습니다. 비용이 발생합니다.'
+        ))
+
+    def _reset_stuck(self):
+        updated = self._stuck_queryset().update(
+            summary_attempts=0, summary_attempted_at=None, summary_error='',
+        )
+        self.stdout.write(self.style.SUCCESS(
+            f'{updated:,}건의 시도 기록을 지웠습니다. 다음 실행에서 다시 시도합니다.'
+        ))
 
     # --- 비용 추정 -------------------------------------------------------
 
@@ -245,10 +370,17 @@ class Command(BaseCommand):
             except SummarizerError as exc:
                 # 건별 실패는 예외로 죽지 않고 기록 후 계속 진행한다.
                 failed += 1
+                attempts = self._record_failure(d, exc)
+                left = MAX_SUMMARY_ATTEMPTS - attempts
+                note = (
+                    f'재시도 {left}회 남음' if left > 0
+                    else '상한 도달 — 더 시도하지 않고 화면에서도 뺍니다'
+                )
                 failures.append((d.rcept_no, type(exc).__name__, str(exc)))
-                self.stdout.write(self.style.ERROR(f'{label} → 실패: {exc}'))
+                self.stdout.write(self.style.ERROR(f'{label} → 실패: {exc} ({note})'))
                 continue
 
+            self._clear_failures(d)
             ok += 1
             usage = result['usage']
             cost += result['cost_usd']

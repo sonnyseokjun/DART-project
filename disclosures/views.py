@@ -13,7 +13,9 @@ from django.core.paginator import Paginator
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, render
 
-from .models import Company, Disclosure, DisclosureSummary, Sector
+from .models import (
+    MAX_SUMMARY_ATTEMPTS, Company, Disclosure, DisclosureSummary, Sector,
+)
 from .selection import SelectionState
 
 #: 목록 화면의 페이지당 공시 수.
@@ -31,6 +33,8 @@ def published_disclosures():
     1. **요약이 준비된 공시** — 게시 중인 요약이 붙어 있다.
     2. **요약을 기다리는 공시** — 선별 대상이고 원문까지 확보됐는데 아직 요약이 없다.
        화면에는 "AI가 정리 중"으로 나간다(낙관적 렌더링, PLAN.md 9.3).
+       단 요약을 상한만큼 실패한 공시는 뺀다 — 만들어지지 않을 요약을 기다리게 하면
+       안 된다(`MAX_SUMMARY_ATTEMPTS`).
 
     선별에서 제외된 공시(표본 963건 중 823건)는 두 조건 모두에 걸리지 않아 자연히 빠진다.
 
@@ -63,6 +67,9 @@ def published_disclosures():
         summary__isnull=True,
         selection_state=SelectionState.TARGET,
         raw_fetched=True,
+        # 요약을 상한만큼 실패한 공시는 뺀다. 만들어지지 않을 요약을 계속 기다리게
+        # 하는 셈이기 때문이다(models.MAX_SUMMARY_ATTEMPTS).
+        summary_attempts__lt=MAX_SUMMARY_ATTEMPTS,
     )
     return (
         Disclosure.objects
