@@ -87,11 +87,13 @@ def download_corp_codes():
     return result
 
 
-def list_disclosures(bgn_de, end_de, corp_code=None, pblntf_ty=None, page_no=1, page_count=100):
+def list_disclosures(bgn_de, end_de, corp_code=None, pblntf_ty=None, page_no=1,
+                     page_count=100, sort=None, sort_mth=None):
     """list.json 1페이지 조회. 응답 dict를 그대로 반환한다.
 
     corp_code 없이 호출하면 시장 전체 공시를 날짜 범위로 받는다(확장 전략).
     pblntf_ty(PBLNTF_TYPES의 코드)를 주면 해당 공시유형만 조회한다.
+    sort/sort_mth는 정렬 기준·방향이다(`date`/`desc` 등). 생략하면 DART 기본값을 따른다.
     """
     params = {
         'crtfc_key': _api_key(),
@@ -104,6 +106,10 @@ def list_disclosures(bgn_de, end_de, corp_code=None, pblntf_ty=None, page_no=1, 
         params['corp_code'] = corp_code
     if pblntf_ty:
         params['pblntf_ty'] = pblntf_ty
+    if sort:
+        params['sort'] = sort
+    if sort_mth:
+        params['sort_mth'] = sort_mth
     resp = requests.get(f'{BASE_URL}/list.json', params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -123,6 +129,35 @@ def iter_disclosures(bgn_de, end_de, corp_code=None, pblntf_ty=None):
         if page_no >= int(data.get('total_page', 1) or 1):
             break
         page_no += 1
+
+
+#: 감지용 1회 조회로 훑는 최신 공시 건수. list.json page_count 상한이 100이다.
+DETECT_PAGE_COUNT = 100
+
+
+def latest_disclosures(bgn_de, end_de, page_count=DETECT_PAGE_COUNT):
+    """가장 최근 공시 page_count건만 **1회 호출로** 받아 리스트로 반환한다.
+
+    유형별로 나눠 훑는 iter_disclosures()와 달리 페이지네이션도 유형 분할도 하지 않는다.
+    "새로 올라온 게 있는가"만 알면 되는 감지 경로(`poll_dart --detect`)를 위한 것이다 —
+    2일 창을 유형별로 전부 훑으면 30회 넘게 부르지만, 이쪽은 언제나 1회다.
+
+    정렬을 명시하는 이유: DART 기본 응답도 최신순이지만(2026-09-01 실측) 문서에 보장이
+    없다. 오름차순으로 뒤집히면 이 함수는 **가장 오래된 100건**을 보게 되어 신규를
+    영영 못 잡는다. 조용히 틀리는 종류의 실패라 명시적으로 못박는다.
+
+    ## 놓칠 수 있는 경우
+
+    호출 사이에 시장 전체 공시가 page_count건을 넘어서면 창 밖으로 밀려난 신규는 보이지
+    않는다. 시장 전체가 하루 약 1,100건(2026-09-01 실측)이라 1분 주기에서는 여유가 크지만,
+    폴링이 몇 시간 멈췄다 재개하면 발생할 수 있다. **하루 1회 도는 전체 폴링이 최종
+    안전망**이므로 이 함수만으로 수집 완결성을 보장하지 않는다.
+    """
+    data = list_disclosures(
+        bgn_de, end_de, page_no=1, page_count=page_count,
+        sort='date', sort_mth='desc',
+    )
+    return data.get('list', [])
 
 
 def split_date_range(bgn, end, max_span_days=MAX_LIST_SPAN_DAYS):
