@@ -313,6 +313,7 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | 파이프라인 수동 실행 | `./deploy/pipeline.sh` (cron이 도는 중이면 조용히 건너뛴다) |
 | 전체 폴링 수동 실행 | `./deploy/pipeline.sh --full` |
 | 파이프라인 로그 | `tail -f /var/log/dart/pipeline.log` |
+| 원문 못 받은 공시 확인 | `docker compose exec web python manage.py fetch_documents --stuck` |
 | 재검증 (무료) | `docker compose exec web python manage.py revalidate_summaries` |
 | 백업 즉시 실행 | `./deploy/backup.sh` |
 | 메모리 확인 | `free -h && docker stats --no-stream` |
@@ -369,6 +370,29 @@ tail -50 /var/log/dart/pipeline.log
 
 잠금이 남아 영영 막히는 일은 없다. `flock`은 프로세스가 죽으면 커널이 잠금을
 놓아주므로, `/tmp/dart-pipeline.lock` 파일을 손으로 지울 필요가 없다.
+
+### 원문을 못 받는 공시가 있다
+
+목록에는 떴는데 원문이 아직 공개되지 않은 공시(DART `[014]`)가 있다. 재시도는
+간격을 벌려가며 6번까지만 하고 멈춘다(약 31시간). 멈춘 건은 이렇게 확인한다.
+
+```bash
+docker compose exec web python manage.py fetch_documents --stuck
+```
+
+마지막 오류 메시지가 함께 나온다. 그걸로 갈린다.
+
+| 오류 | 뜻 | 조치 |
+|---|---|---|
+| `DartApiError [014]` | 원문이 끝내 공개되지 않았다 | 정상. 그대로 둔다 |
+| `UnicodeDecodeError` · `BadZipFile` 등 | 우리 전처리가 깨졌다 | 코드를 고친 뒤 아래로 되살린다 |
+
+```bash
+docker compose exec web python manage.py fetch_documents --retry-stuck
+```
+
+시도 기록을 지워 다음 실행에서 처음부터 다시 시도한다. 특정 1건만 지금 당장
+다시 받으려면 `--rcept-no`를 쓴다 — 대기를 건너뛴다.
 
 ### DB가 잠긴다 (`database is locked`)
 요약 배치와 admin 저장이 겹친 경우다. `timeout=20`으로 대부분 흡수되지만 반복되면

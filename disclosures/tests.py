@@ -20,6 +20,7 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import RequestFactory, TestCase
+from django.utils import timezone
 from django.urls import reverse
 
 from disclosures.dart import (
@@ -32,6 +33,7 @@ from disclosures.admin import (
     DEFAULT_HIDDEN_REASON, DisclosureSummaryAdmin, DisclosureSummaryInline,
 )
 from disclosures.management.commands import (
+    fetch_documents as fetch_command,
     poll_dart as poll_dart_command,
     summarize_disclosures as summarize_command,
 )
@@ -4229,6 +4231,174 @@ def _fake_llm(*responses):
         return body, dict(FAKE_USAGE), 'gpt-5.6-luna'
 
     return call
+
+
+class FetchRetryLimitTest(TestCase):
+    """원문 확보 재시도 상한과 대기 간격 (이슈 #22 · PLAN.md 9.3).
+
+    목록에는 떴는데 원문이 아직 공개되지 않은 공시(DART `[014]`)는 확보에 실패하고
+    미확보 상태로 남아 다음 실행에서 다시 시도된다. 하루 1회 폴링에서는 무해했지만,
+    7단계에서 평일 낮 1분마다 돌게 되면 같은 공시를 **하루 1,440번** 부른다.
+    상한과 대기가 그 폭주를 막는 유일한 장치이므로 동작을 고정한다.
+    """
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+        self.target = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000001',
+            report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+            selection_state=SelectionState.TARGET,
+        )
+
+    def _run_failing(self, **options):
+        """원문 확보가 항상 실패하도록 두고 실행한다."""
+        def boom(rcept_no):
+            raise DartApiError('014', '원문이 아직 공개되지 않았습니다')
+
+        with patch(
+            'disclosures.management.commands.fetch_documents.fetch_document',
+            side_effect=boom,
+        ) as mock_fetch:
+            call_command('fetch_documents', **options)
+        return mock_fetch
+
+    def _run_ok(self, **options):
+        with patch(
+            'disclosures.management.commands.fetch_documents.fetch_document',
+            side_effect=lambda rcept_no: FAKE_HTML_DOCUMENT,
+        ) as mock_fetch:
+            call_command('fetch_documents', **options)
+        return mock_fetch
+
+    def _age(self, minutes):
+        """마지막 시도 시각을 minutes분 전으로 당긴다(대기가 끝난 상황을 만든다)."""
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            raw_fetch_attempted_at=timezone.now() - timedelta(minutes=minutes)
+        )
+
+    # --- 기록 -----------------------------------------------------------
+
+    def test_failure_is_recorded(self):
+        self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.raw_fetch_attempts, 1)
+        self.assertIsNotNone(self.target.raw_fetch_attempted_at)
+        self.assertIn('014', self.target.raw_fetch_error)
+
+    def test_success_clears_the_record(self):
+        """성공하면 실패 기록을 지운다 — 남기면 --stuck 목록에 계속 뜬다."""
+        self._run_failing()
+        self._age(fetch_command.RETRY_BACKOFF_MINUTES[0] + 1)
+
+        self._run_ok()
+
+        self.target.refresh_from_db()
+        self.assertTrue(self.target.raw_fetched)
+        self.assertEqual(self.target.raw_fetch_attempts, 0)
+        self.assertIsNone(self.target.raw_fetch_attempted_at)
+        self.assertEqual(self.target.raw_fetch_error, '')
+
+    # --- 대기 -----------------------------------------------------------
+
+    def test_second_run_waits_and_does_not_call_dart(self):
+        """핵심: 방금 실패한 건을 곧바로 다시 부르지 않는다."""
+        self._run_failing()
+
+        mock_fetch = self._run_failing()
+
+        mock_fetch.assert_not_called()
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.raw_fetch_attempts, 1)   # 늘지 않는다
+
+    def test_retries_after_the_wait_has_passed(self):
+        self._run_failing()
+        self._age(fetch_command.RETRY_BACKOFF_MINUTES[0] + 1)
+
+        mock_fetch = self._run_failing()
+
+        mock_fetch.assert_called_once()
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.raw_fetch_attempts, 2)
+
+    def test_wait_grows_with_each_failure(self):
+        """간격이 갈수록 넓어져야 폭주가 잦아든다."""
+        self.assertEqual(
+            list(fetch_command.RETRY_BACKOFF_MINUTES),
+            sorted(fetch_command.RETRY_BACKOFF_MINUTES),
+        )
+        self.assertGreater(
+            fetch_command.RETRY_BACKOFF_MINUTES[-1],
+            fetch_command.RETRY_BACKOFF_MINUTES[0],
+        )
+
+    # --- 상한 -----------------------------------------------------------
+
+    def test_stops_at_the_limit(self):
+        limit = fetch_command.MAX_FETCH_ATTEMPTS
+        for _ in range(limit):
+            self._age(fetch_command.RETRY_BACKOFF_MINUTES[-1] + 1)
+            self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.raw_fetch_attempts, limit)
+
+        # 상한에 닿았으면 대기가 끝나도 더는 부르지 않는다.
+        self._age(fetch_command.RETRY_BACKOFF_MINUTES[-1] + 1)
+        mock_fetch = self._run_failing()
+        mock_fetch.assert_not_called()
+
+    def test_total_calls_are_bounded(self):
+        """1분마다 돌려도 호출은 상한에서 멈춘다 — 이 PR의 존재 이유다."""
+        calls = 0
+        for _ in range(60):                      # 한 시간 치 실행
+            mock_fetch = self._run_failing()
+            calls += mock_fetch.call_count
+            self._age(1)                          # 1분씩 흐른다
+
+        self.assertLessEqual(calls, fetch_command.MAX_FETCH_ATTEMPTS)
+
+    # --- 운영 편의 -------------------------------------------------------
+
+    def test_stuck_lists_without_calling_dart(self):
+        for _ in range(fetch_command.MAX_FETCH_ATTEMPTS):
+            self._age(fetch_command.RETRY_BACKOFF_MINUTES[-1] + 1)
+            self._run_failing()
+
+        out = StringIO()
+        with patch(
+            'disclosures.management.commands.fetch_documents.fetch_document'
+        ) as mock_fetch:
+            call_command('fetch_documents', stuck=True, stdout=out)
+
+        mock_fetch.assert_not_called()
+        self.assertIn('20260701000001', out.getvalue())
+        self.assertIn('014', out.getvalue())
+
+    def test_retry_stuck_revives_the_disclosure(self):
+        for _ in range(fetch_command.MAX_FETCH_ATTEMPTS):
+            self._age(fetch_command.RETRY_BACKOFF_MINUTES[-1] + 1)
+            self._run_failing()
+
+        call_command('fetch_documents', retry_stuck=True, stdout=StringIO())
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.raw_fetch_attempts, 0)
+        mock_fetch = self._run_ok()
+        mock_fetch.assert_called_once()
+
+    def test_explicit_rcept_no_skips_the_wait(self):
+        """사람이 콕 집어 지시하면 대기를 건너뛴다. 정책은 자동 실행에만 적용된다."""
+        self._run_failing()
+
+        mock_fetch = self._run_failing(rcept_no='20260701000001')
+
+        mock_fetch.assert_called_once()
 
 
 class SummarizeDisclosuresCommandTest(TestCase):

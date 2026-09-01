@@ -67,6 +67,18 @@ class Disclosure(models.Model):
     )
     raw_fetched = models.BooleanField('원문 확보 여부', default=False)
     raw_content = models.TextField('원문 본문(전처리)', blank=True)
+    # 원문 확보 재시도 제어. 목록에는 떴는데 원문이 아직 공개되지 않은 공시(DART [014])는
+    # 확보에 실패하고, 미확보 상태로 남아 다음 실행에서 다시 시도된다. 하루 1회 폴링에서는
+    # 무해했지만 7단계에서 파이프라인이 1분마다 도는 순간 같은 공시를 하루 1,440번 부르게
+    # 된다. 시도 횟수와 마지막 시각을 남겨 간격을 벌리고 상한에서 멈춘다.
+    #
+    # 마지막 오류를 함께 남기는 이유: 상한에 걸려 멈춘 공시가 "아직 안 올라온 것"인지
+    # "우리 코드가 깨진 것"인지 구분해야 한다. 둘은 대응이 정반대다.
+    raw_fetch_attempts = models.PositiveSmallIntegerField('원문 확보 시도 횟수', default=0)
+    raw_fetch_attempted_at = models.DateTimeField(
+        '원문 확보 마지막 시도', null=True, blank=True
+    )
+    raw_fetch_error = models.CharField('원문 확보 마지막 오류', max_length=300, blank=True)
     created_at = models.DateTimeField('수집 시각', auto_now_add=True)
 
     class Meta:
