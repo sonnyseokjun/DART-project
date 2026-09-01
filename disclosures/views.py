@@ -13,7 +13,10 @@ from django.core.paginator import Paginator
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, render
 
-from .models import Company, Disclosure, DisclosureSummary, Sector
+from .models import (
+    MAX_SUMMARY_ATTEMPTS, Company, Disclosure, DisclosureSummary, Sector,
+)
+from .selection import SelectionState
 
 #: 목록 화면의 페이지당 공시 수.
 PAGE_SIZE = 20
@@ -25,30 +28,62 @@ HIGHLIGHT_COUNT = 5
 def published_disclosures():
     """화면에 노출할 공시 큐리셋 — **노출 정책의 단일 출처**.
 
-    요약이 있는 공시만 노출한다. 선별에서 제외된 공시(표본 963건 중 823건)는
-    요약이 없으므로 자연히 빠진다. `selection_state`로 거르지 않고 요약 유무로 거르는
-    이유는, 선별 대상이어도 아직 요약 전인 공시가 있을 수 있어서다 —
-    사용자에게는 "요약이 준비된 것"만 보이는 게 맞다.
+    두 부류를 노출한다.
 
-    미검수 요약도 노출한다. 현재 `is_reviewed=True`가 0건이라 검수분만 보이면 화면이
+    1. **요약이 준비된 공시** — 게시 중인 요약이 붙어 있다.
+    2. **요약을 기다리는 공시** — 선별 대상이고 원문까지 확보됐는데 아직 요약이 없다.
+       화면에는 "AI가 정리 중"으로 나간다(낙관적 렌더링, PLAN.md 9.3).
+       단 요약을 상한만큼 실패한 공시는 뺀다 — 만들어지지 않을 요약을 기다리게 하면
+       안 된다(`MAX_SUMMARY_ATTEMPTS`).
+
+    선별에서 제외된 공시(표본 963건 중 823건)는 두 조건 모두에 걸리지 않아 자연히 빠진다.
+
+    ## 왜 "원문 확보 완료"까지를 조건으로 두는가
+
+    감지 즉시 노출하면 더 빠르지만, **원문을 끝내 못 받는 공시**(DART `[014]`)가
+    "정리 중"인 채로 영원히 남는다. 재시도는 상한에서 멈추는데 카드는 멈추지 않기
+    때문이다(fetch_documents.MAX_FETCH_ATTEMPTS). 원문이 손에 있는 것만 내보내면
+    남은 단계가 요약뿐이라 이 상태가 오래갈 수 없다.
+
+    실제 이득도 크지 않다 — deploy/pipeline.sh가 수집부터 요약까지 한 실행에서
+    잇기 때문에 두 조건의 차이는 수십 초다.
+
+    ## 미게시 요약은 사라진다
+
+    미검수 요약은 노출한다. 현재 `is_reviewed=True`가 0건이라 검수분만 보이면 화면이
     완전히 비기 때문이다. 대신 검수가 필요한 요약에는 템플릿에서 배지를 단다
     (`DisclosureSummary.needs_review`).
 
-    반대로 검수자가 숨긴 요약(`summary.is_published=False`)은 목록·상세·하이라이트
-    어디에도 내보내지 않는다. 카드만 남기고 내용을 비우면 사용자에게 "뭔가 있었는데
-    가려졌다"는 잘못된 신호가 되므로 아예 제거한다.
+    반대로 검수자가 숨겼거나 검증에 실패해 자동 미게시된 요약(`is_published=False`)은
+    목록·상세·하이라이트 어디에도 내보내지 않는다. **"정리 중"으로도 되돌리지 않는다** —
+    요약을 만들었으나 내보낼 수 없다는 뜻이지 아직 만드는 중이라는 뜻이 아니므로,
+    그렇게 표시하면 사용자에게 오지 않을 것을 기다리게 한다. 카드만 남기고 내용을
+    비우는 것도 "뭔가 있었는데 가려졌다"는 잘못된 신호라서 아예 제거한다.
 
     select_related 는 목록에서 카드마다 기업·요약을 참조하므로 필수다(N+1 방지).
     """
+    ready = Q(summary__isnull=False, summary__is_published=True)
+    pending = Q(
+        summary__isnull=True,
+        selection_state=SelectionState.TARGET,
+        raw_fetched=True,
+        # 요약을 상한만큼 실패한 공시는 뺀다. 만들어지지 않을 요약을 계속 기다리게
+        # 하는 셈이기 때문이다(models.MAX_SUMMARY_ATTEMPTS).
+        summary_attempts__lt=MAX_SUMMARY_ATTEMPTS,
+    )
     return (
         Disclosure.objects
-        .filter(summary__isnull=False, summary__is_published=True)
+        .filter(ready | pending)
         .select_related('company', 'company__sector', 'summary')
     )
 
 
 def _filter_by_importance(queryset, importance):
-    """중요도 필터. 유효하지 않은 값은 무시한다(잘못된 쿼리스트링으로 500이 나면 안 된다)."""
+    """중요도 필터. 유효하지 않은 값은 무시한다(잘못된 쿼리스트링으로 500이 나면 안 된다).
+
+    중요도를 고르면 "정리 중" 공시는 빠진다. 중요도는 요약이 매기는 값이라 아직 없기
+    때문이다. 억지로 남기면 "높음만 보기"에 중요도 미상이 섞여 필터가 거짓말을 한다.
+    """
     valid = {choice.value for choice in DisclosureSummary.Importance}
     if importance in valid:
         return queryset.filter(summary__importance=importance)
@@ -148,11 +183,16 @@ def company_detail(request, stock_code):
 def disclosure_detail(request, rcept_no):
     """공시 상세 — 한 줄 요약 → 쉬운 설명 → 왜 중요한가 → 원문 근거 → DART 원문 링크.
 
-    요약이 없는 공시는 404다. 노출 정책상 존재하지 않는 페이지이기 때문이다
-    (여기서 요약을 생성하지 않는다 — 모듈 docstring 참고).
+    노출 대상이 아닌 공시는 404다(published_disclosures가 단일 출처).
+
+    요약을 기다리는 중인 공시는 404가 아니라 "정리 중" 화면을 준다. 목록에 카드가
+    보이는데 눌렀더니 404가 나는 것은 사용자에게 고장으로 읽힌다. 이때도 DART 원문
+    링크는 그대로 내보낸다 — 요약이 없을수록 원문 경로가 더 필요하다(PLAN.md 5.3).
+
+    여기서 요약을 생성하지 않는다 — 모듈 docstring 참고.
     """
     disclosure = get_object_or_404(published_disclosures(), rcept_no=rcept_no)
-    summary = disclosure.summary
+    summary = None if disclosure.is_summary_pending else disclosure.summary
 
     # 근거는 원문에서 확인된 인용만 보여준다. 검증에 실패한 인용을 그대로 노출하면
     # 사용자가 원문에서 찾지 못해 오히려 신뢰를 떨어뜨린다(자동 검증 경고 자체는
@@ -160,7 +200,7 @@ def disclosure_detail(request, rcept_no):
     evidence = [
         item for item in (summary.evidence or [])
         if item.get('quote') and item.get('quote_found', True)
-    ]
+    ] if summary else []
 
     return render(request, 'disclosures/disclosure_detail.html', {
         'disclosure': disclosure,

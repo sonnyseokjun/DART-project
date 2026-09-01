@@ -37,6 +37,16 @@ class Company(models.Model):
         return f'{self.name} ({self.stock_code})'
 
 
+#: 요약 생성을 이 횟수만큼 실패하면 더 시도하지 않는다.
+#:
+#: 상한이 **모델 쪽에 있는 이유**는 화면도 이 값을 봐야 하기 때문이다. 상한에 걸린
+#: 공시는 views.published_disclosures()에서 "AI가 정리 중" 목록에서도 빠져야 한다 —
+#: 오지 않을 요약을 계속 기다리게 하면 안 된다. 원문 확보 상한
+#: (fetch_documents.MAX_FETCH_ATTEMPTS)이 명령 안에 있는 것과 다른 점이다.
+#: 그쪽은 화면이 알 필요가 없다(원문을 못 받으면 애초에 노출 대상이 아니다).
+MAX_SUMMARY_ATTEMPTS = 4
+
+
 class Disclosure(models.Model):
     company = models.ForeignKey(
         Company, on_delete=models.CASCADE, related_name='disclosures', verbose_name='기업'
@@ -79,6 +89,14 @@ class Disclosure(models.Model):
         '원문 확보 마지막 시도', null=True, blank=True
     )
     raw_fetch_error = models.CharField('원문 확보 마지막 오류', max_length=300, blank=True)
+    # 요약 생성 재시도 제어. 요약에 실패하면 DisclosureSummary 행이 만들어지지 않아
+    # 다음 실행에서 그대로 다시 대상이 된다. 하루 1회 폴링에서는 하루 1번이었지만,
+    # 7단계에서 파이프라인이 1분마다 돌면 같은 공시로 **LLM을 매분 부른다**.
+    # 원문 확보(raw_fetch_*)와 같은 구조지만 실패 비용이 다르다 — 그쪽은 DART 호출
+    # 한도만 쓰고, 이쪽은 실제 돈이 나간다(PLAN.md 11).
+    summary_attempts = models.PositiveSmallIntegerField('요약 시도 횟수', default=0)
+    summary_attempted_at = models.DateTimeField('요약 마지막 시도', null=True, blank=True)
+    summary_error = models.CharField('요약 마지막 오류', max_length=300, blank=True)
     created_at = models.DateTimeField('수집 시각', auto_now_add=True)
 
     class Meta:
@@ -97,6 +115,30 @@ class Disclosure(models.Model):
     @property
     def is_summary_target(self):
         return self.selection_state == SelectionState.TARGET
+
+    @property
+    def is_summary_stuck(self):
+        """요약을 상한만큼 실패해 더 시도하지 않는 상태인지.
+
+        화면에서 "AI가 정리 중"으로 내보내면 안 되는 조건이다. 만들어지지 않을 요약을
+        계속 기다리게 하는 셈이기 때문이다. 노출에서 빼는 일은
+        views.published_disclosures()가 한다 — 이 속성은 판정만 한다.
+        """
+        return self.summary_attempts >= MAX_SUMMARY_ATTEMPTS
+
+    @property
+    def is_summary_pending(self):
+        """요약이 아직 없어 화면에 "정리 중"으로 보일 상태인지 (PLAN.md 9.3).
+
+        노출 대상인지는 views.published_disclosures()가 이미 걸러서 온다. 여기서
+        선별 상태나 원문 확보 여부를 다시 보지 않는 이유는, 판정이 두 곳에 있으면
+        한쪽만 고쳤을 때 조용히 어긋나기 때문이다. 이 속성은 **"요약이 있는가"만**
+        답한다.
+
+        hasattr을 쓰는 것은 역방향 OneToOne이 없을 때 예외를 던지기 때문이다.
+        목록은 select_related('summary')로 가져오므로 추가 쿼리가 발생하지 않는다.
+        """
+        return not hasattr(self, 'summary')
 
 
 class DisclosureSummary(models.Model):

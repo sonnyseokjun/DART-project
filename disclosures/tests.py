@@ -29,6 +29,7 @@ from disclosures.dart import (
     DartApiError, dart_viewer_url, extract_key_sections, is_dart_xml,
     preprocess_document, split_date_range, strip_markup,
 )
+from disclosures import models
 from disclosures.admin import (
     DEFAULT_HIDDEN_REASON, DisclosureSummaryAdmin, DisclosureSummaryInline,
 )
@@ -1907,7 +1908,12 @@ class PageRenderingTest(WebViewTestBase):
 
 
 class ExposurePolicyTest(WebViewTestBase):
-    """요약이 있는 공시만 노출한다 — published_disclosures()가 단일 출처."""
+    """노출 정책 — published_disclosures()가 단일 출처.
+
+    7단계에서 "요약이 준비된 것만"에서 "요약을 기다리는 것도"로 넓혔다
+    (낙관적 렌더링 → OptimisticRenderingTest). 여기서는 그와 무관하게 유지돼야 하는
+    규칙을 본다 — 선별에서 제외된 공시는 여전히 어느 화면에도 나오지 않는다.
+    """
 
     def test_unsummarized_disclosure_is_hidden_from_lists(self):
         for url in (
@@ -2022,6 +2028,120 @@ class ExposurePolicyTest(WebViewTestBase):
             reverse('disclosures:disclosure_detail', args=['20260701000001']))
         self.assertContains(response, '원문에 있는 구절')
         self.assertNotContains(response, '원문에서 찾지 못한 구절')
+
+
+class OptimisticRenderingTest(WebViewTestBase):
+    """요약 전 공시를 "AI가 정리 중"으로 먼저 노출한다 (이슈 #22 · PLAN.md 9.3).
+
+    노출 범위를 넓히는 변경이라 **잘못 넓히면 조용히 새는 쪽**이 위험하다.
+    제외된 공시가 새어 나오거나, 검수자가 내린 요약이 "정리 중"으로 되살아나면
+    사용자에게 잘못된 신호가 간다. 그래서 "보인다"보다 "안 보인다"를 더 촘촘히 고정한다.
+    """
+
+    PENDING_TEXT = 'AI가 정리 중'
+
+    def setUp(self):
+        super().setUp()
+        # 원문까지 확보됐고 요약만 없는 공시 — 이 PR이 새로 노출하는 대상이다.
+        self.pending = Disclosure.objects.create(
+            company=self.samsung, rcept_no='20260704000001',
+            report_name='유상증자결정', disclosure_type='주요사항보고',
+            filed_at=date(2026, 7, 4), dart_url=dart_viewer_url('20260704000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content='원문',
+        )
+
+    def _sector_page(self):
+        return self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']))
+
+    # --- 보인다 ---------------------------------------------------------
+
+    def test_pending_disclosure_appears_in_the_list(self):
+        response = self._sector_page()
+
+        self.assertContains(response, self.pending.report_name)
+        self.assertContains(response, self.PENDING_TEXT)
+
+    def test_pending_detail_is_not_404(self):
+        """목록에 카드가 보이는데 눌렀더니 404면 사용자에게는 고장으로 읽힌다."""
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260704000001']))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.PENDING_TEXT)
+
+    def test_pending_detail_still_offers_the_dart_link(self):
+        """요약이 없을수록 원문 경로가 더 필요하다 (PLAN.md 5.3)."""
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260704000001']))
+
+        self.assertContains(response, self.pending.dart_url)
+        self.assertContains(response, '투자 자문이 아니며')
+
+    # --- 안 보인다 ------------------------------------------------------
+
+    def test_disclosure_without_raw_content_is_not_shown(self):
+        """원문을 못 받은 공시는 노출하지 않는다.
+
+        재시도는 상한에서 멈추는데(fetch_documents.MAX_FETCH_ATTEMPTS) 카드는 멈추지
+        않으므로, 감지 즉시 노출하면 "정리 중"인 채로 영원히 남는 공시가 생긴다.
+        """
+        self.pending.raw_fetched = False
+        self.pending.save(update_fields=['raw_fetched'])
+
+        self.assertNotContains(self._sector_page(), self.pending.report_name)
+        self.assertEqual(
+            self.client.get(
+                reverse('disclosures:disclosure_detail',
+                        args=['20260704000001'])).status_code, 404)
+
+    def test_excluded_disclosure_is_not_shown_even_with_raw_content(self):
+        """선별에서 제외된 공시는 원문이 있어도 나오지 않는다."""
+        self.pending.selection_state = SelectionState.EXCLUDED
+        self.pending.save(update_fields=['selection_state'])
+
+        self.assertNotContains(self._sector_page(), self.pending.report_name)
+
+    def test_hidden_summary_does_not_come_back_as_pending(self):
+        """핵심: 내려진 요약을 "정리 중"으로 되살리지 않는다.
+
+        요약을 만들었으나 내보낼 수 없다는 뜻이지 아직 만드는 중이라는 뜻이 아니다.
+        그렇게 표시하면 사용자에게 **오지 않을 것을 기다리게** 한다.
+        """
+        summary = self.high.summary
+        summary.is_published = False
+        summary.hidden_by = DisclosureSummary.HiddenBy.AUTO
+        summary.save(update_fields=['is_published', 'hidden_by'])
+
+        response = self._sector_page()
+        self.assertNotContains(response, self.high.report_name)
+        self.assertEqual(
+            self.client.get(
+                reverse('disclosures:disclosure_detail',
+                        args=['20260701000001'])).status_code, 404)
+
+    def test_importance_filter_excludes_pending(self):
+        """중요도는 요약이 매기는 값이라 아직 없다. 필터가 거짓말을 하면 안 된다."""
+        response = self.client.get(
+            reverse('disclosures:sector_detail', args=['semiconductor']),
+            {'importance': DisclosureSummary.Importance.HIGH},
+        )
+
+        self.assertContains(response, self.high.report_name)
+        self.assertNotContains(response, self.pending.report_name)
+
+    def test_pending_is_not_promoted_to_highlights(self):
+        """메인 상단 주요 공시는 중요도 '높음'으로 뽑는다. 미상이 섞이면 안 된다."""
+        self.assertNotContains(
+            self.client.get(reverse('disclosures:sector_list')),
+            self.pending.report_name)
+
+    # --- 판정 속성 ------------------------------------------------------
+
+    def test_is_summary_pending_property(self):
+        self.assertTrue(self.pending.is_summary_pending)
+        self.assertFalse(self.high.is_summary_pending)
 
 
 class FilterAndPaginationTest(WebViewTestBase):
@@ -4399,6 +4519,153 @@ class FetchRetryLimitTest(TestCase):
         mock_fetch = self._run_failing(rcept_no='20260701000001')
 
         mock_fetch.assert_called_once()
+
+
+class SummaryRetryLimitTest(TestCase):
+    """요약 실패 재시도 상한 (이슈 #22 · PLAN.md 9.3).
+
+    요약에 실패하면 DisclosureSummary 행이 만들어지지 않아 다음 실행에서 그대로 다시
+    대상이 된다. 하루 1회 폴링에서는 하루 1번이었지만, 파이프라인이 1분마다 도는
+    지금은 같은 공시로 **LLM을 매분 부른다**. 원문 확보 상한(FetchRetryLimitTest)과
+    같은 구조지만 **실패 비용이 실제 돈**이라 더 촘촘히 고정한다.
+    """
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+        self.target = Disclosure.objects.create(
+            company=self.company, rcept_no='20260701000001',
+            report_name='유상증자결정', disclosure_type='주요사항보고',
+            filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
+            selection_state=SelectionState.TARGET,
+            raw_fetched=True, raw_content='원문 본문',
+        )
+
+    def _run_failing(self, **options):
+        """요약 생성이 항상 실패하도록 두고 실행한다."""
+        def boom(**kwargs):
+            raise summarizer.SummarizerError('schema', '모델 응답이 스키마를 어겼습니다')
+
+        with patch.object(summarize_command, 'summarize_disclosure', side_effect=boom) as m:
+            call_command('summarize_disclosures', stdout=StringIO(), stderr=StringIO(),
+                         **options)
+        return m
+
+    def _age(self, minutes):
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempted_at=timezone.now() - timedelta(minutes=minutes)
+        )
+
+    # --- 기록과 대기 ----------------------------------------------------
+
+    def test_failure_is_recorded(self):
+        self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 1)
+        self.assertIn('스키마', self.target.summary_error)
+
+    def test_second_run_waits_and_does_not_call_the_model(self):
+        """핵심: 방금 실패한 건으로 곧바로 LLM을 다시 부르지 않는다."""
+        self._run_failing()
+
+        mock_summarize = self._run_failing()
+
+        mock_summarize.assert_not_called()
+
+    def test_retries_after_the_wait(self):
+        self._run_failing()
+        self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[0] + 1)
+
+        self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 2)
+
+    # --- 상한 -----------------------------------------------------------
+
+    def test_stops_at_the_limit(self):
+        for _ in range(models.MAX_SUMMARY_ATTEMPTS):
+            self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[-1] + 1)
+            self._run_failing()
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, models.MAX_SUMMARY_ATTEMPTS)
+
+        self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[-1] + 1)
+        self.assertFalse(self._run_failing().called)
+
+    def test_llm_calls_are_bounded_over_an_hour_of_minutely_runs(self):
+        """1분마다 60번 돌려도 LLM 호출이 상한을 넘지 않는다 — 이 변경의 존재 이유다."""
+        calls = 0
+        for _ in range(60):
+            calls += self._run_failing().call_count
+            self._age(1)
+
+        self.assertLessEqual(calls, models.MAX_SUMMARY_ATTEMPTS)
+
+    # --- 화면 -----------------------------------------------------------
+
+    def test_stuck_disclosure_leaves_the_pending_list(self):
+        """만들어지지 않을 요약을 "정리 중"으로 계속 기다리게 하면 안 된다."""
+        from disclosures.views import published_disclosures
+
+        self.assertIn(self.target, published_disclosures())
+
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempts=models.MAX_SUMMARY_ATTEMPTS
+        )
+
+        self.assertNotIn(self.target, published_disclosures())
+
+    # --- 성공·운영 ------------------------------------------------------
+
+    def test_success_clears_the_record(self):
+        self._run_failing()
+        self._age(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES[0] + 1)
+
+        with patch.object(summarize_command, 'summarize_disclosure',
+                          side_effect=lambda **kw: _regen_result()):
+            call_command('summarize_disclosures', stdout=StringIO())
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 0)
+        self.assertEqual(self.target.summary_error, '')
+
+    def test_stuck_option_lists_without_calling_the_model(self):
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempts=models.MAX_SUMMARY_ATTEMPTS,
+            summary_error='SummarizerError: 스키마 위반',
+        )
+
+        out = StringIO()
+        with patch.object(summarize_command, 'summarize_disclosure') as m:
+            call_command('summarize_disclosures', stuck=True, stdout=out)
+
+        m.assert_not_called()
+        self.assertIn('20260701000001', out.getvalue())
+        self.assertIn('스키마 위반', out.getvalue())
+
+    def test_retry_stuck_revives_the_disclosure(self):
+        Disclosure.objects.filter(pk=self.target.pk).update(
+            summary_attempts=models.MAX_SUMMARY_ATTEMPTS
+        )
+
+        call_command('summarize_disclosures', retry_stuck=True, stdout=StringIO())
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_attempts, 0)
+
+    def test_explicit_rcept_no_skips_the_wait(self):
+        """사람이 콕 집으면 대기를 건너뛴다. 정책은 자동 실행을 위한 것이다."""
+        self._run_failing()
+
+        mock_summarize = self._run_failing(rcept_no='20260701000001')
+
+        mock_summarize.assert_called_once()
 
 
 class SummarizeDisclosuresCommandTest(TestCase):
