@@ -1,25 +1,40 @@
-# DART 공시 요약 서비스 — 무인 파이프라인 (PLAN.md 9.2)
+# DART 공시 요약 서비스 — 무인 파이프라인 (PLAN.md 9.2 · 9.3)
 #
 # 설치:  crontab deploy/crontab
 # 확인:  crontab -l
 #
-# ⚠ 요약 생성 명령은 이 프로젝트에서 유일하게 돈이 나가는 경로다.
-#   --limit 20이 안전장치다. 평소 하루 1~2건이지만 백필 등으로 대상이 밀리면
-#   상한이 없을 때 한 번에 다 태워버린다. 요약 1건당 $0.023 → 상한에 걸려도
-#   하루 $0.46에서 멈춘다. AWS Budgets·OpenAI 사용량 알람과 함께 2중으로 건다.
+# ⚠ 이 파일의 시각은 **서버 로컬 시간(KST)** 기준이다. Ubuntu 기본값은 UTC라
+#   시간대를 맞추지 않으면 아래 07:00이 한국시간 16:00에 돈다. 실제로 겪은 일이다
+#   (2026-08-27 ~ 09-01). RUNBOOK 2.9의 시간대 설정을 먼저 끝낼 것.
+#
+# ⚠ 요약 생성은 이 프로젝트에서 유일하게 돈이 나가는 경로다.
+#   pipeline.sh의 SUMMARIZE_LIMIT(기본 5)이 안전장치다. 평소 하루 1~2건이지만
+#   백필 등으로 대상이 밀리면 상한이 없을 때 한 번에 다 태워버린다. 요약 1건당
+#   $0.023 → 상한에 걸려도 한 번에 $0.12에서 멈춘다.
+#   AWS Budgets·OpenAI 사용량 알람과 함께 2중으로 건다.
 
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 PROJECT_DIR=/home/ubuntu/DART-project
 DC=/usr/bin/docker compose
 
-# --- 수집 파이프라인 (매일 아침) ---------------------------------------
-# DART 공시는 장 시작 전후에 몰린다. 전날치를 확실히 담으려고 --days 2로 겹쳐 받는다
-# (rcept_no unique 덕에 중복 적재는 무해하다).
-0  7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py poll_dart --days 2         >> /var/log/dart/poll.log 2>&1
-10 7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py apply_selection            >> /var/log/dart/select.log 2>&1
-20 7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py fetch_documents --limit 20 >> /var/log/dart/fetch.log 2>&1
-30 7 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py summarize_disclosures --limit 20 >> /var/log/dart/summarize.log 2>&1
+# --- 적응형 폴링 (7단계) ------------------------------------------------
+# 수집 → 선별 → 원문 → 요약을 한 번에 이어서 돈다. 중복 실행은 pipeline.sh 안의
+# flock이 막으므로 주기를 아무리 줄여도 DB에 쓰는 프로세스는 하나다(PLAN.md 9.3).
+#
+# 주기를 시간대별로 나눈 이유: 공시는 평일 낮에 몰린다. 야간·주말에도 1분마다 도는
+# 것은 DART 호출 한도만 축낸다. poll_dart --detect가 신규 없을 때 호출 1회로
+# 끝내주므로 (하루 약 966회 = 한도 20,000의 5%) 낮 시간대 1분 주기가 감당된다.
+*  9-18       * * 1-5  cd $PROJECT_DIR && ./deploy/pipeline.sh >> /var/log/dart/pipeline.log 2>&1
+0  0-8,19-23  * * 1-5  cd $PROJECT_DIR && ./deploy/pipeline.sh >> /var/log/dart/pipeline.log 2>&1
+0  *          * * 6,0  cd $PROJECT_DIR && ./deploy/pipeline.sh >> /var/log/dart/pipeline.log 2>&1
+
+# --- 전체 폴링 (하루 1회) -----------------------------------------------
+# --detect는 최신 100건만 훑으므로, 호출 사이에 시장 전체 공시가 100건을 넘으면
+# 창 밖으로 밀려난 신규를 놓친다. 폴링이 몇 시간 멈췄다 재개할 때 생길 수 있다.
+# 이 실행이 최종 안전망이다 — 유형별 순회로 전 구간을 다시 훑어 누락을 줍고,
+# --detect가 채우지 못하는 공시유형 라벨도 여기서 보정된다.
+0  7 * * *  cd $PROJECT_DIR && ./deploy/pipeline.sh --full >> /var/log/dart/pipeline.log 2>&1
 
 # --- 재검증 (매일 새벽, LLM 미호출·무료) --------------------------------
 0  3 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py revalidate_summaries       >> /var/log/dart/revalidate.log 2>&1
@@ -29,16 +44,19 @@ DC=/usr/bin/docker compose
 
 # --- 메모리 추이 기록 (30분마다) ----------------------------------------
 # Lightsail 기본 메트릭에는 메모리가 없다. 그런데 이 서비스의 1순위 리스크가
-# 메모리 초과(1GB에 예산 602MB)라 콘솔만 보고 있으면 정작 중요한 걸 놓친다.
-# 요약 배치(07:30)와 겹치는 시간대의 값을 나중에 예산과 대조하려고 남긴다.
+# 메모리 초과라 콘솔만 보고 있으면 정작 중요한 걸 놓친다.
 # date -Is를 쓰는 이유: crontab에서 %는 개행으로 해석되어 date '+%F'가 깨진다.
 */30 * * * *  { date -Is; free -m | sed -n 2p; } >> /var/log/dart/mem.log 2>&1
 
-# 위 30분 샘플러로는 요약 배치의 피크를 볼 수 없다. 배치가 1분 안에 끝나서
-# 07:30:01 샘플과 겹치지 않기 때문이다(2026-08-28 실측에서 확인). 이 서비스의
-# 1순위 리스크가 메모리 초과인데 정작 그 순간만 안 보이는 셈이라, 배치 창에서만
-# 3분간 10초 간격으로 따로 찍는다.
-30 7 * * *  for i in $(seq 18); do { date -Is; free -m | sed -n 2p; } >> /var/log/dart/mem_peak.log; sleep 10; done
+# 6단계에는 요약 배치(07:30) 창만 10초 간격으로 찍는 줄이 하나 더 있었다. 요약 피크가
+# 추정치(706MB)로 남아 있어 그걸 재려던 것인데, 두 가지 이유로 뺐다.
+#   1. 피크는 다른 방법으로 측정을 끝냈다 — 약 590MB (PLAN.md 9.3)
+#   2. 7단계에서는 요약이 하루 아무 때나 돌 수 있어 "배치 창"이라는 게 없다
+# 추이 감시는 위 30분 샘플러로 충분하다.
 
-# --- 로그 정리 (매주 일요일) --------------------------------------------
-0  5 * * 0  find /var/log/dart -name '*.log' -mtime +30 -delete
+# --- 로그 정리 ----------------------------------------------------------
+# logrotate가 맡는다 (deploy/logrotate.conf). 6단계에는 여기에
+# `find /var/log/dart -name '*.log' -mtime +30 -delete`가 있었으나 **동작하지
+# 않는 줄이었다** — 계속 덧붙여지는 로그는 mtime이 매번 갱신되어 30일을 넘길 수가
+# 없다. 멈춘 작업의 로그만 지워졌을 뿐 정작 커지는 파일은 영원히 남았다.
+# 7단계에서 파이프라인이 1분마다 돌면 로그 증가가 훨씬 빨라지므로 제대로 고친다.

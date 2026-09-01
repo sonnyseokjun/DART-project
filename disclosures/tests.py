@@ -32,6 +32,7 @@ from disclosures.admin import (
     DEFAULT_HIDDEN_REASON, DisclosureSummaryAdmin, DisclosureSummaryInline,
 )
 from disclosures.management.commands import (
+    poll_dart as poll_dart_command,
     summarize_disclosures as summarize_command,
 )
 from disclosures.management.commands.seed_companies import TARGET_COMPANIES
@@ -255,7 +256,10 @@ class PollDartDetectTest(TestCase):
         call_command('poll_dart', days=2)          # 먼저 전부 적재해 둔다
         mock_iter.reset_mock()
 
-        call_command('poll_dart', days=2, detect=True)
+        # 신규가 없으면 종료 코드로 알린다 — deploy/pipeline.sh가 이 값을 보고
+        # 뒷단계(선별·원문·요약)를 건너뛴다.
+        with self.assertRaises(SystemExit):
+            call_command('poll_dart', days=2, detect=True)
 
         # 핵심: 신규가 없으면 유형별 순회를 아예 부르지 않는다(호출 1회로 종료).
         mock_iter.assert_not_called()
@@ -267,7 +271,8 @@ class PollDartDetectTest(TestCase):
         # 비추적 기업 공시만 최신 목록에 있으면 순회할 이유가 없다.
         mock_latest.return_value = [FAKE_BY_TYPE['D'][1]]
 
-        call_command('poll_dart', days=2, detect=True)
+        with self.assertRaises(SystemExit):
+            call_command('poll_dart', days=2, detect=True)
 
         mock_iter.assert_not_called()
         self.assertEqual(Disclosure.objects.count(), 0)
@@ -298,6 +303,78 @@ class PollDartDetectTest(TestCase):
         # list.json의 page_count 상한이 100이다. 넘기면 조용히 잘리는 게 아니라 오류다.
         self.assertLessEqual(DETECT_PAGE_COUNT, 100)
         self.assertGreater(DETECT_PAGE_COUNT, 0)
+
+
+class PipelineScriptTest(TestCase):
+    """deploy/pipeline.sh와 poll_dart 사이의 약속을 고정한다 (PLAN.md 9.3).
+
+    파이프라인은 셸 스크립트와 관리 명령 **두 파일에 걸쳐** 동작한다. 둘을 잇는 것이
+    종료 코드 하나뿐이라, 한쪽만 고치면 조용히 어긋난다 — 스크립트가 "신규 없음"을
+    알아채지 못해 매분 뒷단계를 헛돌리거나, 반대로 진짜 오류를 평소와 같음으로 삼킨다.
+    둘 다 로그가 정상으로 보이는 종류의 실패라 테스트로 묶어 둔다.
+    """
+
+    DEPLOY_DIR = Path(__file__).resolve().parent.parent / 'deploy'
+
+    @classmethod
+    def _read(cls, name):
+        return (cls.DEPLOY_DIR / name).read_text(encoding='utf-8')
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자', is_active=True,
+        )
+
+    @patch('disclosures.management.commands.poll_dart.iter_disclosures',
+           side_effect=_fake_iter)
+    @patch('disclosures.management.commands.poll_dart.latest_disclosures')
+    def test_nothing_new_exits_with_the_agreed_code(self, mock_latest, mock_iter):
+        mock_latest.return_value = []
+
+        with self.assertRaises(SystemExit) as ctx:
+            call_command('poll_dart', days=2, detect=True)
+
+        self.assertEqual(ctx.exception.code, poll_dart_command.NOTHING_NEW_EXIT_CODE)
+        mock_iter.assert_not_called()
+
+    @patch('disclosures.management.commands.poll_dart.iter_disclosures',
+           side_effect=_fake_iter)
+    @patch('disclosures.management.commands.poll_dart.latest_disclosures')
+    def test_collecting_run_exits_normally(self, mock_latest, _mock_iter):
+        # 신규를 수집했을 때는 0으로 끝나야 스크립트가 뒷단계로 넘어간다.
+        mock_latest.return_value = list(FAKE_BY_TYPE['D'])
+        call_command('poll_dart', days=2, detect=True)   # SystemExit 없이 반환
+
+    def test_script_and_command_agree_on_the_exit_code(self):
+        script = self._read('pipeline.sh')
+        match = re.search(r'^NOTHING_NEW=(\d+)$', script, re.MULTILINE)
+        self.assertIsNotNone(match, 'pipeline.sh에 NOTHING_NEW 정의가 없다')
+        self.assertEqual(
+            int(match.group(1)), poll_dart_command.NOTHING_NEW_EXIT_CODE,
+            'pipeline.sh와 poll_dart의 종료 코드 약속이 어긋났다',
+        )
+
+    def test_exit_code_does_not_collide_with_command_error(self):
+        # CommandError는 1로 끝난다. 같은 값이면 네트워크 오류를 "신규 없음"으로
+        # 오인해 스크립트가 조용히 종료 0을 찍는다.
+        self.assertNotIn(poll_dart_command.NOTHING_NEW_EXIT_CODE, (0, 1))
+
+    def test_summarize_runs_under_a_limit(self):
+        """요약은 돈이 나가는 유일한 경로다. 상한 없이 부르지 않는다."""
+        script = self._read('pipeline.sh')
+        self.assertRegex(script, r'summarize_disclosures --limit')
+
+    def test_crontab_calls_the_pipeline_and_keeps_a_full_poll(self):
+        crontab = self._read('crontab')
+        # 적응형 주기: 평일 업무시간은 분 단위
+        self.assertRegex(
+            crontab,
+            re.compile(r'^\*\s+9-18\s+\*\s+\*\s+1-5\s+.*pipeline\.sh', re.MULTILINE),
+        )
+        # 최종 안전망: 하루 1회 전체 폴링 (--detect가 놓친 것을 줍는다)
+        self.assertRegex(crontab, r'pipeline\.sh --full')
 
 
 class SplitDateRangeTest(TestCase):

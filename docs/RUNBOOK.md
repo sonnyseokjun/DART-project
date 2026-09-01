@@ -94,7 +94,9 @@ PLAN.md 9.2의 상시 메모리 예산 445MB는 Caddy(~30MB)와 OS를 포함한 
     │                    ./data/db.sqlite3 (마운트)
     │                           ▲        │
     │  호스트 cron ─────────────┘        │
-    │   07:00 수집 → 요약                 │
+    │   평일 09~18시 매분 pipeline.sh     │
+    │   그 외·주말 매시간 pipeline.sh      │
+    │   07:00 pipeline.sh --full         │
     │   04:00 backup.sh → S3             │
     └────────────────────────────────────┘
 ```
@@ -228,8 +230,21 @@ DB에 저장되는 시각은 영향받지 않는다 — Django가 `USE_TZ`로 UT
 ```bash
 crontab deploy/crontab
 crontab -l
+./deploy/pipeline.sh        # 파이프라인이 끝까지 도는지 즉시 확인
 ./deploy/backup.sh          # 첫 백업이 S3에 올라가는지 즉시 확인
 ```
+
+**로그 회전을 함께 설치한다.**
+
+```bash
+sudo cp deploy/logrotate.conf /etc/logrotate.d/dart
+sudo logrotate -d /etc/logrotate.d/dart     # -d 는 시험 실행
+```
+
+6단계 crontab에는 `find /var/log/dart -name '*.log' -mtime +30 -delete`가 있었으나
+**동작하지 않는 줄이었다** — 계속 덧붙여지는 로그는 쓸 때마다 mtime이 갱신되어 30일을
+넘길 수가 없다. 7단계에서 파이프라인이 평일 낮 1분마다 돌면 로그가 하루 1,000줄 넘게
+쌓이므로 logrotate로 제대로 고쳤다.
 
 Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활성화**.
 주기는 고를 수 없다 — **일 1회, 최근 7개 보관** 고정이고 실행 시각만 정한다(UTC 기준).
@@ -295,7 +310,9 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 |---|---|
 | 재배포 | `git pull && docker compose up -d --build` |
 | 로그 | `docker compose logs -f web` / `docker compose logs -f caddy` |
-| 파이프라인 수동 실행 | `docker compose exec web python manage.py poll_dart --days 3` |
+| 파이프라인 수동 실행 | `./deploy/pipeline.sh` (cron이 도는 중이면 조용히 건너뛴다) |
+| 전체 폴링 수동 실행 | `./deploy/pipeline.sh --full` |
+| 파이프라인 로그 | `tail -f /var/log/dart/pipeline.log` |
 | 재검증 (무료) | `docker compose exec web python manage.py revalidate_summaries` |
 | 백업 즉시 실행 | `./deploy/backup.sh` |
 | 메모리 확인 | `free -h && docker stats --no-stream` |
@@ -336,6 +353,22 @@ DuckDNS의 A 레코드가 고정 IP를 가리키는지, 방화벽 80·443이 열
 1. 접속 IP가 바뀌었는지 확인(가정용 회선은 바뀐다) → `.env`의 `ADMIN_ALLOWED_IP` 수정 후
    `docker compose up -d caddy`
 2. 로그인 폼에서 CSRF 오류 → `DJANGO_CSRF_TRUSTED_ORIGINS`에 `https://` 스킴이 붙어 있는지 확인
+
+### 파이프라인이 안 돈다
+
+```bash
+tail -50 /var/log/dart/pipeline.log
+```
+
+| 로그 | 뜻 | 조치 |
+|---|---|---|
+| `앞 실행이 아직 돌고 있어 건너뜁니다` | 정상. 앞 실행이 1분을 넘겼다 | 계속 반복되면 어느 단계가 느린지 확인 |
+| `flock 실행 실패` | `flock`이 없거나 잠금 파일을 못 연다 | `which flock` · `/tmp` 쓰기 권한 확인 |
+| `수집 실패 (종료 코드 N)` | DART 호출 오류 | 코드와 함께 `poll_dart` 로그 확인 |
+| 아무 줄도 없다 | cron이 안 돈다 | `crontab -l` · `systemctl status cron` · 서버 시간대(2.9) |
+
+잠금이 남아 영영 막히는 일은 없다. `flock`은 프로세스가 죽으면 커널이 잠금을
+놓아주므로, `/tmp/dart-pipeline.lock` 파일을 손으로 지울 필요가 없다.
 
 ### DB가 잠긴다 (`database is locked`)
 요약 배치와 admin 저장이 겹친 경우다. `timeout=20`으로 대부분 흡수되지만 반복되면

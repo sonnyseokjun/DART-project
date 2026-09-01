@@ -8,3 +8,4 @@ Caddyfile text eol=lf
 docker-compose*.yml text eol=lf
 deploy/crontab text eol=lf
 .dockerignore text eol=lf
+deploy/logrotate.conf text eol=lf
