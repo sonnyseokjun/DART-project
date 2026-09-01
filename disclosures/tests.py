@@ -23,7 +23,8 @@ from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
 from disclosures.dart import (
-    MAX_LIST_SPAN_DAYS, OFFERING_KEY_SECTIONS, PBLNTF_TYPES, PERIODIC_KEY_SECTIONS,
+    DETECT_PAGE_COUNT, MAX_LIST_SPAN_DAYS, OFFERING_KEY_SECTIONS, PBLNTF_TYPES,
+    PERIODIC_KEY_SECTIONS,
     DartApiError, dart_viewer_url, extract_key_sections, is_dart_xml,
     preprocess_document, split_date_range, strip_markup,
 )
@@ -209,6 +210,94 @@ class PollDartTest(TestCase):
         # 추적 기업이 없으면 DART를 호출하지 않고 조기 반환한다.
         mock_iter.assert_not_called()
         self.assertEqual(Disclosure.objects.count(), 0)
+
+
+class PollDartDetectTest(TestCase):
+    """--detect: 유형별 순회 앞에 붙는 호출 1회짜리 사전 확인 (PLAN.md 9.3).
+
+    1분 주기 폴링이 감당 가능한 이유가 "대부분의 실행이 1회 호출로 끝난다"이므로,
+    **신규가 없을 때 유형별 순회를 부르지 않는 것**이 이 기능의 핵심이다.
+    """
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.samsung = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자', is_active=True,
+        )
+
+    @staticmethod
+    def _all_fake_items():
+        items = []
+        for rows in FAKE_BY_TYPE.values():
+            items.extend(rows)
+        return items
+
+    @patch('disclosures.management.commands.poll_dart.iter_disclosures',
+           side_effect=_fake_iter)
+    @patch('disclosures.management.commands.poll_dart.latest_disclosures')
+    def test_new_disclosure_triggers_full_sweep(self, mock_latest, mock_iter):
+        mock_latest.return_value = self._all_fake_items()
+
+        call_command('poll_dart', days=2, detect=True)
+
+        mock_latest.assert_called_once()
+        self.assertTrue(mock_iter.called)
+        # 유형별 순회가 돌았으므로 유형이 정확히 채워진다.
+        d = Disclosure.objects.get(rcept_no='20260724000001')
+        self.assertEqual(d.disclosure_type, PBLNTF_TYPES['D'])
+
+    @patch('disclosures.management.commands.poll_dart.iter_disclosures',
+           side_effect=_fake_iter)
+    @patch('disclosures.management.commands.poll_dart.latest_disclosures')
+    def test_nothing_new_skips_the_sweep(self, mock_latest, mock_iter):
+        mock_latest.return_value = self._all_fake_items()
+        call_command('poll_dart', days=2)          # 먼저 전부 적재해 둔다
+        mock_iter.reset_mock()
+
+        call_command('poll_dart', days=2, detect=True)
+
+        # 핵심: 신규가 없으면 유형별 순회를 아예 부르지 않는다(호출 1회로 종료).
+        mock_iter.assert_not_called()
+
+    @patch('disclosures.management.commands.poll_dart.iter_disclosures',
+           side_effect=_fake_iter)
+    @patch('disclosures.management.commands.poll_dart.latest_disclosures')
+    def test_untracked_company_is_not_new(self, mock_latest, mock_iter):
+        # 비추적 기업 공시만 최신 목록에 있으면 순회할 이유가 없다.
+        mock_latest.return_value = [FAKE_BY_TYPE['D'][1]]
+
+        call_command('poll_dart', days=2, detect=True)
+
+        mock_iter.assert_not_called()
+        self.assertEqual(Disclosure.objects.count(), 0)
+
+    @patch('disclosures.management.commands.poll_dart.iter_disclosures',
+           side_effect=_fake_iter)
+    @patch('disclosures.management.commands.poll_dart.latest_disclosures')
+    def test_detect_never_stores_untyped_rows(self, mock_latest, _mock_iter):
+        """유형 미상 저장 금지 — 빈 유형은 선별 정책의 제외를 통과해 버린다.
+
+        evaluate()가 `disclosure_type in EXCLUDED_TYPES`로 판정하므로 빈 문자열은
+        어디에도 걸리지 않고 TARGET이 된다. 제외됐어야 할 공시가 요약 대상이 되면
+        비용이 발생하므로, 감지 경로는 적재를 하지 않는다는 것을 고정한다.
+        """
+        mock_latest.return_value = self._all_fake_items()
+
+        call_command('poll_dart', days=2, detect=True)
+
+        self.assertFalse(Disclosure.objects.filter(disclosure_type='').exists())
+
+    @patch('disclosures.management.commands.poll_dart.latest_disclosures')
+    def test_detect_rejects_backfill_range(self, mock_latest):
+        with self.assertRaises(CommandError):
+            call_command('poll_dart', bgn='20260101', end='20260131', detect=True)
+        mock_latest.assert_not_called()
+
+    def test_detect_page_count_is_within_dart_limit(self):
+        # list.json의 page_count 상한이 100이다. 넘기면 조용히 잘리는 게 아니라 오류다.
+        self.assertLessEqual(DETECT_PAGE_COUNT, 100)
+        self.assertGreater(DETECT_PAGE_COUNT, 0)
 
 
 class SplitDateRangeTest(TestCase):

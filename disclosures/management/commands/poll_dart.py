@@ -5,11 +5,15 @@ rcept_no unique 제약으로 중복 실행에도 멱등하다.
 
 사용법:
   python manage.py poll_dart [--days 3]                    # 최근 N일 (정상 폴링)
+  python manage.py poll_dart --detect --days 2             # 잦은 감지용 (7단계)
   python manage.py poll_dart --bgn 20260101 --end 20260630  # 임의 구간 (백필·장애 복구)
 
 corp_code 없는 조회는 검색기간이 3개월로 제한되므로(dart.MAX_LIST_SPAN_DAYS), 범위가
 한도를 넘으면 자동으로 날짜 청크로 분할해 순회한다. 적재 경로는 청크 수와 무관하게
 아래 get_or_create 한 곳이므로 멱등성은 그대로 유지된다.
+
+--detect는 유형별 순회 앞에 **호출 1회짜리 사전 확인**을 붙인다. 신규가 없으면 거기서
+끝나므로 1분 주기로 돌려도 호출량이 감당된다(PLAN.md 9.3). 자세한 근거는 _has_new 참조.
 
 추후 Celery Beat 도입 시 이 로직을 그대로 태스크로 옮긴다.
 """
@@ -18,10 +22,12 @@ from datetime import date, datetime, timedelta
 from django.core.management.base import BaseCommand, CommandError
 
 from disclosures.dart import (
+    DETECT_PAGE_COUNT,
     MAX_LIST_SPAN_DAYS,
     PBLNTF_TYPES,
     dart_viewer_url,
     iter_disclosures,
+    latest_disclosures,
     split_date_range,
 )
 from disclosures.models import Company, Disclosure
@@ -55,6 +61,12 @@ class Command(BaseCommand):
             '--end', default=None,
             help='조회 종료일 YYYYMMDD (생략 시 오늘). --bgn과 함께 지정한다',
         )
+        parser.add_argument(
+            '--detect', action='store_true',
+            help='유형별 순회 전에 최신 %d건을 1회 호출로 훑어 신규가 있는지 먼저 본다. '
+                 '없으면 그대로 끝낸다(호출 1회). 1분 주기 폴링용이며 --bgn/--end와는 '
+                 '함께 쓸 수 없다' % DETECT_PAGE_COUNT,
+        )
 
     def handle(self, *args, **options):
         bgn, end = self._resolve_range(options)
@@ -67,6 +79,9 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 '추적 중인 기업이 없습니다. 먼저 seed_companies를 실행하세요.'
             ))
+            return
+
+        if options['detect'] and not self._has_new(bgn, end, companies):
             return
 
         chunks = split_date_range(bgn, end)
@@ -115,6 +130,13 @@ class Command(BaseCommand):
                 '--days와 --bgn/--end는 함께 지정할 수 없습니다. 하나만 사용하세요.'
             )
 
+        if options.get('detect') and (bgn_opt or end_opt):
+            # --detect는 "최신 몇 건에 새 게 있나"를 보는 것이라 과거 구간과 의미가 맞지
+            # 않는다. 백필에 붙이면 사전 확인이 항상 통과해 호출만 1회 늘 뿐이다.
+            raise CommandError(
+                '--detect는 --bgn/--end와 함께 쓸 수 없습니다. 백필에는 사용하지 마세요.'
+            )
+
         if bgn_opt or end_opt:
             if not bgn_opt:
                 raise CommandError('--end만으로는 구간을 정할 수 없습니다. --bgn을 함께 지정하세요.')
@@ -154,6 +176,54 @@ class Command(BaseCommand):
             f'경고: 예상 DART 호출 약 {estimated:,}회로 일일 한도({DAILY_CALL_LIMIT:,}회)를 '
             f'위협하는 규모입니다. 구간을 나눠 여러 날에 걸쳐 실행하는 것을 권합니다.'
         ))
+
+    # --- 감지 -----------------------------------------------------------
+
+    def _has_new(self, bgn, end, companies):
+        """유형별 순회를 돌 가치가 있는지 **호출 1회로** 판단한다.
+
+        1분 주기 폴링(PLAN.md 9.3)의 호출량을 감당하기 위한 사전 확인이다.
+        2일 창을 유형 10종으로 훑으면 30회가 넘게 드는데, 하루 대부분의 실행은 새 공시가
+        없어 그 호출이 통째로 헛돈다. 최신 DETECT_PAGE_COUNT건을 1회만 받아 추적 기업의
+        미저장 공시가 있을 때만 본 순회로 넘어간다.
+
+        ## 왜 여기서 저장하지 않는가 (중요)
+
+        이 호출은 유형 필터가 없어 **공시유형을 알 수 없다.** 유형을 비운 채 저장하면
+        선별 정책이 뚫린다 — selection.evaluate()는 `disclosure_type in EXCLUDED_TYPES`로
+        제외를 판정하므로, 빈 문자열은 어디에도 걸리지 않고 그대로 TARGET이 된다.
+        제외됐어야 할 지분공시·기타공시가 요약 대상이 되고, 요약은 이 프로젝트에서 돈이
+        나가는 유일한 경로다. 그래서 여기서는 **판단만 하고 적재는 기존 유형별 순회에
+        맡긴다** — 유형은 항상 정확하게 채워진다.
+
+        ## 놓칠 수 있는 경우
+
+        호출 사이에 시장 전체 공시가 DETECT_PAGE_COUNT건을 넘으면 창 밖으로 밀려난 신규는
+        보이지 않는다(dart.latest_disclosures 참조). 하루 1회 도는 전체 폴링이 최종
+        안전망이므로, 이 경로만으로 수집 완결성을 보장하지 않는다.
+        """
+        items = latest_disclosures(f'{bgn:%Y%m%d}', f'{end:%Y%m%d}')
+        known = set(
+            Disclosure.objects.filter(
+                rcept_no__in=[item['rcept_no'] for item in items]
+            ).values_list('rcept_no', flat=True)
+        )
+        new_items = [
+            item for item in items
+            if item['corp_code'] in companies and item['rcept_no'] not in known
+        ]
+        if not new_items:
+            self.stdout.write(
+                f'감지: 최신 {len(items)}건에 추적 기업의 신규 공시 없음 (호출 1회)'
+            )
+            return False
+
+        shown = ', '.join(item['rcept_no'] for item in new_items[:5])
+        more = ' 외' if len(new_items) > 5 else ''
+        self.stdout.write(
+            f'감지: 신규 {len(new_items)}건 발견 — 유형별 순회로 넘어갑니다 ({shown}{more})'
+        )
+        return True
 
     # --- 수집 -----------------------------------------------------------
 
