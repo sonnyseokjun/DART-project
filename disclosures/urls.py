@@ -18,4 +18,6 @@ urlpatterns = [
     # '000660'(SK하이닉스)이 660으로 조회돼 404가 난다.
     path('companies/<str:stock_code>/', views.company_detail, name='company_detail'),
     path('disclosures/<str:rcept_no>/', views.disclosure_detail, name='disclosure_detail'),
+    # 목록 자동 갱신용. 로컬 DB만 읽는 작은 JSON이며 DART를 호출하지 않는다.
+    path('api/latest/', views.latest_status, name='latest_status'),
 ]

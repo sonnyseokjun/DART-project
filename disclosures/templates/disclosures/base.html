@@ -6,7 +6,9 @@
   <title>{% block title %}공시 쉽게 보기{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'disclosures/css/style.css' %}">
 </head>
-<body>
+{# data-live-endpoint 가 있으면 목록 화면이 스스로 갱신한다(live-updates.js).
+   주소를 여기 한 곳에만 두어, 스크립트가 URL 구조를 알지 않게 한다. #}
+<body data-live-endpoint="{% url 'disclosures:latest_status' %}">
   <header class="site-header">
     <div class="wrap">
       <a class="brand" href="{% url 'disclosures:sector_list' %}">
@@ -49,5 +51,8 @@
       </p>
     </div>
   </footer>
+  {# defer: 문서를 다 읽은 뒤 실행한다. 목록이 없는 화면에서는 스스로 아무것도
+     하지 않으므로 모든 페이지에 함께 실어도 무해하다. #}
+  <script src="{% static 'disclosures/js/live-updates.js' %}" defer></script>
 </body>
 </html>

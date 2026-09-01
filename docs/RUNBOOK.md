@@ -314,6 +314,8 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | 전체 폴링 수동 실행 | `./deploy/pipeline.sh --full` |
 | 파이프라인 로그 | `tail -f /var/log/dart/pipeline.log` |
 | 원문 못 받은 공시 확인 | `docker compose exec web python manage.py fetch_documents --stuck` |
+| 요약 못 만든 공시 확인 | `docker compose exec web python manage.py summarize_disclosures --stuck` |
+| 화면 갱신 간격 조정 | `.env`의 `REALTIME_POLL_INTERVAL_SECONDS` (기본 30초, `0`이면 끔) → `docker compose up -d` |
 | 재검증 (무료) | `docker compose exec web python manage.py revalidate_summaries` |
 | 백업 즉시 실행 | `./deploy/backup.sh` |
 | 메모리 확인 | `free -h && docker stats --no-stream` |
@@ -330,6 +332,41 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 30분 샘플러로는 이 서비스의 1순위 리스크(메모리 초과)가 발생하는 바로 그 순간을 볼 수 없다.
 
 ---
+
+### 7단계 적용 (준실시간화)
+
+기존 서버에 7단계를 올릴 때 순서다. `git pull` 만으로는 부족하다.
+
+```bash
+cd ~/DART-project
+git pull
+
+# 1. 시간대 (안 돼 있으면)
+sudo timedatectl set-timezone Asia/Seoul && sudo systemctl restart cron
+
+# 2. 컨테이너 재빌드 + 마이그레이션 (0008·0009)
+docker compose up -d --build
+docker compose exec -T web python manage.py migrate
+
+# 3. cron 교체 — 하루 1회에서 평일 낮 1분 주기로 바뀐다
+crontab deploy/crontab
+crontab -l
+
+# 4. 로그 회전 (이전에는 사실상 동작하지 않았다 → 2.9)
+sudo cp deploy/logrotate.conf /etc/logrotate.d/dart
+
+# 5. 손으로 한 번 돌려본다
+./deploy/pipeline.sh
+tail -20 /var/log/dart/pipeline.log
+```
+
+적용 뒤 하루 정도 지켜볼 것 세 가지다.
+
+| 볼 것 | 어떻게 | 정상 |
+|---|---|---|
+| DART 호출량 | `grep -c '감지:' /var/log/dart/pipeline.log` | 하루 1,000회 미만 |
+| 메모리 | `tail /var/log/dart/mem.log` | 가용 200MB 이상 |
+| LLM 비용 | `grep '실제 비용' /var/log/dart/pipeline.log` | 하루 $0.1 안팎 |
 
 ## 5. 장애 대응
 

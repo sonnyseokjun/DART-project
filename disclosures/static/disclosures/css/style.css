@@ -145,6 +145,17 @@ h3 { font-size: 16px; margin: 0 0 6px; }
    쓰지 않는다. 미검수 배지(회색 점선)와도 구분되어야 한다 — 그건 "사람이 안 봤다",
    이건 "AI가 아직 안 만들었다"로 뜻이 다르다. */
 .badge-pending { background: #eef4ff; color: #2c5aa0; border: 1px solid #b9cdf0; }
+
+/* 자동 갱신 알림. 잠깐 떴다 사라지므로 자리를 밀어내도 부담이 적다. */
+.live-note {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.8rem;
+  background: #eef4ff;
+  border: 1px solid #b9cdf0;
+  border-radius: 4px;
+  color: #2c5aa0;
+  font-size: 0.9rem;
+}
 .card-pending { border-left: 3px solid #b9cdf0; }
 .card-oneline-pending { color: #667; font-style: italic; }
 
