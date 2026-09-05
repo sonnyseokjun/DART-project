@@ -34,7 +34,15 @@ DC=/usr/bin/docker compose
 # 창 밖으로 밀려난 신규를 놓친다. 폴링이 몇 시간 멈췄다 재개할 때 생길 수 있다.
 # 이 실행이 최종 안전망이다 — 유형별 순회로 전 구간을 다시 훑어 누락을 줍고,
 # --detect가 채우지 못하는 공시유형 라벨도 여기서 보정된다.
-0  7 * * *  cd $PROJECT_DIR && ./deploy/pipeline.sh --full >> /var/log/dart/pipeline.log 2>&1
+#
+# 07:00이 아니라 07:05인 이유 (2026-09-03~05 실측):
+#   위 감지 폴링의 `0 0-8,19-23`(평일)과 `0 *`(주말)이 **07:00에도 걸린다.**
+#   같은 분에 두 줄이 뜨면 cron은 둘 다 띄우고, 먼저 flock을 잡은 쪽만 돈다.
+#   진 쪽은 "앞 실행이 아직 돌고 있어 건너뜁니다 (정상)"을 찍고 **종료 0으로** 끝난다.
+#   누가 이길지는 그때그때 다르다 — 09-03·09-04는 전체 폴링이, 09-05는 감지가 졌다.
+#   즉 **매일 둘 중 하나가 조용히 죽는데 로그로는 구분되지 않는다.**
+#   겹치지 않는 분으로 옮긴다.
+5  7 * * *  cd $PROJECT_DIR && ./deploy/pipeline.sh --full >> /var/log/dart/pipeline.log 2>&1
 
 # --- 재검증 (매일 새벽, LLM 미호출·무료) --------------------------------
 0  3 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py revalidate_summaries       >> /var/log/dart/revalidate.log 2>&1
