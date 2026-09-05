@@ -380,6 +380,68 @@ class PipelineScriptTest(TestCase):
         # 최종 안전망: 하루 1회 전체 폴링 (--detect가 놓친 것을 줍는다)
         self.assertRegex(crontab, r'pipeline\.sh --full')
 
+    # --- 일정 충돌 ------------------------------------------------------
+    #
+    # 위 테스트는 "전체 폴링 줄이 있는가"만 봤다. 있는데도 못 도는 경우를 놓쳤다.
+
+    CRON_LINE = re.compile(
+        r'^(?!#)(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*pipeline\.sh.*)$',
+        re.MULTILINE)
+
+    @staticmethod
+    def _expand(field, lo, hi):
+        """cron 필드 하나를 값 집합으로 편다 (`*` `a-b` `a,b` `*/n` 단일값)."""
+        values = set()
+        for part in field.split(','):
+            step = 1
+            if '/' in part:
+                part, raw_step = part.split('/')
+                step = int(raw_step)
+            if part == '*':
+                start, end = lo, hi
+            elif '-' in part:
+                start, end = (int(x) for x in part.split('-'))
+            else:
+                start = end = int(part)
+            values.update(range(start, end + 1, step))
+        return values
+
+    def _firings(self, minute, hour, dow):
+        """그 줄이 실제로 뜨는 (요일, 시, 분) 집합. 일요일은 0과 7 둘 다 쓰여 7을 접는다."""
+        return {(d % 7, h, m)
+                for d in self._expand(dow, 0, 7)
+                for h in self._expand(hour, 0, 23)
+                for m in self._expand(minute, 0, 59)}
+
+    def test_full_poll_never_collides_with_the_detect_runs(self):
+        """전체 폴링과 감지 폴링이 같은 분에 걸리면 안 된다.
+
+        같은 분에 두 줄이 걸리면 cron은 둘 다 띄우고, 먼저 flock을 잡은 쪽만 돈다.
+        진 쪽은 "앞 실행이 아직 돌고 있어 건너뜁니다 (정상)"를 찍고 **종료 0으로**
+        끝나므로 로그가 멀쩡해 보인다.
+
+        실제로 07:00에 겹쳐 있었다. `0 0-8,19-23`(평일)과 `0 *`(주말)이 7시를
+        포함하는데 전체 폴링도 `0 7`이었다. 누가 이기는지는 그때그때 달랐다 —
+        2026-09-03·09-04는 전체 폴링이, 09-05는 감지가 졌다. **매일 둘 중 하나가
+        죽었고 어느 쪽이 죽었는지는 로그로 구분되지 않았다.** 전체 폴링이 지는 날은
+        --detect가 놓친 공시를 줍는 최종 안전망이 통째로 없다.
+        """
+        full, detect = set(), set()
+        for minute, hour, _dom, _mon, dow, command in self.CRON_LINE.findall(
+                self._read('crontab')):
+            target = full if '--full' in command else detect
+            target |= self._firings(minute, hour, dow)
+
+        self.assertTrue(full, 'crontab에서 전체 폴링 줄을 찾지 못했다')
+        self.assertTrue(detect, 'crontab에서 감지 폴링 줄을 찾지 못했다')
+
+        overlap = sorted(full & detect)
+        self.assertFalse(
+            overlap,
+            '전체 폴링이 감지 폴링과 같은 분에 걸려 있다 — flock에 밀려 못 돈다. '
+            '겹치는 (요일,시,분) 예: %s' % overlap[:5],
+        )
+
 
 class SplitDateRangeTest(TestCase):
     """검색기간 3개월 한도(오류 코드 100) 회피용 날짜 분할 단위 테스트."""
