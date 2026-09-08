@@ -22,13 +22,16 @@
 추후 Celery 태스크로 옮길 때는 _summarize_one()을 그대로 태스크 본문으로 쓰면 된다.
 """
 import inspect
-from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
 from disclosures.models import MAX_SUMMARY_ATTEMPTS, Disclosure, DisclosureSummary
+from disclosures.retry_policy import (  # noqa: F401  (재수출)
+    SUMMARY_RETRY_BACKOFF_MINUTES,
+    due_summary_targets,
+)
 from disclosures.review_policy import MAX_REGENERATION_ATTEMPTS, should_regenerate
 from disclosures.selection import SelectionState
 from disclosures.summarizer import (
@@ -42,15 +45,6 @@ from disclosures.summarizer import (
     summarize_disclosure,
 )
 from disclosures.verification import AUTO_HIDDEN_REASON, blocking_warnings
-
-#: 요약 실패 후 다음 시도까지 기다리는 시간(분). 인덱스 = 지금까지 쌓인 시도 횟수 - 1.
-#:
-#: 원문 확보(fetch_documents.RETRY_BACKOFF_MINUTES)보다 짧고 성깁니다 — 이유가 둘이다.
-#:   1. 실패 성격이 다르다. 원문 미공개는 시간이 해결하지만, 요약 실패는 스키마 위반이나
-#:      원문 과대 같은 **결정적 원인**이 많아 그냥 다시 불러도 같은 결과가 나온다.
-#:   2. 재시도 비용이 다르다. 원문 확보는 DART 호출 한도만 쓰지만 요약은 실제 돈이다.
-#: 상한(MAX_SUMMARY_ATTEMPTS=4)까지 가도 건당 최대 4회, 약 $0.09에서 멈춘다.
-SUMMARY_RETRY_BACKOFF_MINUTES = (10, 60, 360)
 
 #: 재생성을 요청할 때 summarize_disclosure 에 넘길 키워드 이름.
 #: 이 키워드가 시그니처에 있어야 재생성 경로가 살아난다(아래 _regeneration_supported 참고).
@@ -229,25 +223,10 @@ class Command(BaseCommand):
             qs = qs[:options['limit']]
         return list(qs)
 
-    def _apply_retry_policy(self, queryset):
-        """실패 후 대기 중이거나 상한에 걸린 공시를 대상에서 뺀다.
-
-        대기 시간이 시도 횟수마다 달라 SQL 한 줄로 거르기 어렵다. 상한 미만인 것만
-        DB에서 좁힌 뒤(대부분 여기서 걸러진다) 대기 판정만 파이썬에서 한다.
-        """
-        now = timezone.now()
-        ready = []
-        for disclosure in queryset.filter(summary_attempts__lt=MAX_SUMMARY_ATTEMPTS):
-            attempts = disclosure.summary_attempts
-            if attempts and disclosure.summary_attempted_at:
-                index = min(attempts, len(SUMMARY_RETRY_BACKOFF_MINUTES)) - 1
-                due = disclosure.summary_attempted_at + timedelta(
-                    minutes=SUMMARY_RETRY_BACKOFF_MINUTES[index]
-                )
-                if now < due:
-                    continue
-            ready.append(disclosure)
-        return ready
+    @staticmethod
+    def _apply_retry_policy(queryset):
+        """실패 후 대기 중이거나 상한에 걸린 공시를 뺀다 — 판정은 retry_policy가 한다."""
+        return due_summary_targets(queryset)
 
     # --- 실패 기록 · 멈춘 건 -------------------------------------------
 
