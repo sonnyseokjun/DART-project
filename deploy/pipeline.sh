@@ -14,6 +14,9 @@
 # 사용법:
 #   ./deploy/pipeline.sh            # 감지 모드 — 신규가 없으면 1회 호출로 끝난다
 #   ./deploy/pipeline.sh --full     # 전체 폴링 — 유형 라벨 보정·누락 보강 (하루 1회)
+#
+# 감지 모드는 "신규 없음"이어도 곧바로 끝내지 않는다. 재시도를 기다리던 원문·요약이
+# 있으면 그것만 이어서 처리한다(아래 '재개' 참고).
 set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/home/ubuntu/DART-project}"
@@ -27,8 +30,9 @@ POLL_DAYS="${POLL_DAYS:-2}"
 FETCH_LIMIT="${FETCH_LIMIT:-5}"
 SUMMARIZE_LIMIT="${SUMMARIZE_LIMIT:-5}"
 
-# poll_dart가 "--detect로 봤는데 신규 없음"을 알리는 종료 코드.
-# poll_dart.NOTHING_NEW_EXIT_CODE와 같은 값이어야 한다.
+# "할 일 없음"을 알리는 종료 코드. 두 명령이 같은 값을 쓴다 —
+# poll_dart.NOTHING_NEW_EXIT_CODE(신규 공시 없음)와
+# pending_work.NOTHING_PENDING_EXIT_CODE(대기 중인 후속 작업 없음).
 NOTHING_NEW=9
 
 LOCK_FILE="${LOCK_FILE:-/tmp/dart-pipeline.lock}"
@@ -37,6 +41,9 @@ FULL=0
 if [ "${1:-}" = "--full" ]; then
     FULL=1
 fi
+
+# 신규는 없지만 대기 중이던 후속 작업만 이어서 도는 실행인지.
+RESUME=0
 
 log() {
     echo "[$(date -Is)] $*"
@@ -86,20 +93,41 @@ else
     set -e
 
     if [ "$rc" -eq "$NOTHING_NEW" ]; then
-        # 뒷단계를 건너뛰는 것이 이 스크립트의 핵심이다. 특히 fetch_documents는
-        # 원문이 아직 안 올라온 공시(DART [014])를 매번 다시 부르므로, 1분 주기에서
-        # 그대로 두면 하루 수천 번의 헛호출이 된다.
-        exit 0
-    fi
-    if [ "$rc" -ne 0 ]; then
+        # 신규가 없어도 곧바로 끝내면 안 된다. 재시도를 기다리던 공시까지 함께
+        # 건너뛰기 때문이다 — 2026-09-08에 원문 미공개(DART [014])로 5분 뒤 재시도가
+        # 잡혀 있던 공시가, 뒤이어 신규가 없었다는 이유만으로 8시간 반 동안 두 번째
+        # 시도를 못 받았다. 배경은 disclosures/retry_policy.py 첫 주석.
+        #
+        # 헛호출 방지는 여기가 아니라 그 사다리가 한다. 여기서는 "지금 처리할 수 있는
+        # 대기 건이 있는가"만 묻는다 — DB만 보므로 DART도 LLM도 부르지 않는다.
+        set +e
+        dart pending_work
+        pending_rc=$?
+        set -e
+
+        if [ "$pending_rc" -eq "$NOTHING_NEW" ]; then
+            exit 0
+        fi
+        if [ "$pending_rc" -ne 0 ]; then
+            log "대기 확인 실패 (종료 코드 $pending_rc) — 뒷단계를 진행하지 않습니다"
+            exit "$pending_rc"
+        fi
+        RESUME=1
+    elif [ "$rc" -ne 0 ]; then
         log "수집 실패 (종료 코드 $rc) — 뒷단계를 진행하지 않습니다"
         exit "$rc"
     fi
 fi
 
 # --- 선별 → 원문 → 요약 --------------------------------------------------
-log "신규 공시 처리 시작"
-dart apply_selection
+# 재개 실행은 apply_selection을 건너뛴다. 새로 수집한 공시가 없으니 선별 상태가
+# 달라질 수 없고, 1분마다 도는 경로라 프로세스 하나가 그대로 비용이다.
+if [ "$RESUME" -eq 1 ]; then
+    log "대기 중이던 후속 작업 재개 (신규 공시 없음)"
+else
+    log "신규 공시 처리 시작"
+    dart apply_selection
+fi
 dart fetch_documents --limit "$FETCH_LIMIT"
 dart summarize_disclosures --limit "$SUMMARIZE_LIMIT"
 log "파이프라인 완료"

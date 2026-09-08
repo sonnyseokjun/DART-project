@@ -17,32 +17,25 @@
 """
 import collections
 import time
-from datetime import timedelta
 
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from disclosures.dart import fetch_document, preprocess_document
 from disclosures.models import Disclosure
+# 재시도 정책의 단일 출처는 retry_policy다. pipeline.sh가 부르는 pending_work 명령이
+# 같은 정책을 봐야 하는데, 정책이 이 파일에 있으면 그 명령이 원문 확보 명령 전체를
+# 끌고 들어온다. 여기서 다시 내보내므로 fetch_command.MAX_FETCH_ATTEMPTS 같은
+# 기존 참조는 그대로 쓴다.
+from disclosures.retry_policy import (  # noqa: F401  (재수출)
+    MAX_FETCH_ATTEMPTS,
+    RETRY_BACKOFF_MINUTES,
+    split_fetch_targets,
+)
 from disclosures.selection import SelectionState
 
 # DART 서버 부하를 피하기 위한 호출 간 최소 간격(초).
 REQUEST_INTERVAL_SEC = 0.2
-
-#: 실패 후 다음 시도까지 기다리는 시간(분). 인덱스 = 지금까지 쌓인 시도 횟수 - 1.
-#:
-#: 목록에는 떴는데 원문이 아직 공개되지 않은 공시(DART `[014]`)가 이 값을 결정했다.
-#: 그 유형은 대개 몇 분~몇 시간 뒤에 올라오므로 처음엔 촘촘히, 갈수록 느슨하게 본다.
-#: 마지막 칸까지 쓰면 약 31시간에 걸쳐 6번 시도하고 멈춘다.
-#:
-#: 6단계까지는 이 장치가 없어도 됐다 — 파이프라인이 하루 1회라 재시도도 하루 1회였다.
-#: 7단계에서 평일 낮 1분마다 돌게 되면서 같은 공시를 **하루 1,440번** 부르게 되므로
-#: (PLAN.md 9.3) 상한이 선택이 아니라 필수가 됐다.
-RETRY_BACKOFF_MINUTES = (5, 15, 60, 360, 1440)
-
-#: 이 횟수만큼 실패하면 더 시도하지 않는다. 위 표의 길이보다 하나 크다 —
-#: 마지막 대기(24시간)를 보낸 뒤 한 번 더 시도하고 멈춘다는 뜻이다.
-MAX_FETCH_ATTEMPTS = len(RETRY_BACKOFF_MINUTES) + 1
 
 # tiktoken 인코딩. OpenAI 최신 모델 계열의 토크나이저.
 TIKTOKEN_ENCODING = 'o200k_base'
@@ -183,29 +176,10 @@ class Command(BaseCommand):
 
     # --- 재시도 정책 -----------------------------------------------------
 
-    def _apply_retry_policy(self, queryset):
-        """(지금 시도할 것, 대기 중, 상한 도달) 으로 나눈다.
-
-        대기 시간이 시도 횟수마다 달라 SQL 한 줄로 거르기 어렵다. 요약 대상 중
-        미확보분은 많아야 수백 건이라 파이썬에서 나누는 편이 읽기 쉽다.
-        """
-        now = timezone.now()
-        ready, waiting, stuck = [], 0, 0
-        for disclosure in queryset:
-            attempts = disclosure.raw_fetch_attempts
-            if attempts >= MAX_FETCH_ATTEMPTS:
-                stuck += 1
-                continue
-            if attempts and disclosure.raw_fetch_attempted_at:
-                index = min(attempts, len(RETRY_BACKOFF_MINUTES)) - 1
-                due = disclosure.raw_fetch_attempted_at + timedelta(
-                    minutes=RETRY_BACKOFF_MINUTES[index]
-                )
-                if now < due:
-                    waiting += 1
-                    continue
-            ready.append(disclosure)
-        return ready, waiting, stuck
+    @staticmethod
+    def _apply_retry_policy(queryset):
+        """(지금 시도할 것, 대기 중, 상한 도달) 으로 나눈다 — 판정은 retry_policy가 한다."""
+        return split_fetch_targets(queryset)
 
     def _record_failure(self, disclosure, exc):
         """실패를 기록하고 누적 시도 횟수를 돌려준다."""

@@ -368,6 +368,33 @@ tail -20 /var/log/dart/pipeline.log
 | 메모리 | `tail /var/log/dart/mem.log` | 가용 200MB 이상 |
 | LLM 비용 | `grep '실제 비용' /var/log/dart/pipeline.log` | 하루 $0.1 안팎 |
 
+### 7단계 후속 수정 적용 (재시도 재개 · 2026-09-09)
+
+신규가 없어도 재시도 대기 건이 있으면 이어서 돌게 하는 수정이다(PLAN.md 9.3).
+**`git pull`만으로는 반영되지 않는다** — 새 관리 명령 `pending_work`가 이미지 안에
+들어가야 하므로 재빌드가 필요하다. `pipeline.sh`는 호스트에서 도니 `git pull`이면 된다.
+
+```bash
+cd ~/DART-project
+git pull
+docker compose up -d --build          # pending_work가 이미지에 들어간다
+docker compose exec -T web python manage.py pending_work; echo "종료 코드: $?"
+```
+
+종료 코드 **9**면 지금 처리할 대기 건이 없다는 뜻이고, **0**이면 있다는 뜻이다.
+둘 다 정상이다. 다른 값이면 명령 자체가 실패한 것이므로 출력을 확인한다.
+마이그레이션은 없다(모델 변경 없음).
+
+적용 뒤 재시도가 실제로 불리는지는 이렇게 본다.
+
+```bash
+grep '대기 중이던 후속 작업 재개' /var/log/dart/pipeline.log
+```
+
+원문 미공개(`[014]`)로 밀린 공시가 있을 때만 찍힌다. 대기 건이 없는 평소에는 한 줄도
+남지 않는 것이 정상이다 — 이 줄이 매분 찍힌다면 무언가가 상한에 걸리지 않은 채
+계속 대기로 돌아오고 있다는 뜻이므로 `fetch_documents --stuck`을 확인한다.
+
 ## 5. 장애 대응
 
 ### 사이트가 안 열린다
@@ -403,6 +430,8 @@ tail -50 /var/log/dart/pipeline.log
 | `앞 실행이 아직 돌고 있어 건너뜁니다` | 정상. 앞 실행이 1분을 넘겼다 | 계속 반복되면 어느 단계가 느린지 확인 |
 | `flock 실행 실패` | `flock`이 없거나 잠금 파일을 못 연다 | `which flock` · `/tmp` 쓰기 권한 확인 |
 | `수집 실패 (종료 코드 N)` | DART 호출 오류 | 코드와 함께 `poll_dart` 로그 확인 |
+| `대기 확인 실패 (종료 코드 N)` | `pending_work`가 죽었다 (DB 접근 등) | 그 줄 위의 예외 확인 |
+| `대기 중이던 후속 작업 재개` | 정상. 밀렸던 원문·요약을 잇는다 | 매분 반복되면 `fetch_documents --stuck` |
 | 아무 줄도 없다 | cron이 안 돈다 | `crontab -l` · `systemctl status cron` · 서버 시간대(2.9) |
 
 잠금이 남아 영영 막히는 일은 없다. `flock`은 프로세스가 죽으면 커널이 잠금을
@@ -412,6 +441,11 @@ tail -50 /var/log/dart/pipeline.log
 
 목록에는 떴는데 원문이 아직 공개되지 않은 공시(DART `[014]`)가 있다. 재시도는
 간격을 벌려가며 6번까지만 하고 멈춘다(약 31시간). 멈춘 건은 이렇게 확인한다.
+
+> 이 "약 31시간"은 파이프라인이 재시도 시각에 실제로 도달할 때의 이야기다. 2026-09-08에
+> 그러지 못하는 것을 발견했다 — 신규가 없으면 스크립트가 원문 확보 단계 전에 끝나서
+> 재시도가 다음 07:05까지 밀렸다(PLAN.md 9.3). 지금은 `pending_work`가 대기 건을 보고
+> 이어 돌린다. 재시도가 며칠씩 늘어져 보이면 그 수정이 서버에 반영됐는지부터 확인할 것.
 
 ```bash
 docker compose exec web python manage.py fetch_documents --stuck

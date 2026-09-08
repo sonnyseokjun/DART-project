@@ -36,6 +36,7 @@ from disclosures.admin import (
 )
 from disclosures.management.commands import (
     fetch_documents as fetch_command,
+    pending_work as pending_work_command,
     poll_dart as poll_dart_command,
     summarize_disclosures as summarize_command,
 )
@@ -44,7 +45,9 @@ from disclosures.models import Company, Disclosure, DisclosureSummary, Sector
 from disclosures.templatetags.review_panel import (
     duplicate_of_label, evidence_field_label, has_key, highlight_terms,
 )
-from disclosures import review_policy, summarizer, units, verification, views
+from disclosures import (
+    retry_policy, review_policy, summarizer, units, verification, views,
+)
 from disclosures.review_policy import (
     MAX_REGENERATION_ATTEMPTS, ReviewCategory, should_regenerate,
 )
@@ -369,6 +372,63 @@ class PipelineScriptTest(TestCase):
         """요약은 돈이 나가는 유일한 경로다. 상한 없이 부르지 않는다."""
         script = self._read('pipeline.sh')
         self.assertRegex(script, r'summarize_disclosures --limit')
+
+    # --- 신규가 없을 때의 조기 종료 --------------------------------------
+    #
+    # 위 테스트들은 "신규 없음"을 알아채는지만 봤다. 알아챈 **뒤에 무엇을 건너뛰는지**는
+    # 보지 않았고, 거기서 재시도 대기 건이 함께 죽었다(PendingWorkResumeTest 참고).
+
+    def test_nothing_new_consults_pending_work_before_giving_up(self):
+        """신규가 없다고 곧바로 끝내면, 재시도를 기다리던 공시가 함께 죽는다.
+
+        원문 확보 실패(DART `[014]`)는 5분 뒤 재시도로 잡히는데, 그 사이 신규가
+        들어오지 않으면 스크립트가 원문 확보 단계에 **도달하지도 못한다.** 재시도
+        사다리가 아무리 정교해도 불리지 않으면 소용이 없다.
+        """
+        script = self._read('pipeline.sh')
+        branch = re.search(
+            r'if \[ "\$rc" -eq "\$NOTHING_NEW" \]; then(.*?)\n    elif ',
+            script, re.DOTALL)
+        self.assertIsNotNone(branch, 'pipeline.sh에서 "신규 없음" 분기를 찾지 못했다')
+
+        body = branch.group(1)
+        self.assertIn(
+            'pending_work', body,
+            '"신규 없음" 분기가 대기 중인 후속 작업을 확인하지 않는다',
+        )
+        self.assertLess(
+            body.index('pending_work'), body.index('exit 0'),
+            '대기 확인보다 exit 0이 먼저 온다 — 확인이 무의미하다',
+        )
+
+    def test_pending_work_shares_the_exit_code(self):
+        script = self._read('pipeline.sh')
+        match = re.search(r'^NOTHING_NEW=(\d+)$', script, re.MULTILINE)
+        self.assertIsNotNone(match, 'pipeline.sh에 NOTHING_NEW 정의가 없다')
+        self.assertEqual(
+            int(match.group(1)),
+            pending_work_command.NOTHING_PENDING_EXIT_CODE,
+            'pipeline.sh와 pending_work의 종료 코드 약속이 어긋났다',
+        )
+
+    def test_pending_exit_code_does_not_collide_with_command_error(self):
+        # 1(CommandError)과 겹치면 DB 오류를 "할 일 없음"으로 삼켜 조용히 멈춘다.
+        self.assertNotIn(pending_work_command.NOTHING_PENDING_EXIT_CODE, (0, 1))
+
+    def test_resume_run_skips_selection_but_still_fetches_and_summarizes(self):
+        """재개 실행은 선별만 건너뛴다. 원문·요약까지 건너뛰면 고친 의미가 없다."""
+        script = self._read('pipeline.sh')
+        guard = re.search(
+            r'if \[ "\$RESUME" -eq 1 \]; then(.*?)\nfi\n', script, re.DOTALL)
+        self.assertIsNotNone(guard, 'pipeline.sh에서 재개 분기를 찾지 못했다')
+
+        after = script[guard.end():]
+        # 새로 수집한 공시가 없으므로 선별 상태는 달라질 수 없다 — 건너뛴다.
+        self.assertIn('dart apply_selection', guard.group(1))
+        self.assertNotIn('dart apply_selection', after)
+        # 정작 밀려 있던 두 단계는 반드시 돈다.
+        self.assertIn('dart fetch_documents', after)
+        self.assertIn('dart summarize_disclosures', after)
 
     def test_crontab_calls_the_pipeline_and_keeps_a_full_poll(self):
         crontab = self._read('crontab')
@@ -4878,6 +4938,204 @@ class SummaryRetryLimitTest(TestCase):
         mock_summarize = self._run_failing(rcept_no='20260701000001')
 
         mock_summarize.assert_called_once()
+
+
+class PendingWorkResumeTest(TestCase):
+    """신규가 없어도 밀린 후속 작업은 이어서 처리한다 (2026-09-08 실측 결함).
+
+    `deploy/pipeline.sh`는 `poll_dart --detect`가 "신규 없음"을 돌려주면 뒷단계를
+    통째로 건너뛰고 끝냈다. 1분 주기의 헛호출을 막는 장치였는데, **재시도를 기다리던
+    공시까지 함께 건너뛰었다.**
+
+    실제로 겪은 일이다. 17:38에 감지된 공시의 원문이 아직 공개되지 않아(DART `[014]`)
+    5분 뒤 재시도로 잡혔지만, 그 뒤 신규가 들어오지 않아 **8시간 반 동안 두 번째
+    시도가 없었다.** 설계상 31시간에 6번인 사다리가 실제로는 다음 전체 폴링(07:05)까지
+    밀려 5일에 6번이 된다. 원문이 늦게 올라오는 유형에서는 7단계의 목표인
+    "접수 후 3분"이 성립하지 않는다.
+
+    폭주를 두 겹으로 막은 것이 원인이었다 — 바깥(스크립트의 조기 종료)이
+    안쪽(재시도 사다리)보다 거칠어서, 정교한 쪽이 일할 기회를 얻지 못했다.
+    바깥이 다시 거칠어지지 않도록 고정한다.
+    """
+
+    def setUp(self):
+        self.sector = Sector.objects.create(name='반도체', slug='semiconductor')
+        self.company = Company.objects.create(
+            sector=self.sector, corp_code=TRACKED_CORP,
+            stock_code='005930', name='삼성전자',
+        )
+
+    def _make(self, rcept_no='20260908800624', **fields):
+        defaults = dict(
+            report_name='최대주주등소유주식변동신고서', disclosure_type='거래소공시',
+            filed_at=date(2026, 9, 8), selection_state=SelectionState.TARGET,
+        )
+        defaults.update(fields)
+        return Disclosure.objects.create(
+            company=self.company, rcept_no=rcept_no,
+            dart_url=dart_viewer_url(rcept_no), **defaults
+        )
+
+    def _pending(self):
+        """pending_work를 돌려 (종료 코드, 출력)을 준다. 0이면 "할 일 있음"이다."""
+        out = StringIO()
+        try:
+            call_command('pending_work', stdout=out)
+        except SystemExit as exc:
+            return exc.code, out.getvalue()
+        return 0, out.getvalue()
+
+    @staticmethod
+    def _age(disclosure, field, minutes):
+        """마지막 시도 시각을 minutes분 전으로 당긴다(대기가 끝난 상황을 만든다)."""
+        Disclosure.objects.filter(pk=disclosure.pk).update(
+            **{field: timezone.now() - timedelta(minutes=minutes)}
+        )
+
+    # --- 아무것도 없을 때 -------------------------------------------------
+
+    def test_nothing_to_do_exits_with_the_agreed_code(self):
+        code, _ = self._pending()
+
+        self.assertEqual(code, pending_work_command.NOTHING_PENDING_EXIT_CODE)
+
+    def test_disclosure_outside_the_summary_scope_is_never_pending(self):
+        """선별에서 빠진 공시로 파이프라인을 깨우면 안 된다."""
+        self._make(selection_state=SelectionState.EXCLUDED)
+        self._make('20260908800625', selection_state=SelectionState.PENDING)
+
+        code, _ = self._pending()
+
+        self.assertEqual(code, pending_work_command.NOTHING_PENDING_EXIT_CODE)
+
+    # --- 원문 확보 대기 ---------------------------------------------------
+
+    def test_target_awaiting_its_first_fetch_is_pending(self):
+        self._make()
+
+        code, output = self._pending()
+
+        self.assertEqual(code, 0)
+        self.assertIn('원문 확보 1건', output)
+
+    def test_target_inside_the_backoff_window_is_not_pending(self):
+        """방금 실패한 건으로 매분 깨우면 고치기 전 폭주로 되돌아간다."""
+        target = self._make(raw_fetch_attempts=1)
+        self._age(target, 'raw_fetch_attempted_at',
+                  retry_policy.RETRY_BACKOFF_MINUTES[0] - 1)
+
+        code, _ = self._pending()
+
+        self.assertEqual(code, pending_work_command.NOTHING_PENDING_EXIT_CODE)
+
+    def test_target_becomes_pending_when_the_backoff_expires(self):
+        """이 테스트가 2026-09-08의 결함 자체다.
+
+        신규가 하나도 없어도, 대기가 끝난 재시도 건이 있으면 파이프라인이 다시 돌아야
+        한다. 이게 9를 돌려주면 그 공시는 다음 전체 폴링(07:05)까지 방치된다.
+        """
+        target = self._make(raw_fetch_attempts=1)
+        self._age(target, 'raw_fetch_attempted_at',
+                  retry_policy.RETRY_BACKOFF_MINUTES[0] + 1)
+
+        code, output = self._pending()
+
+        self.assertEqual(code, 0)
+        self.assertIn('원문 확보 1건', output)
+
+    def test_target_at_the_attempt_cap_is_not_pending(self):
+        """상한에 걸린 건은 영원히 깨우지 않는다 — 사람이 --retry-stuck으로 되살린다."""
+        target = self._make(
+            raw_fetch_attempts=retry_policy.MAX_FETCH_ATTEMPTS)
+        self._age(target, 'raw_fetch_attempted_at',
+                  retry_policy.RETRY_BACKOFF_MINUTES[-1] + 1)
+
+        code, output = self._pending()
+
+        self.assertEqual(code, pending_work_command.NOTHING_PENDING_EXIT_CODE)
+        self.assertIn('상한 1건', output)
+
+    # --- 요약 대기 --------------------------------------------------------
+
+    def test_fetched_but_unsummarized_target_is_pending(self):
+        self._make(raw_fetched=True, raw_content='원문 본문')
+
+        code, output = self._pending()
+
+        self.assertEqual(code, 0)
+        self.assertIn('요약 1건', output)
+
+    def test_summary_inside_the_backoff_window_is_not_pending(self):
+        """요약 재시도는 실제 돈이다. 대기 중에 깨우면 비용이 곧바로 는다."""
+        target = self._make(
+            raw_fetched=True, raw_content='원문 본문', summary_attempts=1)
+        self._age(target, 'summary_attempted_at',
+                  retry_policy.SUMMARY_RETRY_BACKOFF_MINUTES[0] - 1)
+
+        code, _ = self._pending()
+
+        self.assertEqual(code, pending_work_command.NOTHING_PENDING_EXIT_CODE)
+
+    def test_summary_becomes_pending_when_the_backoff_expires(self):
+        target = self._make(
+            raw_fetched=True, raw_content='원문 본문', summary_attempts=1)
+        self._age(target, 'summary_attempted_at',
+                  retry_policy.SUMMARY_RETRY_BACKOFF_MINUTES[0] + 1)
+
+        code, _ = self._pending()
+
+        self.assertEqual(code, 0)
+
+    def test_summary_at_the_attempt_cap_is_not_pending(self):
+        target = self._make(
+            raw_fetched=True, raw_content='원문 본문',
+            summary_attempts=models.MAX_SUMMARY_ATTEMPTS)
+        self._age(target, 'summary_attempted_at',
+                  retry_policy.SUMMARY_RETRY_BACKOFF_MINUTES[-1] + 1)
+
+        code, _ = self._pending()
+
+        self.assertEqual(code, pending_work_command.NOTHING_PENDING_EXIT_CODE)
+
+    def test_already_summarized_target_is_not_pending(self):
+        target = self._make(raw_fetched=True, raw_content='원문 본문')
+        DisclosureSummary.objects.create(
+            disclosure=target, one_line='한 줄', easy_explanation='설명',
+            why_important='이유',
+        )
+
+        code, _ = self._pending()
+
+        self.assertEqual(code, pending_work_command.NOTHING_PENDING_EXIT_CODE)
+
+    # --- 비용 -------------------------------------------------------------
+
+    def test_pending_work_calls_neither_dart_nor_llm(self):
+        """1분마다 도는 확인이다. 외부를 부르는 순간 그 자체가 폭주가 된다."""
+        self._make()
+
+        with patch('disclosures.dart.fetch_document') as mock_fetch, \
+                patch('disclosures.summarizer.summarize_disclosure') as mock_llm:
+            code, _ = self._pending()
+
+        self.assertEqual(code, 0)
+        mock_fetch.assert_not_called()
+        mock_llm.assert_not_called()
+
+    # --- 정책의 단일 출처 --------------------------------------------------
+
+    def test_policy_has_a_single_owner(self):
+        """두 명령과 pending_work가 같은 정책을 봐야 한다.
+
+        값이 갈라지면 스크립트는 "할 일 있음"으로 깨우는데 명령은 "아직 대기"라며
+        아무것도 하지 않는, 매분 헛도는 상태가 된다.
+        """
+        self.assertIs(fetch_command.RETRY_BACKOFF_MINUTES,
+                      retry_policy.RETRY_BACKOFF_MINUTES)
+        self.assertIs(fetch_command.MAX_FETCH_ATTEMPTS,
+                      retry_policy.MAX_FETCH_ATTEMPTS)
+        self.assertIs(summarize_command.SUMMARY_RETRY_BACKOFF_MINUTES,
+                      retry_policy.SUMMARY_RETRY_BACKOFF_MINUTES)
 
 
 class SummarizeDisclosuresCommandTest(TestCase):
