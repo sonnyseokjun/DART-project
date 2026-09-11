@@ -4797,6 +4797,64 @@ class FetchRetryLimitTest(TestCase):
             fetch_command.RETRY_BACKOFF_MINUTES[0],
         )
 
+    # --- 사다리의 모양 ---------------------------------------------------
+    #
+    # 위 테스트는 "간격이 넓어지는가"만 봤다. **어디서 넓어지는가**는 보지 않았고,
+    # 거기에 사용자가 체감하는 지연이 통째로 들어 있었다. 간격은 곧 "원문이 올라온 뒤
+    # 우리가 알아채기까지"의 최악값이다 — 60분 칸에 걸리면 원문이 1분 뒤 올라와도
+    # 59분을 더 기다린다(2026-09-09 실제 사례, PLAN.md 9.3).
+
+    def _worst_gap_within(self, minutes):
+        """`minutes` 안에 놓인 칸 중 가장 넓은 간격."""
+        gaps, elapsed = [], 0
+        for gap in fetch_command.RETRY_BACKOFF_MINUTES:
+            if elapsed >= minutes:
+                break
+            gaps.append(gap)
+            elapsed += gap
+        return max(gaps)
+
+    def test_first_half_hour_is_checked_every_minute(self):
+        """원문은 대개 금방 올라온다. 확률이 몰린 앞쪽에 예산을 쓴다."""
+        self.assertLessEqual(
+            self._worst_gap_within(30), 1,
+            '첫 30분에 1분보다 긴 공백이 있다 — 그만큼 노출이 늦어진다',
+        )
+
+    def test_no_long_blind_gap_in_the_first_two_hours(self):
+        """두 시간까지는 5분 안에 한 번씩은 확인한다."""
+        self.assertLessEqual(self._worst_gap_within(120), 5)
+
+    def test_ladder_gives_up_within_about_a_day(self):
+        """영영 매달리지 않는다. 하루를 넘기면 그건 우리가 풀 문제가 아니다."""
+        total = sum(fetch_command.RETRY_BACKOFF_MINUTES)
+        self.assertLessEqual(total, 60 * 25, '사다리가 하루를 크게 넘긴다')
+        self.assertGreaterEqual(total, 60 * 12, '사다리가 너무 일찍 포기한다')
+
+    def test_ladder_fits_the_dart_call_budget(self):
+        """재시도 1회 = DART 호출 1회다. 한도 안에서 써야 한다.
+
+        하루 한도 20,000회, 실측 사용량 614회(3%). 공시 하나가 사다리를 끝까지
+        타도 그 여유를 의미 있게 갉아먹지 않는 선을 지킨다 — 동시에 20건이 밀려도
+        20 × 상한이 한도의 10% 안이어야 한다.
+        """
+        daily_cap, measured_usage = 20_000, 614
+        worst_case = 20 * fetch_command.MAX_FETCH_ATTEMPTS
+        self.assertLess(
+            measured_usage + worst_case, daily_cap * 0.10,
+            '밀린 공시가 몰리면 DART 한도를 위협한다',
+        )
+
+    def test_the_old_sparse_ladder_would_fail_these(self):
+        """되돌림 방지. 옛 배치(5, 15, 60, 360, 1440)가 왜 안 되는지 남겨 둔다.
+
+        간격이 넓어지기만 하면 위 test_wait_grows_with_each_failure는 통과한다.
+        그 테스트만으로는 성긴 사다리를 막지 못했다는 것이 이 테스트의 요점이다.
+        """
+        old = (5, 15, 60, 360, 1440)
+        self.assertEqual(list(old), sorted(old))      # 옛 배치도 이건 통과했다
+        self.assertGreater(old[0], 1, '옛 배치의 첫 칸이 이미 5분이었다')
+
     # --- 상한 -----------------------------------------------------------
 
     def test_stops_at_the_limit(self):
