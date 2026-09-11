@@ -119,6 +119,27 @@ else
     fi
 fi
 
+# --- 요약 구간 메모리 표본 ----------------------------------------------
+# 여기까지 왔다는 것은 실제로 처리할 일이 있다는 뜻이다 - 헛도는 실행(신규 없음 ·
+# 대기 없음)은 위에서 이미 끝났다.
+#
+# 왜 따로 재나: mem.log는 30분마다 표본을 뜨는데(deploy/crontab) 실행이 20초대에
+# 끝나 그 사이에 걸리지 않는다. 7단계 실측에서 지연·비용은 채워졌는데 요약 중
+# 메모리 피크만 끝내 비어 있던 이유가 이것이다(PLAN.md 13장 1번). 표본 간격을
+# 줄이면 하루 43,200줄이 쌓이므로, 일이 있는 실행에서만 2초 간격으로 재고
+# **최저 가용 한 줄만** 남긴다.
+#
+# 300회(10분)에서 스스로 멈춘다. 스크립트가 강제 종료돼 trap이 돌지 못해도
+# 표본기가 영원히 남지 않게 하는 상한이다.
+MEM_SAMPLES="$(mktemp)"
+for _ in $(seq 300); do free -m | awk 'NR==2 {print $7}'; sleep 2; done \
+    >> "$MEM_SAMPLES" &
+MEM_SAMPLER=$!
+# `|| true`가 없으면 안 된다. set -e 아래에서는 trap 안의 kill이 실패하는 순간
+# 뒤처리(rm)가 끊기고, 무엇보다 **성공한 실행이 종료 코드 1로 끝난다.** 아래에서
+# 이미 죽인 뒤라 여기서 kill이 실패하는 것이 오히려 정상 경로다.
+trap 'kill "$MEM_SAMPLER" 2>/dev/null || true; rm -f "$MEM_SAMPLES"' EXIT
+
 # --- 선별 → 원문 → 요약 --------------------------------------------------
 # 재개 실행은 apply_selection을 건너뛴다. 새로 수집한 공시가 없으니 선별 상태가
 # 달라질 수 없고, 1분마다 도는 경로라 프로세스 하나가 그대로 비용이다.
@@ -130,4 +151,12 @@ else
 fi
 dart fetch_documents --limit "$FETCH_LIMIT"
 dart summarize_disclosures --limit "$SUMMARIZE_LIMIT"
+
+# 최저 가용만 뽑는다. `sort -n | head -1`은 쓰지 않는다 - head가 먼저 닫으면 sort가
+# SIGPIPE로 죽고, 이 스크립트는 pipefail이라 그 순간 파이프라인 전체가 실패한다.
+kill "$MEM_SAMPLER" 2>/dev/null || true
+mem_min="$(awk 'NR==1 || $1 < m {m=$1} END {if (NR) print m}' "$MEM_SAMPLES")"
+if [ -n "$mem_min" ]; then
+    log "메모리 최저 가용 ${mem_min}MB (표본 $(wc -l < "$MEM_SAMPLES")개 · 2초 간격)"
+fi
 log "파이프라인 완료"
