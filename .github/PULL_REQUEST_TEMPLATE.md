@@ -1,6 +1,8 @@
 <!--
 PR 제목 예시: [FEAT] 공시 수집 파이프라인에 페이지네이션 추가
-본문의 주석(<!-- -->)은 지우고 작성해주세요.
+
+안내 주석은 제출 전에 모두 지워주세요.
+해당 없는 섹션은 지우지 말고 "해당 없음"이라고 적어주세요.
 -->
 
 ## 작업 요약
@@ -18,6 +20,7 @@ Closes #
 - [ ] 신규 기능
 - [ ] 리팩터링 (동작 변경 없음)
 - [ ] 문서
+- [ ] 배포 / 운영 구성 (`deploy/`, cron, Docker, Caddy)
 - [ ] 개발 환경 / 설정 / CI
 - [ ] 테스트
 - [ ] Breaking change (기존 동작·스키마·API 호환성 깨짐)
@@ -29,8 +32,8 @@ Closes #
 
 ## 테스트 방법
 
-```powershell
-.\venv\Scripts\python.exe manage.py test disclosures
+```bash
+./venv/Scripts/python.exe manage.py test disclosures
 ```
 
 <!-- 수동 검증이 필요하다면 재현 절차를 적어주세요 -->
@@ -50,7 +53,13 @@ Closes #
 - [ ] 모델 필드·admin에 한국어 `verbose_name`을 붙였다 (주석·docstring도 한국어)
 - [ ] PLAN.md와 어긋나는 아키텍처 변경이 없다 (있다면 PLAN.md도 함께 갱신했다)
 - [ ] 사용자 요청 경로에서 DART API를 직접 호출하지 않는다
+- [ ] LLM 호출 횟수가 늘지 않는다 (요약은 공시당 1회 생성 후 재사용)
 - [ ] 요약을 노출하는 화면에 DART 원문 링크와 면책 문구를 병기했다 (해당 시)
+- [ ] 새 실패 경로를 추가했다면 `disclosures/retry_policy.py`에 시도 상한을 함께 뒀다
+- [ ] cron·`deploy/pipeline.sh`를 바꿨다면 같은 분 중복 실행과 재시도 대기 건의
+      조기 종료를 확인했다 (PLAN.md 9.3 주의 3·4)
+- [ ] 배포·운영 구성을 바꿨다면 PLAN.md 9.2/9.3 · DEPLOY.md · `docs/RUNBOOK.md` 중
+      해당 문서를 갱신했다
 - [ ] 비밀키·API 키·`.env` 값을 커밋하지 않았다
 - [ ] 디버그용 코드(`print`, 주석 처리된 코드)를 정리했다
 
