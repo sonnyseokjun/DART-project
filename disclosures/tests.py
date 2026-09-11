@@ -430,6 +430,74 @@ class PipelineScriptTest(TestCase):
         self.assertIn('dart fetch_documents', after)
         self.assertIn('dart summarize_disclosures', after)
 
+    # --- 요약 구간 메모리 표본 ------------------------------------------
+    #
+    # 7단계에서 지연·비용은 실측됐는데 메모리 피크만 끝내 비어 있었다. mem.log가
+    # 30분 간격이라 20초짜리 실행에 걸리지 않았기 때문이다(PLAN.md 13장 1번).
+    # 스크립트가 직접 재게 했으므로, 그 표본기가 조용히 망가지지 않도록 묶어 둔다.
+
+    def _sampler_region(self):
+        """표본기 시작 ~ 최저값 집계 사이의 본문."""
+        script = self._read('pipeline.sh')
+        start = script.index('MEM_SAMPLES="$(mktemp)"')
+        end = script.index('mem_min=')
+        return script, script[start:end]
+
+    def test_memory_sampler_wraps_the_paid_steps(self):
+        """재는 구간이 원문 확보·요약을 감싸야 피크가 잡힌다."""
+        _script, region = self._sampler_region()
+        self.assertIn('dart fetch_documents', region)
+        self.assertIn('dart summarize' + '_disclosures', region)
+
+    def test_memory_sampler_does_not_run_on_idle_passes(self):
+        """헛도는 실행은 매분 온다. 거기까지 표본기를 띄우면 그게 상시 부하다.
+
+        조기 종료(신규 없음 · 대기 없음)는 표본기 시작보다 **앞에서** 끝나야 한다.
+        """
+        script = self._read('pipeline.sh')
+        self.assertLess(
+            script.index('exit 0'), script.index('MEM_SAMPLES="$(mktemp)"'),
+            '표본기가 조기 종료보다 먼저 시작된다 — 할 일 없는 실행에도 따라붙는다',
+        )
+
+    def test_memory_sampler_loop_is_bounded(self):
+        """무한 루프면 강제 종료 시 표본기만 살아남아 영원히 돈다."""
+        _script, region = self._sampler_region()
+        self.assertNotIn('while :', region, '표본 루프에 상한이 없다')
+        self.assertRegex(region, r'for _ in \$\(seq \d+\)')
+
+    def test_memory_minimum_is_taken_without_a_pipe(self):
+        """`sort -n | head -1`로 뽑으면 안 된다.
+
+        head가 먼저 닫으면 sort가 SIGPIPE(141)로 죽고, 이 스크립트는 pipefail이라
+        **성공한 실행이 그 순간 실패로 끝난다.** 파이프 없이 한 번에 훑는다.
+        """
+        script = self._read('pipeline.sh')
+        line = next(ln for ln in script.splitlines() if ln.startswith('mem_min='))
+        # awk 프로그램 안의 `||`(논리 합)는 파이프가 아니다. 따옴표 안을 걷어내고 본다.
+        outside = re.sub(r"'[^']*'", '', line)
+        self.assertNotIn('|', outside, '최저값 집계에 파이프를 쓰면 pipefail에 걸린다')
+        self.assertNotIn('sort', outside)
+        self.assertIn('$MEM_SAMPLES', line)
+
+    def test_sampler_cleanup_cannot_change_the_exit_code(self):
+        """trap 안의 kill이 실패해도 종료 코드가 바뀌면 안 된다.
+
+        set -e 아래에서는 trap의 kill이 실패하는 순간 뒤처리가 끊기고 스크립트가
+        1로 끝난다 — 성공한 실행이 cron 눈에는 실패로 보인다. 본문에서 이미 죽인
+        뒤라 여기서 kill이 실패하는 것이 오히려 정상 경로다.
+        """
+        script = self._read('pipeline.sh')
+        trap = next(ln for ln in script.splitlines() if ln.startswith('trap '))
+        self.assertIn('MEM_SAMPLER', trap)
+        self.assertIn('|| true', trap, 'trap의 kill이 종료 코드를 오염시킨다')
+        self.assertIn('rm -f', trap, '표본 파일을 지우지 않는다')
+
+    def test_memory_minimum_is_logged(self):
+        """재기만 하고 남기지 않으면 30분 표본과 다를 게 없다."""
+        script = self._read('pipeline.sh')
+        self.assertRegex(script, r'log "메모리 최저 가용 \$\{mem_min\}MB')
+
     def test_crontab_calls_the_pipeline_and_keeps_a_full_poll(self):
         crontab = self._read('crontab')
         # 적응형 주기: 평일 업무시간은 분 단위
