@@ -83,3 +83,11 @@ Django 독립적인 얇은 함수 모음. 오류는 `DartApiError(status, messag
 
 - 모델 필드·admin에는 한국어 `verbose_name`을 붙인다. 주석·docstring·커밋 메시지도 한국어.
 - 서비스 요약 출력에는 항상 DART 원문 링크(`dart_viewer_url`)를 병기하고, 투자 자문이 아니라는 면책 문구를 UI에 상시 노출한다(PLAN.md 1.4, 5.3).
+
+### 깃 워크플로우
+
+- **이슈와 PR은 반드시 `.github/ISSUE_TEMPLATE.md`·`.github/PULL_REQUEST_TEMPLATE.md`의 구조를 그대로 따라 작성한다.** 섹션을 임의로 지우거나 순서를 바꾸지 말고, 해당 없는 섹션에는 "해당 없음"이라고 적는다. 안내 주석(`<!-- -->`)은 제출 전에 지운다.
+- 제목에는 `[BUG]`·`[FEAT]`·`[TASK]` 접두어를 붙인다.
+- PR 본문에는 `Closes #번호`로 이슈를 연결한다.
+- 파일을 수정하기 전에 브랜치를 만든다. `main`에서는 편집하지 않는다. 브랜치 이름은 `유형/주제` 형태를 쓴다(`fix/stage7-exposure-latency`, `docs/github-templates`).
+- 템플릿 파일의 위치는 GitHub이 자동으로 읽는 `.github/`다. 다른 곳으로 옮기면 이슈·PR 작성 화면이 빈 칸으로 뜬다.
