@@ -396,6 +396,35 @@ grep '대기 중이던 후속 작업 재개' /var/log/dart/pipeline.log
 남지 않는 것이 정상이다 — 이 줄이 매분 찍힌다면 무언가가 상한에 걸리지 않은 채
 계속 대기로 돌아오고 있다는 뜻이므로 `fetch_documents --stuck`을 확인한다.
 
+### 재시도 만기 오차 수정 적용 (2026-09-16)
+
+1분 간격으로 설계한 칸이 실제로는 2분마다 돌고 있었다. 만기 판정이 시도 시각의 초까지
+세는데 cron은 매분 00초에만 떠서, 만기가 분 중간에 걸리면 그 눈금을 통째로 버렸다
+(PLAN.md 9.3). 시도 시각의 초를 버리도록 고쳤다.
+
+**재빌드가 필요하다.** `disclosures/retry_policy.py`가 이미지 안에 들어간다.
+
+```bash
+cd ~/DART-project
+git pull
+docker compose up -d --build
+```
+
+마이그레이션은 없다(모델 변경 없음). 적용 뒤 다음 `[014]` 사례에서 이렇게 확인한다.
+
+```bash
+grep '메모리 최저 가용' /var/log/dart/pipeline.log | tail -20
+```
+
+원문 미공개로 재시도가 걸린 구간의 시각이 **1분 간격**이면 정상이다. 2분 간격이면
+수정이 반영되지 않은 것이므로 재빌드가 실제로 됐는지 확인한다.
+
+```bash
+docker compose exec -T web python -c "import inspect, django; django.setup(); from disclosures import retry_policy; print('second=0' in inspect.getsource(retry_policy.is_retry_due))"
+```
+
+`True`가 나오면 반영된 것이다.
+
 ### 요약 중 메모리 피크 측정 적용 (2026-09-11)
 
 `mem.log`는 30분 간격이라 20초짜리 요약 실행을 잡지 못한다. `pipeline.sh`가 일이 있는

@@ -20,7 +20,7 @@ from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.utils import timezone
 from django.urls import reverse
 
@@ -4917,6 +4917,95 @@ class FetchRetryLimitTest(TestCase):
         mock_fetch = self._run_failing(rcept_no='20260701000001')
 
         mock_fetch.assert_called_once()
+
+
+class RetryDueMinuteBoundaryTest(SimpleTestCase):
+    """만기 판정이 cron의 분 눈금과 어긋나지 않는지 (이슈 #38 · PLAN.md 9.3).
+
+    사다리는 분 단위인데 `attempted_at`에는 초가 붙는다. cron은 매분 00초에만 뜨므로,
+    만기가 분 중간에 걸리면 **그 분이 통째로 버려지고 다음 분이 첫 기회가 된다.**
+    2026-09-15에 1분 칸이 2분마다 도는 것으로 실측됐다.
+
+    아래 시뮬레이션이 그 상황을 그대로 만든다. 핵심은 **판정 시각이 기록 시각보다
+    이르다**는 것이다 - `deploy/pipeline.sh`가 `pending_work`를 먼저 부르고
+    `fetch_documents`를 나중에 부르며 둘은 별도 프로세스이므로, 어긋남은 지터가 아니라
+    구조적이다. 그래서 두 지연을 다른 값으로 둔다.
+    """
+
+    #: cron이 뜬 뒤 `pending_work`가 "대기가 끝났는가"를 묻기까지 (앞선다)
+    CHECK_LAG = timedelta(seconds=4)
+    #: cron이 뜬 뒤 `fetch_documents`가 실패를 기록하기까지 (뒤따른다)
+    RECORD_LAG = timedelta(seconds=9)
+
+    def setUp(self):
+        self.start = timezone.make_aware(datetime(2026, 9, 15, 14, 0))
+
+    def _simulate(self, backoff, minutes):
+        """cron이 매분 00초에 뜨는 상황을 모사해, 시도가 일어난 분을 돌려준다."""
+        attempts, attempted_at, fired = 0, None, []
+        for tick in range(minutes + 1):
+            now = self.start + timedelta(minutes=tick) + self.CHECK_LAG
+            if retry_policy.is_retry_due(attempts, attempted_at, backoff, now):
+                attempts += 1
+                attempted_at = (
+                    self.start + timedelta(minutes=tick) + self.RECORD_LAG)
+                fired.append(tick)
+        return fired
+
+    def test_a_due_time_mid_minute_does_not_waste_the_tick(self):
+        """만기가 14:18:08이어도 14:18:00 실행이 잡아야 한다.
+
+        이것이 실측된 결함 그 자체다. 초를 그대로 두면 8초가 모자라 이 실행이 그냥
+        지나가고, 다음 기회는 1분 뒤가 된다 - 1분 칸이 2분이 되는 이유.
+        """
+        attempted_at = self.start.replace(minute=17, second=8)
+        now = self.start.replace(minute=18) + self.CHECK_LAG
+
+        self.assertTrue(
+            retry_policy.is_retry_due(1, attempted_at, (1,), now),
+            '초 때문에 만기가 밀려 cron 한 눈금을 통째로 버린다',
+        )
+
+    def test_never_retries_within_the_same_minute(self):
+        """초를 버린다고 같은 분에 두 번 시도해서는 안 된다."""
+        attempted_at = self.start.replace(minute=17, second=8)
+
+        for second in (9, 30, 59):
+            now = self.start.replace(minute=17, second=second)
+            self.assertFalse(
+                retry_policy.is_retry_due(1, attempted_at, (1,), now),
+                f'14:17:{second}에 같은 분 재시도가 허용됐다',
+            )
+
+    def test_one_minute_rungs_fire_every_minute(self):
+        """1분 칸은 실제로 1분마다 돌아야 한다. 실측에서는 2분이었다."""
+        fired = self._simulate((1,) * 30, minutes=30)
+
+        self.assertEqual(
+            fired, list(range(31)),
+            '1분 칸이 매분 돌지 않는다 - 실측된 2분 주기 결함이 남아 있다',
+        )
+
+    def test_the_real_ladder_keeps_its_designed_length(self):
+        """사다리 전체가 설계값(24시간)에 맞아야 한다. 실측에서는 약 25시간이었다."""
+        backoff = retry_policy.RETRY_BACKOFF_MINUTES
+        fired = self._simulate(backoff, minutes=60 * 26)
+
+        self.assertEqual(
+            len(fired), retry_policy.MAX_FETCH_ATTEMPTS,
+            '상한까지 가지 못했거나 넘어섰다',
+        )
+        self.assertEqual(
+            fired[-1], sum(backoff),
+            '마지막 시도 시각이 사다리 합(24시간)과 어긋난다 - 눈금이 새고 있다',
+        )
+
+    def test_the_summary_ladder_gets_the_same_fix(self):
+        """요약 재시도도 같은 함수를 쓴다. 10분 칸이 11분이 되면 안 된다."""
+        backoff = retry_policy.SUMMARY_RETRY_BACKOFF_MINUTES
+        fired = self._simulate(backoff, minutes=backoff[0] + 1)
+
+        self.assertEqual(fired[:2], [0, backoff[0]])
 
 
 class SummaryRetryLimitTest(TestCase):
