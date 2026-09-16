@@ -182,7 +182,31 @@ cd ~/DART-project
 
 cp .env.example .env
 nano .env          # 아래 3.1의 항목을 채운다
+```
 
+**채운 뒤 반드시 점검한다.** 값이 잘못돼도 서버는 정상적으로 뜨기 때문에, 이 자리에서
+걸러내지 않으면 한참 뒤에야 드러난다. 아래는 **키 값을 화면에 출력하지 않는다.**
+
+```bash
+echo "=== 빈 항목 (REALTIME_POLL_INTERVAL_SECONDS 외에는 없어야 한다) ==="
+grep -E '^[A-Z0-9_]+=$' .env
+
+echo "=== 윈도우 줄바꿈(CR)이 섞였나 — 0이어야 한다 ==="
+grep -c $'\r' .env
+
+echo "=== DART 키 형식 — 길이 40 / 16진수 예 ==="
+awk -F= '/^DART_API_KEY=/{printf "길이: %d / 16진수: %s\n", length($2), ($2 ~ /^[0-9a-f]+$/ ? "예" : "아니오")}' .env
+
+echo "=== 도메인 3항목 — 아래 '형식이 서로 다르다' 참고 ==="
+grep -E '^(SITE_DOMAIN|DJANGO_ALLOWED_HOSTS|DJANGO_CSRF_TRUSTED_ORIGINS)=' .env
+```
+
+> 2026-09-16 재구축 리허설에서 **`DART_API_KEY`를 채우지 않은 채로 넘어갔다**(이슈 #42).
+> 예시 파일에 안내 문구가 들어 있어 이미 채운 것처럼 보였고, 다른 키들은 비어 있어
+> 대비돼 더 그랬다. 서버도 사이트도 정상이었고 **파이프라인이 처음 돌 때서야**
+> `DartApiError: [010] 등록되지 않은 인증키`로 드러났다. 예시 파일은 그 뒤 비웠다.
+
+```bash
 mkdir -p data
 sudo chown -R 1000:1000 data     # 컨테이너가 uid 1000으로 돈다
 
@@ -277,6 +301,7 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | `S3_BACKUP_BUCKET` | `dart-project-backup` | 백업 버킷 이름 |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | | 백업 전용 IAM 사용자 |
 | `AWS_DEFAULT_REGION` | `ap-northeast-2` | |
+| `REALTIME_POLL_INTERVAL_SECONDS` | `30` | 화면 자동 갱신 간격(초). `0`이면 끔. 7단계에서 추가됐다 |
 
 `DJANGO_DEBUG` · `DJANGO_BEHIND_HTTPS_PROXY` · `DJANGO_STATIC_MANIFEST` · `DJANGO_DB_PATH`는
 `docker-compose.yml`이 고정하므로 `.env`에 적지 않는다.
@@ -539,6 +564,36 @@ docker compose exec web python manage.py fetch_documents --retry-stuck
 시도 기록을 지워 다음 실행에서 처음부터 다시 시도한다. 특정 1건만 지금 당장
 다시 받으려면 `--rcept-no`를 쓴다 — 대기를 건너뛴다.
 
+### 컨테이너가 계속 재시작한다
+
+`docker compose ps`의 STATUS가 `Restarting (1)`을 반복하면 `docker compose logs web --tail 30`
+으로 마지막 예외를 본다. 재구축 리허설(이슈 #42)에서 만난 둘이 대표적이다.
+
+| 로그의 마지막 줄 | 원인 | 조치 |
+|---|---|---|
+| `ValueError: invalid literal for int() with base 10: ''` | `.env`의 정수 항목이 빈 값 | 값을 채우거나 그 줄을 지운다. `config.settings._int_env`가 빈 값을 기본값으로 떨어뜨리므로 지금은 이 오류가 나지 않아야 한다 |
+| `django.db.utils.OperationalError: unable to open database file` | **`./data`가 root 소유** | `ls -ld data`로 확인 후 `sudo chown -R 1000:1000 data`. 컨테이너는 uid 1000으로 돈다 |
+
+두 번째는 **증상이 원인을 가리키지 않는다.** "권한 없음"이 아니라 "DB 파일을 열 수 없다"로
+나와 경로나 디스크 문제로 오인하기 쉽다. 호스트에 `data/`가 없는 상태로 기동하면 도커가
+바인드 마운트 대상을 root 소유로 만들기 때문에 생긴다(`Dockerfile`의 `USER app` 주석 참조).
+
+### 파이프라인 로그가 아예 없다
+
+`/var/log/dart/pipeline.log`가 **파일째 없으면** cron이 파이프라인을 한 번도 돌리지 못한
+것이다. crontab의 각 줄은 `>> /var/log/dart/pipeline.log`로 끝나는데, 셸은 명령을 실행하기
+**전에** 리다이렉션을 처리한다. 디렉터리가 없으면 그 자리에서 실패하고 `pipeline.sh`는
+실행조차 되지 않는다.
+
+```bash
+ls -ld /var/log/dart || sudo mkdir -p /var/log/dart && sudo chown ubuntu:ubuntu /var/log/dart
+```
+
+**아무 신호도 나지 않는다는 점이 이 실패의 성격이다.** cron은 실패 출력을 계정 메일로
+보내는데 새 Ubuntu에는 MTA가 없어 버려진다. syslog에는 "명령을 실행했다"만 남는다.
+사이트는 기존 데이터로 멀쩡히 뜨므로, 며칠 뒤 공시가 갱신되지 않은 것을 보고서야 안다.
+2026-09-16 재구축 리허설에서 재현했다(이슈 #42).
+
 ### DB가 잠긴다 (`database is locked`)
 요약 배치와 admin 저장이 겹친 경우다. `timeout=20`으로 대부분 흡수되지만 반복되면
 PLAN.md 9.2의 **PostgreSQL 전환 트리거**에 해당하는지 검토한다.
@@ -557,14 +612,55 @@ PLAN.md 9.2의 **PostgreSQL 전환 트리거**에 해당하는지 검토한다.
 **1순위는 스냅샷 복원이 아니라 "저장소 + S3 백업으로 재구축"이다.** 그래야 서버에만
 존재하는 상태가 없다는 것이 매번 검증된다. 스냅샷은 재구축이 막혔을 때의 안전망이다.
 
-1. 새 Lightsail 인스턴스 생성 (2.1~2.5 반복)
+> **아래 순서는 2026-09-16에 실제로 밟아 검증했다**(이슈 #42). 그 전까지는 각 절이
+> 따로 맞게 적혀 있었을 뿐, **순서대로 따라가면 빠지는 단계가 셋 있었다.** 굵게 표시한
+> 항목이 그때 추가된 것이다.
+
+1. 새 Lightsail 인스턴스 생성 (**2.1~2.5 반복**)
 2. 고정 IP를 **새 인스턴스로 재연결** — DNS를 건드릴 필요가 없다
-3. `git clone` → `.env` 작성 → `docker compose up -d --build`
-4. `./deploy/restore.sh` 로 최근 백업 복원
-5. `crontab deploy/crontab`
+3. **시간대를 먼저 맞춘다 (2.9 앞부분)** — `sudo timedatectl set-timezone Asia/Seoul`
+4. `git clone` → `.env` 작성·**점검** → `mkdir -p data && sudo chown -R 1000:1000 data`
+   → `sudo mkdir -p /var/log/dart && sudo chown ubuntu:ubuntu /var/log/dart`
+   → `docker compose up -d --build` (**2.7 전체를 반복**)
+5. `./deploy/restore.sh` 로 최근 백업 복원
+6. `crontab deploy/crontab` + logrotate 설치 (**2.9 나머지**)
+7. `./deploy/pipeline.sh`를 한 번 손으로 돌려 **수집이 실제로 되는지** 확인한다
+
+**3·4·6번에서 빠졌던 것이 각각 이런 결과를 낳는다.**
+
+| 빠뜨린 단계 | 결과 | 알아채는 데 걸리는 시간 |
+|---|---|---|
+| 시간대 (3번) | 적응형 폴링이 **통째로 뒤집힌다** — 한국 낮에 1시간마다, 한국 밤에 1분마다 | 며칠. 로그는 정상으로 보인다 |
+| `data` 소유권 (4번) | 컨테이너가 재시작을 반복한다 | 즉시. 단 증상이 원인을 가리키지 않는다(5장) |
+| `/var/log/dart` (6번) | **파이프라인이 한 번도 돌지 않는데 아무 신호가 없다** | 며칠. 사이트는 정상이다 |
+
+시간대를 3번으로 올린 이유는 **cron 설치 전에 맞춰야 하기 때문**만이 아니다. 호스트가
+UTC인 채로 컨테이너를 띄우면 `docker logs`(컨테이너 안은 `TZ=Asia/Seoul` 고정)와
+`pipeline.log`(호스트 시각)가 9시간 어긋나 장애 조사 자체가 어려워진다.
 
 최대 데이터 손실은 **24시간**(백업 주기)이다. 그 사이의 요약은 파이프라인을 다시 돌리면
 재생성되고, 비용은 건당 $0.023이다.
+
+**복원 전 구간에 주의한다.** 4번에서 서비스가 뜨고 5번에서 데이터가 들어오므로, 그 사이에는
+**사이트가 열리지만 내용이 비어 있다.** 리허설에서 빈 DB 상태로 `GET / → 200`이 확인됐다.
+고정 IP 재연결(2번)을 복원 뒤로 미루면 이 구간이 외부에 노출되지 않는다.
+
+### 리허설할 때 지킬 것
+
+운영을 망치지 않으려면 넷을 지킨다. 2026-09-16 리허설에서 쓴 방식이다.
+
+1. **cron을 설치한 채 두지 않는다.** `crontab -l`로 확인한 즉시 `crontab -r`.
+   그대로 두면 리허설 서버가 DART를 폴링하고 **새벽 4시에 `backup.sh`가 돌아
+   운영 백업을 덮어쓴다.**
+2. **`OPENAI_API_KEY`에 가짜 값을 넣는다.** 1번을 어겨도 요약 비용이 나갈 수 없게 하는
+   마지막 방어선이다. 서버 기동에는 영향이 없다.
+3. **운영 도메인을 쓰지 않는다.** 별도 DuckDNS 서브도메인을 만든다. 운영 도메인을 쓰면
+   인증서를 못 받을 뿐 아니라 **Let's Encrypt 재발급 한도(같은 도메인 주 5회)를 축낸다.**
+4. **고정 IP를 만들지 않는다.** 인스턴스에 연결되지 않은 고정 IP는 과금된다.
+   끝나면 인스턴스와 서브도메인을 삭제한다.
+
+**2번(고정 IP 재연결)만은 리허설로 검증할 수 없다.** 운영 서비스를 내려야 하기 때문이다.
+이 한 단계는 지금도 미검증이다.
 
 ---
 

@@ -186,12 +186,31 @@ if os.getenv('DJANGO_STATIC_MANIFEST', 'false').lower() == 'true':
         },
     }
 
+def _int_env(name, default):
+    """정수 환경변수를 읽되, **비어 있으면 기본값으로 떨어뜨린다.**
+
+    `os.getenv(name, default)`의 기본값은 **변수가 없을 때만** 쓰인다. `.env`에
+    `KEY=`라고 적으면 변수는 존재하고 값이 빈 문자열이라 기본값이 적용되지 않고,
+    `int('')`가 ValueError로 터진다.
+
+    2026-09-16 재구축 리허설(이슈 #42)에서 실제로 겪었다. `.env.example`을 복사해
+    그대로 둔 새 서버에서 컨테이너가 무한 재시작에 빠졌다 -
+    `ValueError: invalid literal for int() with base 10: ''`.
+    운영 서버는 값을 손으로 채워 넣어서 드러나지 않았다. **재구축 때만 터지는
+    결함**이라 리허설이 아니면 장애 복구 중에 처음 만났을 것이다.
+
+    오타(`abc`)는 그대로 터뜨린다. 설정이 조용히 무시되는 것보다 낫다.
+    """
+    raw = os.getenv(name, '').strip()
+    return int(raw) if raw else default
+
+
 # 목록 화면이 "새 공시 있나"를 물어보는 간격(초). 0이면 자동 갱신을 끈다.
 #
 # 기본값 30인 이유: 공시를 감지하는 데 이미 1~3분이 걸리므로(PLAN.md 9.3) 이보다
 # 짧게 잡아도 전체 지연이 줄지 않는다. 병목이 아닌 곳을 최적화하는 셈이다.
 # .env 로 덮어쓸 수 있게 둔 것은 코드 수정·재배포 없이 조정하기 위해서다.
-REALTIME_POLL_INTERVAL_SECONDS = int(os.getenv('REALTIME_POLL_INTERVAL_SECONDS', '30'))
+REALTIME_POLL_INTERVAL_SECONDS = _int_env('REALTIME_POLL_INTERVAL_SECONDS', 30)
 
 # 파이프라인이 1시간마다 도는 시간대에는 이 배수만큼 간격을 늘린다(deploy/crontab).
 # 새 공시가 나올 수 없는 시간에 30초마다 묻는 것은 순수한 낭비다.
