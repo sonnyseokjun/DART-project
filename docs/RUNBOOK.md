@@ -420,10 +420,21 @@ grep '메모리 최저 가용' /var/log/dart/pipeline.log | tail -20
 수정이 반영되지 않은 것이므로 재빌드가 실제로 됐는지 확인한다.
 
 ```bash
-docker compose exec -T web python -c "import inspect, django; django.setup(); from disclosures import retry_policy; print('second=0' in inspect.getsource(retry_policy.is_retry_due))"
+docker compose exec -T web grep -c "second=0" disclosures/retry_policy.py
 ```
 
-`True`가 나오면 반영된 것이다.
+`1`이 나오면 반영된 것이고 `0`이면 옛 이미지가 그대로 돌고 있다.
+
+> 컨테이너 안에서 `python -c`로 확인하려 들지 말 것. `manage.py`를 거치지 않으면
+> `DJANGO_SETTINGS_MODULE`이 비어 있어 `ImproperlyConfigured`로 죽는다. 이 자리에
+> 그렇게 적어 뒀다가 2026-09-16에 실제로 막혔다. 이미지에 파일이 들어갔는지만 보면
+> 되는 일이라 Django를 띄울 이유가 없다.
+>
+> 굳이 파이썬으로 확인하려면 `manage.py`를 거친다.
+>
+> ```bash
+> docker compose exec -T web python manage.py shell -c "import inspect; from disclosures import retry_policy; print('second=0' in inspect.getsource(retry_policy.is_retry_due))"
+> ```
 
 ### 요약 중 메모리 피크 측정 적용 (2026-09-11)
 
