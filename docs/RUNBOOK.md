@@ -366,7 +366,7 @@ tail -20 /var/log/dart/pipeline.log
 |---|---|---|
 | DART 호출량 | `grep -c '감지:' /var/log/dart/pipeline.log` | 하루 1,000회 미만 |
 | 메모리 (평상시) | `tail /var/log/dart/mem.log` | 가용 200MB 이상 |
-| 메모리 (요약 중 피크) | `grep '메모리 최저 가용' /var/log/dart/pipeline.log` | 가용 200MB 이상 |
+| 메모리 (요약 중 피크) | `grep '메모리 최저 가용' /var/log/dart/pipeline.log` | 가용 200MB 이상 (실측 269MB) |
 | LLM 비용 | `grep '실제 비용' /var/log/dart/pipeline.log` | 하루 $0.1 안팎 |
 
 ### 7단계 후속 수정 적용 (재시도 재개 · 2026-09-09)
