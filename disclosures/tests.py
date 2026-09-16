@@ -21,6 +21,8 @@ from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import RequestFactory, SimpleTestCase, TestCase
+
+from config import settings as settings_module
 from django.utils import timezone
 from django.urls import reverse
 
@@ -310,6 +312,78 @@ class PollDartDetectTest(TestCase):
         # list.json의 page_count 상한이 100이다. 넘기면 조용히 잘리는 게 아니라 오류다.
         self.assertLessEqual(DETECT_PAGE_COUNT, 100)
         self.assertGreater(DETECT_PAGE_COUNT, 0)
+
+
+class EnvParsingTest(SimpleTestCase):
+    """`.env`의 빈 값이 서버를 죽이지 않는지 (이슈 #42 · PLAN.md 9.1-(5)).
+
+    2026-09-16 재구축 리허설에서 새 서버가 뜨지 못했다. `.env.example`을 복사하면
+    `REALTIME_POLL_INTERVAL_SECONDS=`가 빈 값으로 들어오는데, `os.getenv`의 기본값은
+    **변수가 없을 때만** 쓰이므로 `int('')`가 터졌다. 운영 서버는 값을 손으로 채워
+    넣어 드러나지 않았던, **재구축 때만 터지는 결함**이다.
+    """
+
+    def test_empty_value_falls_back_to_the_default(self):
+        """`.env`에 `KEY=`로 적으면 변수는 있고 값만 비어 있다. 이때가 문제였다."""
+        with patch.dict(os.environ, {'DART_TEST_INTERVAL': ''}):
+            self.assertEqual(settings_module._int_env('DART_TEST_INTERVAL', 30), 30)
+
+    def test_whitespace_only_falls_back_too(self):
+        with patch.dict(os.environ, {'DART_TEST_INTERVAL': '   '}):
+            self.assertEqual(settings_module._int_env('DART_TEST_INTERVAL', 30), 30)
+
+    def test_missing_value_falls_back(self):
+        os.environ.pop('DART_TEST_INTERVAL', None)
+        self.assertEqual(settings_module._int_env('DART_TEST_INTERVAL', 30), 30)
+
+    def test_explicit_value_wins(self):
+        with patch.dict(os.environ, {'DART_TEST_INTERVAL': '5'}):
+            self.assertEqual(settings_module._int_env('DART_TEST_INTERVAL', 30), 5)
+
+    def test_zero_is_kept_not_treated_as_empty(self):
+        """0은 "자동 갱신 끄기"라는 유효한 지시다. 기본값으로 덮으면 안 된다."""
+        with patch.dict(os.environ, {'DART_TEST_INTERVAL': '0'}):
+            self.assertEqual(settings_module._int_env('DART_TEST_INTERVAL', 30), 0)
+
+    def test_a_typo_still_raises(self):
+        """오타는 조용히 넘기지 않는다. 설정이 무시된 채 도는 편이 더 나쁘다."""
+        with patch.dict(os.environ, {'DART_TEST_INTERVAL': 'abc'}):
+            with self.assertRaises(ValueError):
+                settings_module._int_env('DART_TEST_INTERVAL', 30)
+
+    def test_the_example_env_does_not_ship_a_value_that_crashes(self):
+        """`.env.example`을 그대로 복사해도 서버가 떠야 한다.
+
+        리허설에서 막힌 지점이 정확히 여기다. 예시 파일의 값들을 그대로 읽어
+        정수 항목이 터지지 않는지 본다.
+        """
+        example = (Path(__file__).resolve().parent.parent / '.env.example')
+        values = {}
+        for line in example.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, _, value = line.partition('=')
+            values[key] = value
+
+        with patch.dict(os.environ, values):
+            settings_module._int_env('REALTIME_POLL_INTERVAL_SECONDS', 30)
+
+    def test_the_example_env_leaves_secrets_blank(self):
+        """예시 파일에 값이 들어 있으면 "이미 채웠다"고 착각한다.
+
+        `DART_API_KEY=여기에_발급받은_40자리_인증키`가 남아 있어 실제로 건너뛰었고,
+        서버는 정상적으로 뜬 채 공시 수집만 조용히 실패했다. 발견이 한참 늦었다.
+        """
+        example = (Path(__file__).resolve().parent.parent / '.env.example')
+        for line in example.read_text(encoding='utf-8').splitlines():
+            key, _, value = line.strip().partition('=')
+            if key in ('DART_API_KEY', 'OPENAI_API_KEY', 'DJANGO_SECRET_KEY',
+                       'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'):
+                self.assertEqual(
+                    value, '',
+                    f'{key}에 예시 값이 남아 있다 — 채워진 것으로 오인한다',
+                )
 
 
 class PipelineScriptTest(TestCase):
