@@ -1,0 +1,5 @@
+{% extends 'disclosures/base.html' %}
+{# allauth 화면(로그인 확인·오류·로그아웃 확인)을 우리 사이트 틀 안에 넣는다.
+   덮어쓰지 않으면 영어 메뉴가 붙은 맨 HTML 화면이 뜬다.
+   allauth 하위 템플릿은 content 블록을 채우므로, 제목 블록만 이어 주면 된다. #}
+{% block title %}{% block head_title %}{% endblock head_title %} · 공시 쉽게 보기{% endblock title %}

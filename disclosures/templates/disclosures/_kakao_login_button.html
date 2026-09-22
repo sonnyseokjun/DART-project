@@ -1,0 +1,12 @@
+{% load socialaccount %}
+{# 카카오 로그인은 POST로만 시작한다(settings.SOCIALACCOUNT_LOGIN_ON_GET). #}
+{# 키가 없는 환경에서 provider_login_url을 부르면 화면 전체가 500이 되므로 먼저 확인한다. #}
+{% if kakao_login_enabled %}
+  <form method="post" action="{% provider_login_url 'kakao' %}" class="kakao-login-form">
+    {% csrf_token %}
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+    <button type="submit" class="kakao-login">카카오로 시작하기</button>
+  </form>
+{% else %}
+  <p class="empty">로그인 기능을 준비하고 있습니다.</p>
+{% endif %}

@@ -1,0 +1,81 @@
+{% extends 'disclosures/base.html' %}
+{# 개인정보처리방침 (이슈 #44). 수집 항목을 늘리거나 보관 방식(백업 주기 등)을 바꾸면
+   이 문서도 함께 고쳐야 한다. 코드와 어긋나면 방침이 거짓이 된다.
+   - 수집 범위: accounts/adapter.py (minimal_extra_data)
+   - 백업 보관: deploy/backup.sh · S3 수명주기 30일 · Lightsail 스냅샷 7개 (PLAN.md 9.2)
+   - 접속 기록: docker-compose.yml logging (10MB × 3개, 용량 기준 순환) #}
+
+{% block title %}개인정보처리방침 · 공시 쉽게 보기{% endblock %}
+
+{% block content %}
+  <article class="policy">
+    <h1>개인정보처리방침</h1>
+    <p>
+      "공시 쉽게 보기"(이하 "서비스")는 이용자의 개인정보를 필요한 만큼만 받고,
+      받은 정보는 아래 목적에만 씁니다.
+    </p>
+
+    <h2>1. 받는 정보</h2>
+    <table>
+      <thead><tr><th>항목</th><th>받는 방법</th><th>쓰는 곳</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>카카오 회원번호</td>
+          <td>카카오 로그인 시 자동 제공</td>
+          <td>회원 식별, 로그인 유지</td>
+        </tr>
+        <tr>
+          <td>닉네임</td>
+          <td>카카오 로그인 시 동의 후 제공</td>
+          <td>화면에 이름 표시</td>
+        </tr>
+        <tr>
+          <td>접속 기록(IP 주소, 접속 시각, 요청 주소)</td>
+          <td>서비스 이용 시 자동 생성</td>
+          <td>장애 대응, 부정 이용 방지</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      <strong>이메일, 전화번호, 프로필 사진, 비밀번호는 받지 않습니다.</strong>
+      로그인 상태 유지를 위해 브라우저 쿠키를 사용합니다.
+    </p>
+
+    <h2>2. 보관 기간과 삭제</h2>
+    <ul>
+      <li>회원 정보는 <strong>탈퇴하는 즉시 삭제</strong>합니다.
+        카카오 앱에서 이 서비스와의 연결을 끊은 경우에도 같습니다.</li>
+      <li>서비스 복구를 위한 백업본에는 삭제 전 정보가 남을 수 있으며,
+        백업본은 <strong>최대 30일</strong> 뒤 자동으로 삭제됩니다.</li>
+      <li>접속 기록은 일정 용량이 차면 오래된 것부터 자동으로 삭제됩니다.</li>
+    </ul>
+
+    <h2>3. 제3자 제공</h2>
+    <p>이용자의 개인정보를 다른 곳에 제공하지 않습니다.</p>
+
+    <h2>4. 처리 위탁</h2>
+    <table>
+      <thead><tr><th>맡기는 곳</th><th>맡기는 일</th></tr></thead>
+      <tbody>
+        <tr><td>Amazon Web Services (서울 리전)</td><td>서버 운영, 데이터 백업 보관</td></tr>
+      </tbody>
+    </table>
+
+    <h2>5. 이용자의 권리</h2>
+    <p>
+      언제든 <strong>회원 탈퇴</strong>로 모든 회원 정보를 삭제할 수 있습니다
+      (로그인 후 화면 위쪽 "탈퇴"). 그 밖의 열람·정정·삭제 요청은 아래 연락처로 보내 주세요.
+    </p>
+
+    <h2>6. 개인정보 보호책임자</h2>
+    <ul>
+      <li>이름: {{ officer_name }}</li>
+      <li>연락처:
+        {% if contact_email %}<a href="mailto:{{ contact_email }}">{{ contact_email }}</a>
+        {% else %}준비 중{% endif %}</li>
+    </ul>
+
+    <h2>7. 시행일</h2>
+    <p>이 방침은 2026년 10월 1일부터 적용합니다.</p>
+  </article>
+{% endblock %}
