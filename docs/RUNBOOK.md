@@ -319,6 +319,7 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | `KAKAO_CLIENT_SECRET` | (32자) | 같은 화면 아래 **클라이언트 시크릿 → 카카오 로그인** 줄의 코드. 비즈니스 인증 줄과 헷갈리지 말 것 |
 | `KAKAO_ADMIN_KEY` | (32자) | 콘솔 → 앱 → **어드민 키**. 탈퇴 시 연결 끊기와 연결 해제 웹훅 확인에 쓴다. **가장 강력한 키다** |
 | `PRIVACY_CONTACT_EMAIL` | `owner@example.com` | 개인정보처리방침에 **공개되는** 보호책임자 연락처. 비우면 방침에 "준비 중"이 뜬다 |
+| `AI_MONTHLY_BUDGET_USD` | `6.5` | 월 AI 비용 상한(USD). **적지 않아도 된다** — 비우면 6.5. 목표 1만 원보다 낮게 둔 이유는 PLAN.md 9.4 |
 
 **카카오 키 둘 중 하나라도 비면 로그인 버튼이 "준비 중"으로 바뀐다.** 서버는 정상으로
 뜨고 사이트도 열리므로 오류로 보이지 않는다. 어드민 키가 비면 탈퇴는 되지만 카카오
@@ -386,6 +387,10 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | 요약 배치 피크 | `grep -A1 "$(date -I)T07:3" /var/log/dart/mem_peak.log` |
 | 컨테이너 상태 | `docker compose ps` |
 | 디스크 여유 | `df -h /` · `docker system df` |
+| **이번 달 AI 비용** | `/admin/disclosures/aiusage/` 맨 위 안내 (8단계) |
+| 요약 요청 대기 | `docker compose exec web python manage.py pending_work` (DART·LLM 미호출) |
+| 월 한도 조정 | `.env`의 `AI_MONTHLY_BUDGET_USD` (기본 6.5) → `docker compose up -d` |
+| 상장사 명단 갱신 | `docker compose exec web python manage.py sync_listed_corps` (매일 06:50 자동) |
 
 **요약 생성은 돈이 나간다.** cron이 `--limit 20`으로 돌린다. 수동 실행할 때도
 반드시 `--limit`을 붙이고, 붙이기 전에 대상 건수를 먼저 확인한다.
@@ -395,6 +400,65 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 30분 샘플러로는 이 서비스의 1순위 리스크(메모리 초과)가 발생하는 바로 그 순간을 볼 수 없다.
 
 ---
+
+### 8단계 적용 (사용자가 고르는 기업 · 이슈 #44)
+
+**한 번만 하는 절차다.** 카카오 로그인·관심 기업·누르면 요약이 한꺼번에 올라간다.
+PR #45·#48과 그 뒤의 PR 3을 **모두 머지한 뒤에** 한다. 하나라도 빠지면 사이트가 빈
+화면이 되거나(로그인만 있고 볼 것이 없음) 백필한 공시가 자동 요약돼 돈이 나간다.
+
+> 반영 전 서버는 `hotfix/template-comments-prod` 브랜치에 있다(이슈 #46). 이 절차에서
+> `main`으로 돌아온다. 그 뒤로는 다시 `git pull`만으로 반영한다.
+
+```bash
+cd ~/DART-project
+git status                           # 수정된 파일이 없어야 한다 (.env.bak은 무관)
+cp .env .env.before-stage8           # 되돌릴 때를 위한 사본
+
+# 1. main으로 돌아온다
+git fetch origin
+git switch main
+git pull
+git log --oneline -1                 # PR 3 머지 커밋이어야 한다
+
+# 2. .env에 네 줄을 추가한다 (값은 3.1) — nano .env
+#    KAKAO_CLIENT_ID= / KAKAO_CLIENT_SECRET= / KAKAO_ADMIN_KEY= / PRIVACY_CONTACT_EMAIL=
+awk -F= '/^(KAKAO_|PRIVACY_)/{printf "%s 길이: %d\n", $1, length($2)}' .env
+#    카카오 키 셋은 32, 이메일은 0이 아니어야 한다
+
+# 3. 재빌드 — 컨테이너가 뜰 때 마이그레이션(0010~0012 · allauth)이 적용된다
+docker compose up -d --build
+docker compose exec -T web python manage.py showmigrations disclosures | tail -3
+#    [X] 0010_watchlist · [X] 0011_stop_fixed_tracking · [X] 0012_summary_on_request
+
+# 4. 상장사 명단 첫 적재 (2.8) — 이것이 없으면 검색이 늘 비어 있다
+docker compose exec -T web python manage.py sync_listed_corps
+
+# 5. cron 교체 — 명단 갱신(06:50)·밤 요청 처리(--requests)·잠금 대기(--wait)가 더해졌다
+crontab deploy/crontab
+crontab -l | grep -c pipeline.sh      # 6
+```
+
+**6. 카카오 콘솔에 연결 해제 웹훅을 등록한다** (3.2). 서버에 이 주소가 생긴 뒤라야 한다.
+
+**7. 확인한다.**
+
+| 볼 것 | 어떻게 | 정상 |
+|---|---|---|
+| 비로그인 첫 화면 | 시크릿 창으로 `https://<도메인>/` | 소개 + 노란 "카카오로 시작하기" |
+| 로그인 | 버튼 → 동의 화면 | **닉네임만** 요청, 돌아오면 "○○님" |
+| 검색·추가 | "삼성" 검색 → 추가 | 삼성전자 기존 요약이 바로 보인다 |
+| 추적 대상 | `docker compose exec -T web python manage.py shell -c "from disclosures.models import Company; print(Company.objects.filter(is_active=True).count())"` | 방금 추가한 수만큼 |
+| 요약 요청 | 요약 없는 공시에서 "AI 요약 보기" | 1~2분 뒤 요약이 뜬다 |
+| 비용 장부 | `/admin/disclosures/aiusage/` | 방금 요약 1건의 비용이 적혀 있다 |
+| 밤 요청 처리 | 밤에 요청 후 `tail /var/log/dart/pipeline.log` | 수 분 안에 "대기 중이던 후속 작업 재개" |
+
+**8. OpenAI 관리 화면에서 사용량 알림을 켠다** (2.10). 서버에는 메일 기능이 없어 월 한도
+도달을 알릴 수 없다. `/admin`의 AI 비용 화면과 OpenAI 알림 메일로 확인한다.
+
+**되돌리기.** `git switch hotfix/template-comments-prod` → `cp .env.before-stage8 .env` →
+`docker compose up -d --build`. DB는 되돌리지 않아도 된다 — 새 표가 남아 있을 뿐 옛 코드는
+그 표를 보지 않는다. 다만 **반도체 10곳의 추적이 꺼진 채**로 남으므로 admin에서 켜야 한다.
 
 ### 7단계 적용 (준실시간화)
 
@@ -635,6 +699,15 @@ ls -ld /var/log/dart || sudo mkdir -p /var/log/dart && sudo chown ubuntu:ubuntu 
 ### DB가 잠긴다 (`database is locked`)
 요약 배치와 admin 저장이 겹친 경우다. `timeout=20`으로 대부분 흡수되지만 반복되면
 PLAN.md 9.2의 **PostgreSQL 전환 트리거**에 해당하는지 검토한다.
+
+8단계부터 **웹도 DB에 쓴다**(로그인·관심 기업·요약 요청). 이것이 SQLite를 유지하며 받아
+들인 위험이고, 확인하는 방법은 이 오류가 실제로 나는가다(PLAN.md 9.4).
+
+```bash
+docker compose logs --since 168h web 2>&1 | grep -c "database is locked"   # 0이어야 한다
+```
+
+**한 번이라도 나오면** 사용자 화면에서 오류가 난 것이다. 20초를 기다리고도 못 썼다는 뜻이다.
 
 ### DB 복원
 ```bash
