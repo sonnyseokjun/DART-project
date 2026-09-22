@@ -13,8 +13,8 @@
 `hide_company`는 카드로 그대로 전달된다.
 {% endcomment %}
 <div data-live-feed>
-  {# 내용만 소리 없이 바뀌면 사용자가 알아채지 못한다. 갱신 직후 잠깐 뜬다.
-     role="status"는 화면 낭독기에도 조용히 알린다(방해하지 않는 알림). #}
+  {% comment %} 내용만 소리 없이 바뀌면 사용자가 알아채지 못한다. 갱신 직후 잠깐 뜬다.
+     role="status"는 화면 낭독기에도 조용히 알린다(방해하지 않는 알림). {% endcomment %}
   <p class="live-note" data-live-note role="status" hidden>
     새 공시가 반영되었습니다.
   </p>

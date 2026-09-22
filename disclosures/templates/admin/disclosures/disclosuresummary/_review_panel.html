@@ -50,10 +50,10 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
       <span class="rp-badge rp-badge-todo">사람이 수정함 · 검수 미완료</span>
     {% endif %}
     {% if original.auto_hidden %}
-      {# 자동 미게시와 사람이 내린 것은 검수자가 할 일이 정반대다 — 전자는 "고쳐서 올릴 것",
+      {% comment %} 자동 미게시와 사람이 내린 것은 검수자가 할 일이 정반대다 — 전자는 "고쳐서 올릴 것",
          후자는 "이미 결론이 난 것"이다. is_published 하나로 분기하면 둘이 같게 보인다
          (22_backend_pipeline.md 2.2). 판정은 hidden_reason 문구가 아니라 hidden_by 를 보는
-         `auto_hidden` property 로 한다 — hidden_reason 은 검수자가 고치는 자유 문자열이다. #}
+         `auto_hidden` property 로 한다 — hidden_reason 은 검수자가 고치는 자유 문자열이다. {% endcomment %}
       <span class="rp-badge rp-badge-auto">자동 미게시 · 아직 아무도 보지 않음</span>
       {% if original.regeneration_exhausted %}
         <span class="rp-badge rp-badge-exhausted">자동 교정 불가 · 재생성 상한 소진</span>
@@ -65,8 +65,8 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
       </span>
     {% endif %}
     {% if original.disclosure.review_category %}
-      {# 경고가 하나도 없는데 큐에 있는 요약은 전부 이 유형 게이트 때문에 들어온 것이다.
-         이유를 안 보여주면 검수자가 "왜 이게 여기 있지"부터 다시 조사하게 된다. #}
+      {% comment %} 경고가 하나도 없는데 큐에 있는 요약은 전부 이 유형 게이트 때문에 들어온 것이다.
+         이유를 안 보여주면 검수자가 "왜 이게 여기 있지"부터 다시 조사하게 된다. {% endcomment %}
       <span class="rp-badge-plain">
         검수 필수 유형 · {{ original.disclosure.get_review_category_display }}
       </span>
@@ -80,8 +80,8 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
   </div>
 
   {% if original.auto_hidden %}
-    {# 배지 한 줄로는 "지금 사용자에게 안 보이고 있다"는 사실의 무게가 전달되지 않는다.
-       검수자가 이 화면에서 가장 먼저 알아야 할 상태이므로 경고 목록보다 위에 둔다. #}
+    {% comment %} 배지 한 줄로는 "지금 사용자에게 안 보이고 있다"는 사실의 무게가 전달되지 않는다.
+       검수자가 이 화면에서 가장 먼저 알아야 할 상태이므로 경고 목록보다 위에 둔다. {% endcomment %}
     <div class="rp-auto" id="rp-auto-hidden">
       <p class="rp-auto-title">자동 미게시 — 검증이 막았습니다. 사람이 내린 것이 아닙니다</p>
       <p class="rp-auto-body">
@@ -103,8 +103,8 @@ LLM을 호출하지 않는다(PLAN.md 12.1, 00_input.md 5장).
   {% endif %}
 
   {% if original.regeneration_count or original.regeneration_history %}
-    {# 몇 번 시도했고 왜 실패했는지를 알면 검수자의 판단이 빨라진다 — "AI가 두 번 시도했는데도
-       안 됐다"면 사람이 직접 고쳐야 한다는 뜻이다. 자동 미게시 건은 펼친 채로 연다. #}
+    {% comment %} 몇 번 시도했고 왜 실패했는지를 알면 검수자의 판단이 빨라진다 — "AI가 두 번 시도했는데도
+       안 됐다"면 사람이 직접 고쳐야 한다는 뜻이다. 자동 미게시 건은 펼친 채로 연다. {% endcomment %}
     <details class="rp-regen" id="rp-regen"{% if original.auto_hidden %} open{% endif %}>
       <summary class="rp-regen-summary">
         AI 자동 재생성 {{ original.regeneration_count }}회 시도
