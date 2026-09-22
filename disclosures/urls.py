@@ -17,6 +17,7 @@ urlpatterns = [
     path('search/', views.search, name='search'),
     path('watch/add/', views.watch_add, name='watch_add'),
     path('watch/remove/', views.watch_remove, name='watch_remove'),
+    path('summary/request/', views.summary_request, name='summary_request'),
     # 종목코드는 6자리 숫자지만 str 컨버터로 받는다. int로 받으면 선행 0이 사라져
     # '000660'(SK하이닉스)이 660으로 조회돼 404가 난다.
     path('companies/<str:stock_code>/', views.company_detail, name='company_detail'),

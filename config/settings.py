@@ -271,6 +271,17 @@ def _int_env(name, default):
 # .env 로 덮어쓸 수 있게 둔 것은 코드 수정·재배포 없이 조정하기 위해서다.
 REALTIME_POLL_INTERVAL_SECONDS = _int_env('REALTIME_POLL_INTERVAL_SECONDS', 30)
 
+def _float_env(name, default):
+    """실수 환경변수. `_int_env`와 같은 이유로 빈 값은 기본값으로 떨어뜨린다."""
+    raw = os.getenv(name, '').strip()
+    return float(raw) if raw else default
+
+
+# 월 AI 비용 상한(USD, 이슈 #44). 운영자가 정한 목표는 월 1만 원이다. 비용은 추정치라
+# OpenAI 청구와 조금 다를 수 있어 목표보다 낮게 둔다($6.5 ≈ 9,100원). 판단은
+# disclosures/ai_budget.py가 한다. .env로 바꿀 수 있다.
+AI_MONTHLY_BUDGET_USD = _float_env('AI_MONTHLY_BUDGET_USD', 6.5)
+
 # 파이프라인이 1시간마다 도는 시간대에는 이 배수만큼 간격을 늘린다(deploy/crontab).
 # 새 공시가 나올 수 없는 시간에 30초마다 묻는 것은 순수한 낭비다.
 REALTIME_OFF_HOURS_MULTIPLIER = 10

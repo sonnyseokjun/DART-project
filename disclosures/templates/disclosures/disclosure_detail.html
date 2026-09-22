@@ -21,9 +21,7 @@
         {% else %}
           {% comment %} 중요도는 요약이 매기는 값이라 아직 없다. 자리를 비워 두는 대신 왜 없는지
              말해 준다 — 비어 있으면 사용자는 고장으로 읽는다. {% endcomment %}
-          <span class="badge badge-pending" title="AI 요약을 만들고 있습니다">
-            AI가 정리 중
-          </span>
+          {% include 'disclosures/_summary_badge.html' %}
         {% endif %}
         {% if disclosure.disclosure_type %}
           <span class="badge badge-type">{{ disclosure.disclosure_type }}</span>
@@ -60,11 +58,8 @@
          원문 링크는 아래 "원문 확인" 절에 그대로 있다 — 요약이 없을수록 그 경로가
          더 필요하다(PLAN.md 5.3). {% endcomment %}
       <aside class="pending-note" role="status">
-        <h2>🕒 AI가 이 공시를 정리하고 있습니다</h2>
-        <p>
-          공시는 방금 수집됐고 요약은 아직 만들어지지 않았습니다. 보통 몇 분 안에
-          완성됩니다. <strong>지금 바로 내용을 확인하시려면 아래 DART 원문을 보세요.</strong>
-        </p>
+        {% include 'disclosures/_summary_status.html' %}
+        <p><strong>지금 바로 내용을 확인하시려면 아래 DART 원문을 보세요.</strong></p>
       </aside>
     {% endif %}
 

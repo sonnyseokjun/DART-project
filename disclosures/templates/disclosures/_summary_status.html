@@ -1,0 +1,43 @@
+{% comment %}
+요약이 없는 공시의 상태 안내 — 카드와 상세 화면이 함께 쓴다(이슈 #44).
+
+필요한 값: disclosure, budget_exhausted. 상태 판정은 Disclosure.summary_state가 한다.
+버튼은 요청만 기록한다(views.summary_request) — AI는 파이프라인이 부른다.
+요약이 있는 공시(ready)에는 이 조각을 쓰지 않는다.
+{% endcomment %}
+{% with state=disclosure.summary_state %}
+  {% if state == 'queued' %}
+    <p class="card-oneline card-oneline-pending" role="status">
+      {% if budget_exhausted %}
+        이번 달 AI 요약 한도에 도달했습니다. 이 공시는 다음 달 1일에 정리됩니다.
+      {% else %}
+        AI가 이 공시를 정리하고 있습니다. 1~2분 뒤 자동으로 바뀝니다.
+      {% endif %}
+    </p>
+  {% elif state == 'available' %}
+    {% if not user.is_authenticated %}
+      <p class="card-oneline card-oneline-pending">
+        <a href="{% url 'disclosures:home' %}">로그인</a>하면 AI 요약을 요청할 수 있습니다.
+      </p>
+    {% elif budget_exhausted %}
+      <p class="card-oneline card-oneline-pending">
+        이번 달 AI 요약 한도에 도달했습니다. 다음 달 1일부터 다시 요청할 수 있습니다.
+      </p>
+    {% else %}
+      <form method="post" action="{% url 'disclosures:summary_request' %}" class="summary-request">
+        {% csrf_token %}
+        <input type="hidden" name="rcept_no" value="{{ disclosure.rcept_no }}">
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button type="submit">🤖 AI 요약 보기</button>
+      </form>
+    {% endif %}
+  {% elif state == 'failed' %}
+    <p class="card-oneline card-oneline-pending">
+      이 공시는 요약을 만들지 못했습니다. DART 원문에서 확인해 주세요.
+    </p>
+  {% else %}
+    <p class="card-oneline card-oneline-pending">
+      요약 대상이 아닌 단순 보고입니다. DART 원문에서 확인해 주세요.
+    </p>
+  {% endif %}
+{% endwith %}

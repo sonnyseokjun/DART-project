@@ -27,6 +27,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.utils import timezone
 
+from disclosures import ai_budget
 from disclosures.models import MAX_SUMMARY_ATTEMPTS, Disclosure, DisclosureSummary
 from disclosures.retry_policy import (  # noqa: F401  (재수출)
     SUMMARY_RETRY_BACKOFF_MINUTES,
@@ -218,6 +219,9 @@ class Command(BaseCommand):
             qs = qs.filter(rcept_no=options['rcept_no'])
         explicit = options['rcept_no'] or options['resummarize']
         if not explicit:
+            # 자동 요약 중단(이슈 #44): 요청받은 공시만, 먼저 요청한 것부터.
+            qs = qs.filter(summary_requested_at__isnull=False).order_by(
+                'summary_requested_at', 'rcept_no')
             qs = self._apply_retry_policy(qs)
         if options['limit']:
             qs = qs[:options['limit']]
@@ -344,6 +348,15 @@ class Command(BaseCommand):
 
         for idx, d in enumerate(targets, start=1):
             label = f'[{idx}/{len(targets)}] {d.company.name} {d.report_name[:40]}'
+            # 월 비용 상한(ai_budget). **건마다** 확인한다 — 배치 도중에 상한을 넘길 수 있다.
+            # 멈춘 건은 요청이 그대로 남아 다음 달 1일에 처리된다.
+            estimate = estimate_summary_cost(d.raw_content, model=model)['usd']
+            if not ai_budget.can_afford(estimate):
+                self.stdout.write(self.style.WARNING(
+                    f'월 AI 비용 상한 도달 — 이번 달 ${ai_budget.spent_this_month():.4f} / '
+                    f'상한 ${ai_budget.monthly_budget():.2f}. 남은 {len(targets) - idx + 1}건은 '
+                    '다음 달 1일에 처리합니다.'))
+                break
             try:
                 result = self._summarize_one(d, model, resummarize, regenerate)
             except SummarizerError as exc:
@@ -392,6 +405,11 @@ class Command(BaseCommand):
 
         흐름: 생성 → 검증 → (막히면) 재생성 1회 → 그래도 막히면 미게시로 저장.
         """
+        def record_usage(usage, model_id, cost_usd):
+            # AI 응답마다 장부에 적는다. 이 건이 결국 실패해도 돈은 나갔다(AiUsage).
+            ai_budget.record(usage=usage, model_name=model_id, cost_usd=cost_usd,
+                             disclosure=disclosure)
+
         call = dict(
             company_name=disclosure.company.name,
             report_name=disclosure.report_name,
@@ -400,6 +418,7 @@ class Command(BaseCommand):
             raw_text=disclosure.raw_content,
             disclosure_type=disclosure.disclosure_type,
             model=model,
+            on_usage=record_usage,
         )
         result = summarize_disclosure(**call)
 

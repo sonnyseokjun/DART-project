@@ -127,17 +127,26 @@ def is_retry_due(attempts, attempted_at, backoff_minutes, now):
 
 
 def unfetched_targets():
-    """요약 대상인데 원문을 아직 못 받은 공시."""
+    """요약을 **요청받았는데** 원문을 아직 못 받은 공시.
+
+    8단계부터 원문도 요청이 있을 때만 받는다(이슈 #44). 요약 대상이라고 미리 받아 두면
+    아무도 읽지 않을 공시에 DART 한도와 DB 용량을 쓴다.
+    """
     return Disclosure.objects.filter(
-        selection_state=SelectionState.TARGET, raw_fetched=False
+        selection_state=SelectionState.TARGET, raw_fetched=False,
+        summary_requested_at__isnull=False,
     )
 
 
 def unsummarized_targets():
-    """원문은 있는데 요약이 아직 없는 공시."""
+    """요약을 요청받았고 원문도 있는데 요약이 아직 없는 공시.
+
+    요청 조건이 **자동 요약 중단**의 실행 지점이다(이슈 #44). 이 조건이 빠지면 선별을
+    통과한 공시가 전부 자동으로 요약되어, 사용자가 관심 기업을 늘리는 만큼 돈이 나간다.
+    """
     return Disclosure.objects.filter(
         selection_state=SelectionState.TARGET, raw_fetched=True,
-        summary__isnull=True,
+        summary__isnull=True, summary_requested_at__isnull=False,
     ).exclude(raw_content='')
 
 
@@ -181,10 +190,15 @@ def pending_counts(now=None):
     `대기`·`상한`은 판단 근거로만 쓴다 — 그 둘은 "지금 할 일"이 아니므로
     파이프라인을 다시 돌릴 이유가 되지 않는다.
     """
+    from .ai_budget import is_exhausted
+
     now = now or timezone.now()
     fetch_ready, fetch_waiting, fetch_stuck = split_fetch_targets(
         unfetched_targets(), now)
-    summary_ready = due_summary_targets(unsummarized_targets(), now)
+    # 월 상한에 닿았으면 요약은 "지금 할 일"이 아니다. 세면 다음 달까지 매분
+    # 파이프라인 뒷단계가 헛돈다(ai_budget 첫 주석).
+    summary_ready = [] if is_exhausted(now) else due_summary_targets(
+        unsummarized_targets(), now)
     return {
         '원문': len(fetch_ready),
         '요약': len(summary_ready),

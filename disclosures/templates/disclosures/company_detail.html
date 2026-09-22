@@ -51,8 +51,13 @@
           {% endfor %}
         </select>
       </label>
+      <label class="filter-check">
+        <input type="checkbox" name="all" value="1" {% if show_all %}checked{% endif %}>
+        단순 보고도 보기
+      </label>
+
       <button type="submit">적용</button>
-      {% if selected_importance %}
+      {% if selected_importance or show_all %}
         <a class="filter-reset" href="{% url 'disclosures:company_detail' company.stock_code %}">초기화</a>
       {% endif %}
     </form>

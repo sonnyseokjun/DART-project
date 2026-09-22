@@ -1,10 +1,12 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.db.models import Case, IntegerField, Q, When
 from django.utils import timezone
 from django.utils.html import format_html
 
+from . import ai_budget
 from .models import (
-    Company, Disclosure, DisclosureSummary, ListedCorp, Sector, Watch,
+    AiUsage, Company, Disclosure, DisclosureSummary, ListedCorp, Sector, SummaryRequest,
+    Watch,
 )
 
 #: 일괄 숨김 액션이 남기는 기본 사유. 개별 사유는 변경 화면에서 덧쓴다.
@@ -36,6 +38,48 @@ class ListedCorpAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(AiUsage)
+class AiUsageAdmin(admin.ModelAdmin):
+    """AI 호출 비용 장부. 목록 맨 위에 **이번 달 사용액과 월 한도**를 띄운다(이슈 #44).
+
+    서버에는 메일 기능이 없어 한도 도달을 알릴 길이 없다. 운영자는 이 화면과 OpenAI
+    사용량 알림으로 확인한다(RUNBOOK 4장).
+    """
+
+    list_display = ('created_at', 'model_name', 'cost_usd', 'input_tokens',
+                    'output_tokens', 'cached_tokens', 'disclosure')
+    list_select_related = ('disclosure',)
+    readonly_fields = [f.name for f in AiUsage._meta.fields]
+    date_hierarchy = 'created_at'
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        spent, budget = ai_budget.spent_this_month(), ai_budget.monthly_budget()
+        level = messages.ERROR if ai_budget.is_exhausted() else messages.INFO
+        self.message_user(
+            request,
+            f'이번 달 AI 비용 ${spent:.4f} / 한도 ${budget:.2f} '
+            f'({spent / budget * 100 if budget else 0:.0f}%)'
+            + (' — 한도 도달: 새 요약 요청을 받지 않습니다' if level == messages.ERROR else ''),
+            level=level)
+        return super().changelist_view(request, extra_context)
+
+
+@admin.register(SummaryRequest)
+class SummaryRequestAdmin(admin.ModelAdmin):
+    list_display = ('created_at', 'user', 'disclosure')
+    list_select_related = ('user', 'disclosure')
+    readonly_fields = ('user', 'disclosure', 'created_at')
+
+    def has_add_permission(self, request):
         return False
 
 

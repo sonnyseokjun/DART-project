@@ -183,6 +183,11 @@ class Disclosure(models.Model):
     summary_attempts = models.PositiveSmallIntegerField('요약 시도 횟수', default=0)
     summary_attempted_at = models.DateTimeField('요약 마지막 시도', null=True, blank=True)
     summary_error = models.CharField('요약 마지막 오류', max_length=300, blank=True)
+    # 8단계부터 요약은 **누군가 요청한 공시만** 만든다(이슈 #44). 원문 확보와 요약 생성이
+    # 모두 이 값이 있는 공시만 대상으로 삼는다(retry_policy · fetch_documents ·
+    # summarize_disclosures). 처음 요청한 시각이며, 먼저 요청한 것부터 처리한다.
+    summary_requested_at = models.DateTimeField(
+        '요약 요청 시각', null=True, blank=True, db_index=True)
     created_at = models.DateTimeField('수집 시각', auto_now_add=True)
 
     class Meta:
@@ -225,6 +230,88 @@ class Disclosure(models.Model):
         목록은 select_related('summary')로 가져오므로 추가 쿼리가 발생하지 않는다.
         """
         return not hasattr(self, 'summary')
+
+    @property
+    def summary_state(self):
+        """화면에 보일 요약 상태 — 카드와 상세 화면이 이 값으로 갈린다(이슈 #44).
+
+        - `ready`     요약이 있다
+        - `failed`    요약을 만들지 못했다. 다시 요청할 수 없다(요약 상한·원문 상한)
+        - `queued`    요청됐고 만드는 중이다("AI가 정리 중")
+        - `available` 요약 대상이지만 아직 아무도 요청하지 않았다("AI 요약 보기" 버튼)
+        - `none`      요약 대상이 아니다(DART 원문 링크만)
+
+        숨긴 요약(`is_published=False`)은 여기까지 오지 않는다 — 노출 여부는
+        views.published_disclosures()가 먼저 거른다.
+        """
+        from .retry_policy import MAX_FETCH_ATTEMPTS
+
+        if not self.is_summary_pending:
+            return 'ready'
+        if self.selection_state != SelectionState.TARGET:
+            return 'none'
+        if self.is_summary_stuck or self.raw_fetch_attempts >= MAX_FETCH_ATTEMPTS:
+            return 'failed'
+        if self.summary_requested_at:
+            return 'queued'
+        return 'available'
+
+
+class SummaryRequest(models.Model):
+    """요약 요청 기록. 계정당 하루 요청 수를 세는 데 쓴다(summary_requests.py).
+
+    같은 공시를 여러 사람이 요청해도 요약은 한 번만 만든다 — 요청은 공시에 표시만
+    하고(Disclosure.summary_requested_at), 이 표는 누가 언제 눌렀는지만 남긴다.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='summary_requests', verbose_name='회원',
+    )
+    disclosure = models.ForeignKey(
+        'Disclosure', on_delete=models.CASCADE, related_name='summary_requests',
+        verbose_name='공시',
+    )
+    created_at = models.DateTimeField('요청 시각', auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = '요약 요청'
+        verbose_name_plural = '요약 요청'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'disclosure'], name='unique_summary_request'),
+        ]
+
+
+class AiUsage(models.Model):
+    """AI 호출 비용 장부 — **월 비용 상한의 근거**(ai_budget.py, 이슈 #44).
+
+    OpenAI 응답을 받을 때마다 한 줄씩 적는다(summarizer._call_openai). 요약이 결국
+    실패해도, 형식이 틀려 버린 응답이어도 돈은 나갔으므로 적는다. 8단계 전에는 성공한
+    요약의 마지막 호출 비용만 남아, 내부 재시도로 버려진 호출이 어디에도 기록되지 않았다.
+
+    비용은 토큰 × 단가로 계산한 **추정치**다(summarizer.estimate_cost). OpenAI 청구와
+    조금 다를 수 있어 상한을 목표 금액보다 낮게 잡는다(settings.AI_MONTHLY_BUDGET_USD).
+    """
+
+    created_at = models.DateTimeField('호출 시각', auto_now_add=True, db_index=True)
+    disclosure = models.ForeignKey(
+        'Disclosure', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='ai_usages', verbose_name='공시',
+    )
+    model_name = models.CharField('모델', max_length=50)
+    input_tokens = models.PositiveIntegerField('입력 토큰', default=0)
+    output_tokens = models.PositiveIntegerField('출력 토큰', default=0)
+    cached_tokens = models.PositiveIntegerField('캐시 적중 토큰', default=0)
+    cost_usd = models.FloatField('추정 비용(USD)')
+
+    class Meta:
+        verbose_name = 'AI 호출 비용'
+        verbose_name_plural = 'AI 호출 비용'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.created_at:%Y-%m-%d %H:%M} {self.model_name} ${self.cost_usd:.4f}'
 
 
 class DisclosureSummary(models.Model):

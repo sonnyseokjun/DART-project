@@ -8,15 +8,14 @@
 가져야 한다(PLAN.md 5.3). 상세 화면에만 두면 요약을 그대로 믿고 넘어가기 쉽다.
 **요약을 기다리는 카드에서는 이 링크가 유일한 정보 경로**라 더 중요하다.
 
-`is_summary_pending`은 요약이 아직 없는 상태다(낙관적 렌더링, PLAN.md 9.3).
+`is_summary_pending`은 요약이 아직 없는 상태다. 없는 이유(요청 전·정리 중·실패·대상 아님)는
+`summary_state`가 가르고, 안내 문구와 "AI 요약 보기" 버튼은 `_summary_status.html`이 그린다(이슈 #44).
 노출 여부 자체는 views.published_disclosures()가 정하므로 여기서 다시 따지지 않는다.
 {% endcomment %}
 <article class="card {% if disclosure.is_summary_pending %}card-pending{% else %}importance-{{ disclosure.summary.importance }}{% endif %}">
   <div class="card-head">
     {% if disclosure.is_summary_pending %}
-      <span class="badge badge-pending" title="AI 요약을 만들고 있습니다. 원문은 지금도 DART에서 볼 수 있습니다">
-        AI가 정리 중
-      </span>
+      {% include 'disclosures/_summary_badge.html' %}
     {% else %}
       <span class="badge badge-{{ disclosure.summary.importance }}">
         중요도 {{ disclosure.summary.get_importance_display }}
@@ -63,9 +62,7 @@
   </h3>
 
   {% if disclosure.is_summary_pending %}
-    <p class="card-oneline card-oneline-pending">
-      AI가 이 공시를 정리하고 있습니다. 잠시 뒤 다시 확인해 주세요.
-    </p>
+    {% include 'disclosures/_summary_status.html' %}
   {% else %}
     <p class="card-oneline">{{ disclosure.summary.one_line }}</p>
   {% endif %}

@@ -828,8 +828,13 @@ def _extract_usage(response):
     }
 
 
-def _call_openai(messages, model, max_output_tokens, reasoning_effort):
-    """1회 호출. 정상 완료를 먼저 확인한 뒤에만 본문을 읽는다."""
+def _call_openai(messages, model, max_output_tokens, reasoning_effort, on_usage=None):
+    """1회 호출. 정상 완료를 먼저 확인한 뒤에만 본문을 읽는다.
+
+    `on_usage(usage, model_id, cost_usd)`는 **응답을 받자마자** 부른다(이슈 #44). 뒤에서
+    응답이 잘렸거나 거부됐거나 형식이 틀려 버려도 돈은 이미 나갔기 때문이다. 월 비용
+    상한의 장부(`AiUsage`)가 이 콜백으로 채워진다.
+    """
     client = _get_client()
     kwargs = {
         'model': model,
@@ -844,6 +849,13 @@ def _call_openai(messages, model, max_output_tokens, reasoning_effort):
 
     response = client.chat.completions.create(**kwargs)
     usage = _extract_usage(response)
+    if on_usage is not None:
+        on_usage(usage, response.model or model, estimate_cost(
+            usage['input_tokens'], usage['output_tokens'],
+            cached_tokens=usage['cached_tokens'],
+            cache_write_tokens=usage['cache_write_tokens'],
+            model=model,
+        ))
 
     if not response.choices:
         raise SummaryValidationError('응답에 choices가 없음')
@@ -871,7 +883,8 @@ def summarize_disclosure(*, company_name, report_name, filed_at, rcept_no, raw_t
                          disclosure_type='', model=DEFAULT_MODEL,
                          reasoning_effort=DEFAULT_REASONING_EFFORT,
                          max_retries=MAX_RETRIES, max_input_tokens=MAX_INPUT_TOKENS,
-                         correction_warnings=None, correction_previous=None):
+                         correction_warnings=None, correction_previous=None,
+                         on_usage=None):
     """공시 1건을 요약해 검증된 dict를 반환한다.
 
     raw_text 는 **전처리를 마친** 원문이어야 한다(XML 태그 제거·표 텍스트화·상용구 제거).
@@ -954,8 +967,11 @@ def summarize_disclosure(*, company_name, report_name, filed_at, rcept_no, raw_t
     last_error = None
     for attempt in range(1, max_retries + 2):  # 최초 1회 + 재시도 max_retries회
         try:
+            # 장부 콜백이 있을 때만 넘긴다. 호출 경계를 대역으로 바꾼 테스트들이
+            # 이 키워드를 모르는 채로 짜여 있다.
+            extra = {'on_usage': on_usage} if on_usage is not None else {}
             content, usage, model_id = _call_openai(
-                messages, model, max_output_tokens, reasoning_effort
+                messages, model, max_output_tokens, reasoning_effort, **extra,
             )
             try:
                 data = json.loads(content)

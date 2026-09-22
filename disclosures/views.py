@@ -9,6 +9,8 @@
 
 이 규칙은 ViewsDoNotCallExternalApisTest 가 import 수준에서 고정한다.
 """
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -20,66 +22,43 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_POST
 
-from . import watchlist
-from .models import (
-    MAX_SUMMARY_ATTEMPTS, Company, Disclosure, DisclosureSummary, ListedCorp,
-)
+from . import ai_budget, summary_requests, watchlist
+from .models import Company, Disclosure, DisclosureSummary, ListedCorp
 from .selection import SelectionState
 
 #: 목록 화면의 페이지당 공시 수.
 PAGE_SIZE = 20
 
-def published_disclosures():
+def published_disclosures(show_all=False):
     """화면에 노출할 공시 큐리셋 — **노출 정책의 단일 출처**.
 
-    두 부류를 노출한다.
+    8단계부터 요약은 요청받은 공시만 만든다(이슈 #44). 그래서 "요약이 있는 것"만 보여주면
+    버튼을 누를 공시가 목록에 없다. 노출 기준은 이렇다.
 
-    1. **요약이 준비된 공시** — 게시 중인 요약이 붙어 있다.
-    2. **요약을 기다리는 공시** — 선별 대상이고 원문까지 확보됐는데 아직 요약이 없다.
-       화면에는 "AI가 정리 중"으로 나간다(낙관적 렌더링, PLAN.md 9.3).
-       단 요약을 상한만큼 실패한 공시는 뺀다 — 만들어지지 않을 요약을 기다리게 하면
-       안 된다(`MAX_SUMMARY_ATTEMPTS`).
+    - **기본(요약 대상)** — 요약이 있는 공시 + 요약 대상(선별 통과) 공시. 요약이 없으면
+      카드에 상태가 붙는다: "AI 요약 보기" 버튼 · "AI가 정리 중" · "만들지 못함"
+      (`Disclosure.summary_state`).
+    - **전체(`show_all`)** — 요약 대상이 아닌 공시도 보인다. 공시의 대부분(약 85%)이
+      임원 주식 보유 보고 같은 단순 보고라, 기본으로 보여주면 중요한 공시가 묻힌다.
+      이것들은 제목과 DART 원문 링크만 나온다.
 
-    선별에서 제외된 공시(표본 963건 중 823건)는 두 조건 모두에 걸리지 않아 자연히 빠진다.
+    ## 숨긴 요약은 어디에도 나오지 않는다
 
-    ## 왜 "원문 확보 완료"까지를 조건으로 두는가
+    검수자가 숨겼거나 검증에 실패해 자동 미게시된 요약(`is_published=False`)의 공시는
+    두 경우 모두 빠진다. **"AI 요약 보기" 버튼으로도 되돌리지 않는다** — 요약을 만들었으나
+    내보낼 수 없다는 뜻이지, 아직 없다는 뜻이 아니다. 버튼을 달면 다시 만들 수 없는
+    요약을 요청하게 된다.
 
-    감지 즉시 노출하면 더 빠르지만, **원문을 끝내 못 받는 공시**(DART `[014]`)가
-    "정리 중"인 채로 영원히 남는다. 재시도는 상한에서 멈추는데 카드는 멈추지 않기
-    때문이다(fetch_documents.MAX_FETCH_ATTEMPTS). 원문이 손에 있는 것만 내보내면
-    남은 단계가 요약뿐이라 이 상태가 오래갈 수 없다.
-
-    실제 이득도 크지 않다 — deploy/pipeline.sh가 수집부터 요약까지 한 실행에서
-    잇기 때문에 두 조건의 차이는 수십 초다.
-
-    ## 미게시 요약은 사라진다
-
-    미검수 요약은 노출한다. 현재 `is_reviewed=True`가 0건이라 검수분만 보이면 화면이
-    완전히 비기 때문이다. 대신 검수가 필요한 요약에는 템플릿에서 배지를 단다
+    미검수 요약은 노출한다. 검수가 필요한 요약에는 템플릿에서 배지를 단다
     (`DisclosureSummary.needs_review`).
-
-    반대로 검수자가 숨겼거나 검증에 실패해 자동 미게시된 요약(`is_published=False`)은
-    목록·상세·하이라이트 어디에도 내보내지 않는다. **"정리 중"으로도 되돌리지 않는다** —
-    요약을 만들었으나 내보낼 수 없다는 뜻이지 아직 만드는 중이라는 뜻이 아니므로,
-    그렇게 표시하면 사용자에게 오지 않을 것을 기다리게 한다. 카드만 남기고 내용을
-    비우는 것도 "뭔가 있었는데 가려졌다"는 잘못된 신호라서 아예 제거한다.
 
     select_related 는 목록에서 카드마다 기업·요약을 참조하므로 필수다(N+1 방지).
     """
-    ready = Q(summary__isnull=False, summary__is_published=True)
-    pending = Q(
-        summary__isnull=True,
-        selection_state=SelectionState.TARGET,
-        raw_fetched=True,
-        # 요약을 상한만큼 실패한 공시는 뺀다. 만들어지지 않을 요약을 계속 기다리게
-        # 하는 셈이기 때문이다(models.MAX_SUMMARY_ATTEMPTS).
-        summary_attempts__lt=MAX_SUMMARY_ATTEMPTS,
-    )
-    return (
-        Disclosure.objects
-        .filter(ready | pending)
-        .select_related('company', 'company__sector', 'summary')
-    )
+    queryset = Disclosure.objects.exclude(summary__is_published=False)
+    if not show_all:
+        queryset = queryset.filter(
+            Q(summary__isnull=False) | Q(selection_state=SelectionState.TARGET))
+    return queryset.select_related('company', 'company__sector', 'summary')
 
 
 def _filter_by_importance(queryset, importance):
@@ -103,6 +82,14 @@ def _filter_by_company(queryset, stock_code):
 
 def _paginate(request, queryset):
     return Paginator(queryset, PAGE_SIZE).get_page(request.GET.get('page'))
+
+
+def _feed_options(request):
+    """목록 화면 공통 값 — "전체 공시 보기" 여부와 월 한도 안내."""
+    return {
+        'show_all': request.GET.get('all') == '1',
+        'budget_exhausted': ai_budget.is_exhausted(),
+    }
 
 
 def _render_feed(request, template, context):
@@ -196,13 +183,15 @@ def home(request):
         })
 
     companies = list(_my_companies(request.user))
-    disclosures = published_disclosures().filter(company__in=companies)
+    options = _feed_options(request)
+    disclosures = published_disclosures(options['show_all']).filter(company__in=companies)
     selected_company = request.GET.get('company', '')
     selected_importance = request.GET.get('importance', '')
     disclosures = _filter_by_company(disclosures, selected_company)
     disclosures = _filter_by_importance(disclosures, selected_importance)
 
     return _render_feed(request, 'disclosures/home.html', {
+        **options,
         'companies': companies,
         'watch_limit': watchlist.MAX_WATCHES_PER_USER,
         'page_obj': _paginate(request, disclosures),
@@ -235,11 +224,13 @@ def company_detail(request, stock_code):
             'watch_limit': watchlist.MAX_WATCHES_PER_USER,
         })
 
-    disclosures = published_disclosures().filter(company=company)
+    options = _feed_options(request)
+    disclosures = published_disclosures(options['show_all']).filter(company=company)
     selected_importance = request.GET.get('importance', '')
     disclosures = _filter_by_importance(disclosures, selected_importance)
 
     return _render_feed(request, 'disclosures/company_detail.html', {
+        **options,
         'company': company,
         'watching': True,
         # 카드에서 기업명을 감춘다. 템플릿의 include 인자가 아니라 컨텍스트에 두는
@@ -271,7 +262,14 @@ def search(request):
 def _redirect_back(request, fallback):
     """폼이 보낸 next로 돌아간다. 외부 주소로는 보내지 않는다(열린 리다이렉트 방지)."""
     target = request.POST.get('next', '')
-    if url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
+    # 자동 갱신으로 다시 그린 카드의 폼은 next에 `partial=1`이 붙어 온다. 그대로 돌아가면
+    # 화면 틀 없이 목록 조각만 뜬다.
+    parts = urlsplit(target)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+             if k != 'partial']
+    target = urlunsplit(parts._replace(query=urlencode(query)))
+    if target and url_has_allowed_host_and_scheme(
+            target, allowed_hosts={request.get_host()}):
         return redirect(target)
     return redirect(fallback)
 
@@ -312,7 +310,8 @@ def disclosure_detail(request, rcept_no):
 
     여기서 요약을 생성하지 않는다 — 모듈 docstring 참고.
     """
-    disclosure = get_object_or_404(published_disclosures(), rcept_no=rcept_no)
+    # 상세는 "전체" 기준으로 연다. 전체 보기 목록에서 누른 단순 보고도 열려야 한다.
+    disclosure = get_object_or_404(published_disclosures(show_all=True), rcept_no=rcept_no)
     summary = None if disclosure.is_summary_pending else disclosure.summary
 
     # 근거는 원문에서 확인된 인용만 보여준다. 검증에 실패한 인용을 그대로 노출하면
@@ -327,4 +326,24 @@ def disclosure_detail(request, rcept_no):
         'disclosure': disclosure,
         'summary': summary,
         'evidence': evidence,
+        'budget_exhausted': ai_budget.is_exhausted(),
     })
+
+
+@login_required
+@require_POST
+def summary_request(request):
+    """"AI 요약 보기" 버튼. **요청만 기록한다** — 여기서 AI를 부르지 않는다.
+
+    다음 파이프라인 실행이 원문을 받고 요약한다(summary_requests 첫 주석). 화면은
+    "AI가 정리 중"으로 바뀌고, 요약이 붙으면 자동 갱신이 알아챈다.
+    """
+    disclosure = get_object_or_404(
+        published_disclosures(), rcept_no=request.POST.get('rcept_no', ''))
+    try:
+        summary_requests.request_summary(request.user, disclosure)
+    except summary_requests.RequestRefused as exc:
+        messages.warning(request, str(exc))
+    else:
+        messages.success(request, 'AI 요약을 요청했습니다. 1~2분 안에 정리됩니다.')
+    return _redirect_back(request, 'disclosures:home')
