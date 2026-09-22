@@ -15,15 +15,26 @@ corp_code 없는 조회는 검색기간이 3개월로 제한되므로(dart.MAX_L
 --detect는 유형별 순회 앞에 **호출 1회짜리 사전 확인**을 붙인다. 신규가 없으면 거기서
 끝나므로 1분 주기로 돌려도 호출량이 감당된다(PLAN.md 9.3). 자세한 근거는 _has_new 참조.
 
+## 백필 (8단계, 이슈 #44)
+
+사용자가 새로 관심 기업으로 고른 기업은 **최근 30일 공시를 채워 넣는다.** 매 실행의
+맨 앞에서 대기열을 조금씩 처리한다. 기업 1곳에 공시유형 수(10)만큼 DART를 부르므로,
+한 실행과 하루의 처리량에 상한을 둔다(BACKFILL_*). 목록만 받으므로 요약 비용은 없다.
+
 추후 Celery Beat 도입 시 이 로직을 그대로 태스크로 옮긴다.
 """
 import sys
 from datetime import date, datetime, timedelta
 
+import requests
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone
+
+from disclosures import retry_policy, watchlist
 
 from disclosures.dart import (
     DETECT_PAGE_COUNT,
+    DartApiError,
     MAX_LIST_SPAN_DAYS,
     PBLNTF_TYPES,
     dart_viewer_url,
@@ -55,6 +66,15 @@ EST_PAGES_PER_DAY = 10
 #     같은 값으로 만들면, 스크립트가 진짜 장애를 "평소와 같음"으로 삼켜 버린다.
 # grep이 "결과 없음"(1)과 "오류"(2)를 나누는 것과 같은 취지다.
 NOTHING_NEW_EXIT_CODE = 9
+
+#: 한 실행에서 백필할 기업 수. 1곳에 호출 10회라 5곳이면 50회, 수십 초다.
+#: 1분 주기 실행이 다음 실행과 겹치지 않을 만큼만 한다(겹치면 flock이 다음 것을 건너뛴다).
+BACKFILL_COMPANIES_PER_RUN = 5
+
+#: 하루에 백필할 기업 수. 300곳 × 10회 = 3,000회로 DART 하루 한도(20,000)의 15%다.
+#: 평소 수집이 쓰는 몫(약 3%, PLAN.md 9.3)과 합쳐도 한도에 한참 못 미친다. 넘치면
+#: 다음 날로 밀린다 — 사용자에게는 "최근 공시를 불러오는 중"으로 보인다.
+BACKFILL_COMPANIES_PER_DAY = 300
 
 
 class Command(BaseCommand):
@@ -90,12 +110,20 @@ class Command(BaseCommand):
             for c in Company.objects.filter(is_active=True)
         }
         if not companies:
-            self.stdout.write(self.style.WARNING(
-                '추적 중인 기업이 없습니다. 먼저 seed_companies를 실행하세요.'
-            ))
+            # 8단계부터는 정상 상태다 — 아직 아무도 관심 기업을 고르지 않았다.
+            # 감지 모드에서 0으로 끝내면 파이프라인이 매분 뒷단계를 헛돌린다.
+            self.stdout.write('추적 중인 기업이 없습니다 (관심 기업을 고른 사용자 없음).')
+            if options['detect']:
+                sys.exit(NOTHING_NEW_EXIT_CODE)
             return
 
+        backfilled = self._backfill(companies)
+
         if options['detect'] and not self._has_new(bgn, end, companies):
+            if backfilled:
+                # 시장 전체의 신규는 없어도 백필로 새 공시가 들어왔다. 뒷단계(선별)가
+                # 돌아야 하므로 0으로 끝낸다. 유형별 본 순회는 필요 없다.
+                return
             sys.exit(NOTHING_NEW_EXIT_CODE)
 
         chunks = split_date_range(bgn, end)
@@ -241,15 +269,75 @@ class Command(BaseCommand):
 
     # --- 수집 -----------------------------------------------------------
 
-    def _collect(self, bgn_de, end_de, companies):
+    def _backfill(self, companies):
+        """새로 추적을 시작한 기업의 최근 공시를 채운다. 새로 저장한 건수를 반환.
+
+        대기열은 `Company.backfill_requested_at`이다(watchlist._start_tracking이 건다).
+        기업별로 corp_code를 주고 유형별로 조회한다 — 유형 없이 한 번에 받으면 호출은
+        1회로 줄지만 공시유형을 모른 채 저장하게 되어 선별 정책이 뚫린다(_has_new 참조).
+
+        실패하면 재시도 간격을 두고 다시 하며, 상한에 걸리면 포기한다
+        (retry_policy.MAX_BACKFILL_ATTEMPTS). 포기해도 그 기업의 새 공시는 정상 수집된다.
+        """
+        now = timezone.now()
+        done_today = Company.objects.filter(
+            backfill_attempted_at__gte=watchlist.today_start(now)).count()
+        room = min(BACKFILL_COMPANIES_PER_RUN, BACKFILL_COMPANIES_PER_DAY - done_today)
+        if room <= 0:
+            return 0
+
+        queue = [
+            c for c in Company.objects.filter(
+                is_active=True, backfill_requested_at__isnull=False,
+            ).order_by('backfill_requested_at')
+            if retry_policy.is_retry_due(
+                c.backfill_attempts, c.backfill_attempted_at,
+                retry_policy.BACKFILL_RETRY_BACKOFF_MINUTES, now)
+        ][:room]
+
+        today = timezone.localdate()
+        bgn_de = f'{today - timedelta(days=watchlist.BACKFILL_DAYS):%Y%m%d}'
+        end_de = f'{today:%Y%m%d}'
+        total_new = 0
+        for company in queue:
+            company.backfill_attempts += 1
+            company.backfill_attempted_at = now
+            try:
+                _, new = self._collect(
+                    bgn_de, end_de, {company.corp_code: company},
+                    corp_code=company.corp_code)
+            except (DartApiError, requests.RequestException) as exc:
+                if company.backfill_attempts >= retry_policy.MAX_BACKFILL_ATTEMPTS:
+                    company.backfill_requested_at = None
+                    note = '상한 도달, 포기'
+                else:
+                    note = '다음 실행에 재시도'
+                company.save(update_fields=[
+                    'backfill_attempts', 'backfill_attempted_at', 'backfill_requested_at'])
+                self.stdout.write(self.style.WARNING(
+                    f'백필 실패: [{company.name}] {exc} ({note})'))
+                continue
+            company.backfill_requested_at = None
+            company.backfilled_at = now
+            company.save(update_fields=[
+                'backfill_attempts', 'backfill_attempted_at',
+                'backfill_requested_at', 'backfilled_at'])
+            total_new += new
+            self.stdout.write(
+                f'백필: [{company.name}] 최근 {watchlist.BACKFILL_DAYS}일 공시 {new}건 저장')
+        return total_new
+
+    def _collect(self, bgn_de, end_de, companies, corp_code=None):
         """한 날짜 창을 유형별로 조회해 (스캔 건수, 신규 저장 건수)를 반환.
 
         공시유형은 list.json 응답에 없으므로 유형별로 나눠 조회해 각 공시에 유형을 태깅한다.
         유형은 전체 공시를 분할하므로 기업 수와 무관하게 호출 수가 고정된다(PLAN.md 12.2).
+        corp_code를 주면 그 기업만 조회한다(백필).
         """
         scanned, new = 0, 0
         for code, type_name in PBLNTF_TYPES.items():
-            for item in iter_disclosures(bgn_de, end_de, pblntf_ty=code):
+            for item in iter_disclosures(
+                    bgn_de, end_de, corp_code=corp_code, pblntf_ty=code):
                 scanned += 1
                 company = companies.get(item['corp_code'])
                 if company is None:

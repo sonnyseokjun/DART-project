@@ -60,6 +60,13 @@ def download_corp_codes():
     """corpCode.xml ZIP을 내려받아 [{corp_code, corp_name, stock_code}] 목록으로 반환.
 
     상장사만 필요하므로 stock_code가 있는 항목만 남긴다.
+
+    ## XML을 통째로 읽지 않는다
+
+    corpCode.xml에는 비상장 법인까지 약 10만 곳이 들어 있다. `ET.fromstring`으로 한 번에
+    읽으면 파이썬 메모리가 **276MB**까지 올라간다(2026-09-22 실측). 8단계부터 서버가
+    이 파일을 매일 받는데(sync_listed_corps), 서버는 1GB이고 요약 중 여유가 269MB다
+    (PLAN.md 9.3). 그래서 ZIP 안의 XML을 **흘려 읽으며** 항목마다 버린다.
     """
     resp = requests.get(
         f'{BASE_URL}/corpCode.xml', params={'crtfc_key': _api_key()}, timeout=60
@@ -70,20 +77,21 @@ def download_corp_codes():
         root = ET.fromstring(resp.content)
         raise DartApiError(root.findtext('status'), root.findtext('message'))
 
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        xml_bytes = zf.read(zf.namelist()[0])
-
-    root = ET.fromstring(xml_bytes)
     result = []
-    for corp in root.iter('list'):
-        stock_code = (corp.findtext('stock_code') or '').strip()
-        if not stock_code:
-            continue
-        result.append({
-            'corp_code': corp.findtext('corp_code').strip(),
-            'corp_name': corp.findtext('corp_name').strip(),
-            'stock_code': stock_code,
-        })
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf,             zf.open(zf.namelist()[0]) as xml_stream:
+        for _, corp in ET.iterparse(xml_stream, events=('end',)):
+            if corp.tag != 'list':
+                continue
+            stock_code = (corp.findtext('stock_code') or '').strip()
+            if stock_code:
+                result.append({
+                    'corp_code': corp.findtext('corp_code').strip(),
+                    'corp_name': corp.findtext('corp_name').strip(),
+                    'stock_code': stock_code,
+                })
+            # 다 읽은 항목을 버려야 트리가 쌓이지 않는다. 이것이 없으면 iterparse도
+            # 결국 전체를 메모리에 올린다.
+            corp.clear()
     return result
 
 

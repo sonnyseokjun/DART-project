@@ -47,7 +47,7 @@ def withdraw(request):
     logout(request)
     user.delete()
     messages.info(request, '탈퇴가 완료되었습니다. 저장된 회원 정보를 모두 삭제했습니다.')
-    return redirect('disclosures:sector_list')
+    return redirect('disclosures:home')
 
 
 @csrf_exempt

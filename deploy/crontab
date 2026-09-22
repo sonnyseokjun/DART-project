@@ -44,6 +44,13 @@ DC=/usr/bin/docker compose
 #   겹치지 않는 분으로 옮긴다.
 5  7 * * *  cd $PROJECT_DIR && ./deploy/pipeline.sh --full >> /var/log/dart/pipeline.log 2>&1
 
+# --- 상장사 명단 갱신 (8단계, 이슈 #44) -----------------------------------
+# 기업 검색은 이 사본만 본다(DART 미호출). DART 호출 1회, 수 초.
+# 파이프라인과 **같은 잠금**을 잡는다 — DB에 쓰는 프로세스를 하나로 유지하기 위해서다
+# (PLAN.md 9.3). -n이 아니라 -w인 이유: 파이프라인이 돌고 있으면 건너뛰지 말고 기다린다.
+# 06:50은 위 감지 폴링(매시 00분)·전체 폴링(07:05)과 겹치지 않는다(주의 3).
+50 6 * * *  cd $PROJECT_DIR && flock -w 600 /tmp/dart-pipeline.lock $DC exec -T web python manage.py sync_listed_corps >> /var/log/dart/sync.log 2>&1
+
 # --- 재검증 (매일 새벽, LLM 미호출·무료) --------------------------------
 0  3 * * *  cd $PROJECT_DIR && $DC exec -T web python manage.py revalidate_summaries       >> /var/log/dart/revalidate.log 2>&1
 

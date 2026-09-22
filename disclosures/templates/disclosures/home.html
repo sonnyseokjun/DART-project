@@ -1,0 +1,59 @@
+{% extends 'disclosures/base.html' %}
+{# 로그인한 회원의 첫 화면 — 내 관심 기업의 공시 모아보기(이슈 #44). #}
+
+{% block title %}내 관심 기업 · 공시 쉽게 보기{% endblock %}
+
+{% block content %}
+  <h1>내 관심 기업</h1>
+
+  {% include 'disclosures/_search_form.html' %}
+
+  {% if companies %}
+    <p class="lead">
+      {{ companies|length }} / {{ watch_limit }}곳 ·
+      {% for company in companies %}
+        <a href="{% url 'disclosures:company_detail' company.stock_code %}">{{ company.name }}</a>{% if not forloop.last %}, {% endif %}
+      {% endfor %}
+    </p>
+
+    <form class="filters" method="get">
+      <label>
+        기업
+        <select name="company">
+          <option value="">전체</option>
+          {% for company in companies %}
+            <option value="{{ company.stock_code }}"
+                    {% if company.stock_code == selected_company %}selected{% endif %}>
+              {{ company.name }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>
+        중요도
+        <select name="importance">
+          <option value="">전체</option>
+          {% for option in importance_options %}
+            <option value="{{ option.value }}"
+                    {% if option.value == selected_importance %}selected{% endif %}>
+              {{ option.label }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <button type="submit">적용</button>
+      {% if selected_company or selected_importance %}
+        <a class="filter-reset" href="{% url 'disclosures:home' %}">초기화</a>
+      {% endif %}
+    </form>
+
+    {% include 'disclosures/_disclosure_feed.html' %}
+  {% else %}
+    <p class="empty">
+      아직 관심 기업이 없습니다. 위에서 기업을 검색해 추가하면,
+      그 기업의 공시가 여기에 모입니다(최대 {{ watch_limit }}곳).
+    </p>
+  {% endif %}
+{% endblock %}

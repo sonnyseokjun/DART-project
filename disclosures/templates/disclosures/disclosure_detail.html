@@ -4,8 +4,7 @@
 
 {% block breadcrumb %}
   <nav class="breadcrumb">
-    <a href="{% url 'disclosures:sector_list' %}">홈</a> ›
-    <a href="{% url 'disclosures:sector_detail' disclosure.company.sector.slug %}">{{ disclosure.company.sector.name }}</a> ›
+    <a href="{% url 'disclosures:home' %}">홈</a> ›
     <a href="{% url 'disclosures:company_detail' disclosure.company.stock_code %}">{{ disclosure.company.name }}</a> ›
     <span>공시 상세</span>
   </nav>

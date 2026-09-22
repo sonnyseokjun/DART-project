@@ -1,0 +1,13 @@
+{# 관심 기업 추가 버튼. 필요한 값: corp(ListedCorp), watch_count, watch_limit.
+   한도에 닿았으면 버튼 대신 안내를 보여준다. 막는 것은 서버다(watchlist.follow) —
+   여기서 숨기는 것은 누르기 전에 알려주려는 것뿐이다. #}
+{% if watch_count >= watch_limit %}
+  <p class="landing-note">관심 기업이 {{ watch_limit }}곳으로 가득 찼습니다. 다른 기업을 빼면 추가할 수 있습니다.</p>
+{% else %}
+  <form method="post" action="{% url 'disclosures:watch_add' %}">
+    {% csrf_token %}
+    <input type="hidden" name="corp_code" value="{{ corp.corp_code }}">
+    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+    <button type="submit">관심 기업에 추가</button>
+  </form>
+{% endif %}

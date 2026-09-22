@@ -10,24 +10,24 @@
 이 규칙은 ViewsDoNotCallExternalApisTest 가 import 수준에서 고정한다.
 """
 from django.conf import settings
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db.models import Count, Max, Q
-from django.http import JsonResponse
-from django.shortcuts import get_object_or_404, render
+from django.http import Http404, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.http import require_POST
 
+from . import watchlist
 from .models import (
-    MAX_SUMMARY_ATTEMPTS, Company, Disclosure, DisclosureSummary, Sector,
+    MAX_SUMMARY_ATTEMPTS, Company, Disclosure, DisclosureSummary, ListedCorp,
 )
 from .selection import SelectionState
 
 #: 목록 화면의 페이지당 공시 수.
 PAGE_SIZE = 20
-
-#: 메인 화면 상단에 띄우는 주요 공시 수.
-HIGHLIGHT_COUNT = 5
-
 
 def published_disclosures():
     """화면에 노출할 공시 큐리셋 — **노출 정책의 단일 출처**.
@@ -134,6 +134,7 @@ def _poll_interval_seconds(now=None):
     return base if busy else base * settings.REALTIME_OFF_HOURS_MULTIPLIER
 
 
+@login_required
 def latest_status(request):
     """목록이 바뀌었는지 판단할 서명과 다음 확인 간격을 돌려준다.
 
@@ -151,8 +152,13 @@ def latest_status(request):
       이것이 없으면 앞의 둘이 그대로라 화면이 "정리 중"에 머문다.
 
     rcept_no는 자리수가 고정된 숫자 문자열이라 사전순 최댓값이 곧 최신이다.
+
+    **내 관심 기업만 센다**(이슈 #44). 남이 고른 기업에 새 공시가 올라와도 내 화면은
+    바뀌지 않으므로, 전체를 세면 쓸데없이 목록을 다시 받는다.
     """
-    stats = published_disclosures().aggregate(
+    stats = published_disclosures().filter(
+        company__in=_my_companies(request.user),
+    ).aggregate(
         total=Count('id'),
         summarized=Count('summary'),
         latest=Max('rcept_no'),
@@ -173,60 +179,32 @@ def _importance_options():
     ]
 
 
-def sector_list(request):
-    """메인 — 섹터 카드 + 최신 주요 공시 하이라이트.
+def _my_companies(user):
+    """이 사용자가 고른 관심 기업. 목록 화면은 **이것의 공시만** 보여준다(이슈 #44)."""
+    return Company.objects.filter(watches__user=user).order_by('name')
 
-    **로그인하지 않은 방문자에게는 서비스 소개만 보여준다**(이슈 #44). 목록은 앞으로
-    계정별 관심 기업으로 바뀌므로, 비로그인 방문자에게 보여줄 목록이 없다.
+
+def home(request):
+    """첫 화면. 비로그인은 서비스 소개, 로그인하면 **내 관심 기업의 공시 모아보기**.
+
+    섹터(업종)별 화면은 8단계에서 없앴다. 사용자가 추가하는 기업은 모두 "기타"로
+    들어가 업종 구분이 의미가 없어졌다(PLAN.md 9.4). 업종 자동 분류를 만들면 다시 본다.
     """
     if not request.user.is_authenticated:
         return render(request, 'disclosures/landing.html', {
             'kakao_login_enabled': settings.KAKAO_LOGIN_ENABLED,
         })
 
-    sectors = (
-        Sector.objects
-        .annotate(
-            company_count=Count('companies', distinct=True),
-            # 요약이 있고 숨기지 않은 공시만 세어야 화면에 보이는 수와 일치한다.
-            # 조건은 published_disclosures()의 필터와 반드시 같이 움직여야 한다
-            # (집계는 큐리셋 필터로 대체할 수 없어 여기서 한 번 더 적는다).
-            summary_count=Count(
-                'companies__disclosures',
-                filter=Q(
-                    companies__disclosures__summary__isnull=False,
-                    companies__disclosures__summary__is_published=True,
-                ),
-                distinct=True,
-            ),
-        )
-        .order_by('name')
-    )
-    highlights = published_disclosures().filter(
-        summary__importance=DisclosureSummary.Importance.HIGH
-    )[:HIGHLIGHT_COUNT]
-
-    return render(request, 'disclosures/sector_list.html', {
-        'sectors': sectors,
-        'highlights': highlights,
-    })
-
-
-@login_required
-def sector_detail(request, slug):
-    """섹터 상세 — 소속 기업의 공시 통합 피드. 기업·중요도 필터."""
-    sector = get_object_or_404(Sector, slug=slug)
-    companies = sector.companies.filter(is_active=True).order_by('name')
-
-    disclosures = published_disclosures().filter(company__sector=sector)
+    companies = list(_my_companies(request.user))
+    disclosures = published_disclosures().filter(company__in=companies)
     selected_company = request.GET.get('company', '')
     selected_importance = request.GET.get('importance', '')
     disclosures = _filter_by_company(disclosures, selected_company)
     disclosures = _filter_by_importance(disclosures, selected_importance)
 
-    return _render_feed(request, 'disclosures/sector_detail.html', {
-        'sector': sector,
+    return _render_feed(request, 'disclosures/home.html', {
         'companies': companies,
+        'watch_limit': watchlist.MAX_WATCHES_PER_USER,
         'page_obj': _paginate(request, disclosures),
         'total_count': disclosures.count(),
         'selected_company': selected_company,
@@ -237,10 +215,25 @@ def sector_detail(request, slug):
 
 @login_required
 def company_detail(request, stock_code):
-    """기업 상세 — 기업 개황 + 공시 타임라인. 중요도 필터."""
-    company = get_object_or_404(
-        Company.objects.select_related('sector'), stock_code=stock_code
-    )
+    """기업 상세. **관심 기업일 때만 공시를 보여준다.**
+
+    고르지 않은 기업(예: 남이 보낸 링크)은 이름과 "관심 기업에 추가"만 보여준다.
+    아직 누구도 고르지 않아 Company가 없는 상장사도 명단(ListedCorp)에 있으면 연다.
+    """
+    company = Company.objects.select_related('sector').filter(
+        stock_code=stock_code).first()
+    listed = ListedCorp.objects.filter(stock_code=stock_code).first()
+    if company is None and listed is None:
+        raise Http404('등록되지 않은 종목코드입니다.')
+
+    watching = company is not None and company.watches.filter(
+        user=request.user).exists()
+    if not watching:
+        return render(request, 'disclosures/company_detail.html', {
+            'company': company, 'listed': listed, 'watching': False,
+            'watch_count': request.user.watches.count(),
+            'watch_limit': watchlist.MAX_WATCHES_PER_USER,
+        })
 
     disclosures = published_disclosures().filter(company=company)
     selected_importance = request.GET.get('importance', '')
@@ -248,6 +241,7 @@ def company_detail(request, stock_code):
 
     return _render_feed(request, 'disclosures/company_detail.html', {
         'company': company,
+        'watching': True,
         # 카드에서 기업명을 감춘다. 템플릿의 include 인자가 아니라 컨텍스트에 두는
         # 이유는, 자동 갱신이 피드 조각만 따로 렌더링할 때도 같은 값이 필요해서다.
         'hide_company': True,
@@ -256,6 +250,52 @@ def company_detail(request, stock_code):
         'selected_importance': selected_importance,
         'importance_options': _importance_options(),
     })
+
+
+@login_required
+def search(request):
+    """기업 검색. 저장된 상장사 명단만 본다 — **DART를 부르지 않는다.**"""
+    query = request.GET.get('q', '').strip()
+    results = list(watchlist.search_listed(query))
+    watched = set(
+        request.user.watches.values_list('company__corp_code', flat=True))
+    return render(request, 'disclosures/search.html', {
+        'query': query,
+        'results': results,
+        'watched_corp_codes': watched,
+        'watch_count': len(watched),
+        'watch_limit': watchlist.MAX_WATCHES_PER_USER,
+    })
+
+
+def _redirect_back(request, fallback):
+    """폼이 보낸 next로 돌아간다. 외부 주소로는 보내지 않는다(열린 리다이렉트 방지)."""
+    target = request.POST.get('next', '')
+    if url_has_allowed_host_and_scheme(target, allowed_hosts={request.get_host()}):
+        return redirect(target)
+    return redirect(fallback)
+
+
+@login_required
+@require_POST
+def watch_add(request):
+    listed = get_object_or_404(ListedCorp, corp_code=request.POST.get('corp_code', ''))
+    try:
+        watchlist.follow(request.user, listed)
+    except watchlist.WatchLimitError as exc:
+        messages.warning(request, str(exc))
+    else:
+        messages.success(request, f'{listed.name}을(를) 관심 기업에 추가했습니다.')
+    return _redirect_back(request, 'disclosures:home')
+
+
+@login_required
+@require_POST
+def watch_remove(request):
+    company = get_object_or_404(Company, corp_code=request.POST.get('corp_code', ''))
+    watchlist.unfollow(request.user, company)
+    messages.info(request, f'{company.name}을(를) 관심 기업에서 뺐습니다.')
+    return _redirect_back(request, 'disclosures:home')
 
 
 def disclosure_detail(request, rcept_no):
