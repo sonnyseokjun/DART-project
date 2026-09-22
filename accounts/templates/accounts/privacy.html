@@ -1,9 +1,9 @@
 {% extends 'disclosures/base.html' %}
-{# 개인정보처리방침 (이슈 #44). 수집 항목을 늘리거나 보관 방식(백업 주기 등)을 바꾸면
+{% comment %} 개인정보처리방침 (이슈 #44). 수집 항목을 늘리거나 보관 방식(백업 주기 등)을 바꾸면
    이 문서도 함께 고쳐야 한다. 코드와 어긋나면 방침이 거짓이 된다.
    - 수집 범위: accounts/adapter.py (minimal_extra_data)
    - 백업 보관: deploy/backup.sh · S3 수명주기 30일 · Lightsail 스냅샷 7개 (PLAN.md 9.2)
-   - 접속 기록: docker-compose.yml logging (10MB × 3개, 용량 기준 순환) #}
+   - 접속 기록: docker-compose.yml logging (10MB × 3개, 용량 기준 순환) {% endcomment %}
 
 {% block title %}개인정보처리방침 · 공시 쉽게 보기{% endblock %}
 
