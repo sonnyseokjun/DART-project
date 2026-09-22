@@ -1996,9 +1996,15 @@ class RevalidateSummariesCommandTest(TestCase):
 # ---------------------------------------------------------------------------
 
 class WebViewTestBase(TestCase):
-    """화면 테스트 공용 픽스처. 요약 있는 공시와 없는 공시를 함께 둔다."""
+    """화면 테스트 공용 픽스처. 요약 있는 공시와 없는 공시를 함께 둔다.
+
+    목록 화면은 로그인이 필요하므로(이슈 #44) 일반 회원 한 명으로 로그인해 둔다.
+    비로그인 동작은 AnonymousAccessTest(accounts/tests.py)가 따로 본다.
+    """
 
     def setUp(self):
+        self.member = get_user_model().objects.create_user(username='kakao_1')
+        self.client.force_login(self.member)
         self.sector = Sector.objects.create(
             name='반도체', slug='semiconductor', description='메모리·파운드리·장비',
         )

@@ -19,6 +19,10 @@ from django.urls import include, path
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    # 우리 회원 경로(탈퇴·웹훅)를 allauth보다 먼저 둔다. 둘 다 accounts/ 아래라
+    # 순서가 바뀌면 allauth가 먼저 잡아 404가 날 수 있다.
+    path('', include('accounts.urls')),
+    path('accounts/', include('allauth.urls')),
     # 공시 조회 화면은 루트에 둔다. admin 경로가 먼저라 가려질 일은 없다.
     path('', include('disclosures.urls')),
 ]

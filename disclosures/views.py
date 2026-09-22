@@ -10,6 +10,7 @@
 이 규칙은 ViewsDoNotCallExternalApisTest 가 import 수준에서 고정한다.
 """
 from django.conf import settings
+from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db.models import Count, Max, Q
 from django.http import JsonResponse
@@ -173,7 +174,16 @@ def _importance_options():
 
 
 def sector_list(request):
-    """메인 — 섹터 카드 + 최신 주요 공시 하이라이트."""
+    """메인 — 섹터 카드 + 최신 주요 공시 하이라이트.
+
+    **로그인하지 않은 방문자에게는 서비스 소개만 보여준다**(이슈 #44). 목록은 앞으로
+    계정별 관심 기업으로 바뀌므로, 비로그인 방문자에게 보여줄 목록이 없다.
+    """
+    if not request.user.is_authenticated:
+        return render(request, 'disclosures/landing.html', {
+            'kakao_login_enabled': settings.KAKAO_LOGIN_ENABLED,
+        })
+
     sectors = (
         Sector.objects
         .annotate(
@@ -202,6 +212,7 @@ def sector_list(request):
     })
 
 
+@login_required
 def sector_detail(request, slug):
     """섹터 상세 — 소속 기업의 공시 통합 피드. 기업·중요도 필터."""
     sector = get_object_or_404(Sector, slug=slug)
@@ -224,6 +235,7 @@ def sector_detail(request, slug):
     })
 
 
+@login_required
 def company_detail(request, stock_code):
     """기업 상세 — 기업 개황 + 공시 타임라인. 중요도 필터."""
     company = get_object_or_404(
@@ -248,6 +260,9 @@ def company_detail(request, stock_code):
 
 def disclosure_detail(request, rcept_no):
     """공시 상세 — 한 줄 요약 → 쉬운 설명 → 왜 중요한가 → 원문 근거 → DART 원문 링크.
+
+    **로그인 없이 열린다**(이슈 #44). 링크를 받은 사람이 그 공시 하나는 볼 수 있어야
+    공유가 되고, 가입으로 이어진다. 목록 화면만 로그인이 필요하다.
 
     노출 대상이 아닌 공시는 404다(published_disclosures가 단일 출처).
 

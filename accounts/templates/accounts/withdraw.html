@@ -1,0 +1,23 @@
+{% extends 'disclosures/base.html' %}
+
+{% block title %}회원 탈퇴 · 공시 쉽게 보기{% endblock %}
+
+{% block content %}
+  <section class="intro">
+    <h1>회원 탈퇴</h1>
+    <p>탈퇴하면 아래 정보가 <strong>즉시 삭제</strong>되며 되돌릴 수 없습니다.</p>
+    <ul>
+      <li>카카오 회원번호와 닉네임</li>
+      <li>이 서비스와 카카오 계정의 연결 (다음에 로그인하면 동의를 다시 받습니다)</li>
+    </ul>
+    <p class="landing-note">
+      공시 요약은 특정 회원의 정보가 아니므로 삭제되지 않습니다.
+      백업본에 남은 정보의 처리는 <a href="{% url 'accounts:privacy' %}">개인정보처리방침</a>을 참고하세요.
+    </p>
+    <form method="post" action="{% url 'accounts:withdraw' %}">
+      {% csrf_token %}
+      <button type="submit" class="danger-button">탈퇴하기</button>
+      <a href="{% url 'disclosures:sector_list' %}">취소</a>
+    </form>
+  </section>
+{% endblock %}

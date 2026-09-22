@@ -260,3 +260,23 @@ h3 { font-size: 16px; margin: 0 0 6px; }
   .detail { padding: 20px 16px; }
   .filters { flex-direction: column; align-items: stretch; }
 }
+
+/* --- 회원 (이슈 #44) ----------------------------------------------------- */
+
+.user-menu { display: flex; gap: 12px; align-items: center; margin-top: 8px; font-size: 14px; color: var(--text-muted); }
+.user-menu form { margin: 0; }
+.link-button { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+
+.messages { list-style: none; margin: 16px 0 0; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+
+/* 카카오 로그인 버튼은 카카오 디자인 가이드의 노란색·검은 글자를 따른다. */
+.kakao-login-form { margin: 20px 0 8px; }
+.kakao-login { background: #fee500; color: rgba(0, 0, 0, 0.85); border: 0; border-radius: 12px; padding: 12px 24px; font-size: 16px; font-weight: 600; cursor: pointer; }
+.landing-note { color: var(--text-muted); font-size: 14px; }
+.landing-steps ol { padding-left: 20px; }
+
+.danger-button { background: var(--high); color: #fff; border: 0; border-radius: 8px; padding: 10px 20px; font-size: 15px; cursor: pointer; margin-right: 12px; }
+
+.policy table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+.policy th, .policy td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+.policy th { background: var(--surface); }

@@ -78,6 +78,13 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'disclosures',
+    # accounts는 allauth보다 앞에 둔다. allauth 화면 틀(allauth/layouts/base.html)을
+    # 우리 사이트 틀로 덮어쓰는데, 템플릿은 앞에 등록된 앱의 것이 이긴다.
+    'accounts',
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
+    'allauth.socialaccount.providers.kakao',
 ]
 
 MIDDLEWARE = [
@@ -90,6 +97,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'allauth.account.middleware.AccountMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -151,6 +159,57 @@ AUTH_PASSWORD_VALIDATORS = [
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
     },
 ]
+
+
+# 회원 — 카카오 로그인 (이슈 #44)
+#
+# 로그인 방법은 둘이다. 일반 사용자는 카카오(allauth), 검수자는 /admin 비밀번호
+# (ModelBackend). 앞의 것을 빼면 admin에 못 들어가고, 뒤의 것을 빼면 카카오 로그인이 안 된다.
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
+
+# 카카오 개발자 콘솔 → 앱 → 플랫폼 키 → REST API 키. 셋 다 .env에서 온다(RUNBOOK 3.1).
+KAKAO_CLIENT_ID = os.getenv('KAKAO_CLIENT_ID', '').strip()
+KAKAO_CLIENT_SECRET = os.getenv('KAKAO_CLIENT_SECRET', '').strip()
+# 어드민 키는 탈퇴 시 연결 끊기와 연결 해제 웹훅의 발신자 확인에 쓴다. 가장 강력한 키다.
+KAKAO_ADMIN_KEY = os.getenv('KAKAO_ADMIN_KEY', '').strip()
+
+# 키가 없으면 로그인 버튼 대신 "준비 중"을 보여준다. 키 없이 버튼을 그리면
+# allauth가 SocialApp을 찾지 못해 **첫 화면 전체가 500**이 된다.
+KAKAO_LOGIN_ENABLED = bool(KAKAO_CLIENT_ID and KAKAO_CLIENT_SECRET)
+
+SOCIALACCOUNT_PROVIDERS = {
+    'kakao': {
+        'APPS': [
+            {'client_id': KAKAO_CLIENT_ID, 'secret': KAKAO_CLIENT_SECRET},
+        ] if KAKAO_LOGIN_ENABLED else [],
+        # 동의항목을 닉네임으로 좁힌다. 콘솔 설정과 이중으로 막는다.
+        'SCOPE': ['profile_nickname'],
+    },
+}
+SOCIALACCOUNT_ADAPTER = 'accounts.adapter.KakaoSocialAccountAdapter'
+# 아이디·비밀번호 가입, 이메일 인증, 비밀번호 찾기 화면을 모두 끈다. 카카오로만 들어온다.
+SOCIALACCOUNT_ONLY = True
+ACCOUNT_EMAIL_VERIFICATION = 'none'
+# 출입증(액세스 토큰)을 보관하지 않는다. 연결 끊기는 어드민 키로 한다(accounts/kakao.py).
+SOCIALACCOUNT_STORE_TOKENS = False
+# 카카오 로그인·로그아웃은 버튼(POST)으로만 시작한다. GET으로 열리면 남의 사이트에
+# 심어 둔 링크 하나로 사용자를 로그인·로그아웃시킬 수 있다.
+SOCIALACCOUNT_LOGIN_ON_GET = False
+ACCOUNT_LOGOUT_ON_GET = False
+ACCOUNT_SESSION_REMEMBER = True
+
+# 로그인이 필요한 화면에 비로그인으로 들어오면 첫 화면(서비스 소개)으로 보낸다.
+LOGIN_URL = 'disclosures:sector_list'
+LOGIN_REDIRECT_URL = 'disclosures:sector_list'
+ACCOUNT_LOGOUT_REDIRECT_URL = 'disclosures:sector_list'
+
+# 개인정보처리방침에 적는 보호책임자와 연락처. 연락처는 .env에서 온다 —
+# 실제로 연락이 닿는 주소여야 하고, 코드에 박아 두면 바꿀 때마다 배포해야 한다.
+PRIVACY_OFFICER_NAME = 'DART 공시 요약 운영자'
+PRIVACY_CONTACT_EMAIL = os.getenv('PRIVACY_CONTACT_EMAIL', '').strip()
 
 
 # Internationalization
