@@ -1,6 +1,10 @@
 """반도체 섹터 + 대상 10개 기업을 생성하고, DART corpCode.xml로 corp_code를 확정한다.
 
 사용법: python manage.py seed_companies
+
+⚠ 8단계(이슈 #44)부터 **운영에서는 쓰지 않는다.** 추적 대상은 사용자가 관심 기업으로
+고른 기업이다(disclosures/watchlist.py). 이 명령은 10곳의 추적을 강제로 켜므로, 운영
+서버에서 돌리면 아무도 보지 않는 기업을 다시 수집하게 된다. 개발용 시드로만 남긴다.
 """
 from django.core.management.base import BaseCommand, CommandError
 

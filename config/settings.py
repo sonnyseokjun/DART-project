@@ -202,9 +202,9 @@ ACCOUNT_LOGOUT_ON_GET = False
 ACCOUNT_SESSION_REMEMBER = True
 
 # 로그인이 필요한 화면에 비로그인으로 들어오면 첫 화면(서비스 소개)으로 보낸다.
-LOGIN_URL = 'disclosures:sector_list'
-LOGIN_REDIRECT_URL = 'disclosures:sector_list'
-ACCOUNT_LOGOUT_REDIRECT_URL = 'disclosures:sector_list'
+LOGIN_URL = 'disclosures:home'
+LOGIN_REDIRECT_URL = 'disclosures:home'
+ACCOUNT_LOGOUT_REDIRECT_URL = 'disclosures:home'
 
 # 개인정보처리방침에 적는 보호책임자와 연락처. 연락처는 .env에서 온다 —
 # 실제로 연락이 닿는 주소여야 하고, 코드에 박아 두면 바꿀 때마다 배포해야 한다.

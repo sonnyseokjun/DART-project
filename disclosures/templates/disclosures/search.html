@@ -1,0 +1,35 @@
+{% extends 'disclosures/base.html' %}
+
+{% block title %}기업 검색 · 공시 쉽게 보기{% endblock %}
+
+{% block breadcrumb %}
+  <nav class="breadcrumb">
+    <a href="{% url 'disclosures:home' %}">홈</a> › <span>기업 검색</span>
+  </nav>
+{% endblock %}
+
+{% block content %}
+  <h1>기업 검색</h1>
+  {% include 'disclosures/_search_form.html' %}
+  <p class="lead">관심 기업 {{ watch_count }} / {{ watch_limit }}곳</p>
+
+  {% if query %}
+    {% if results %}
+      <ul class="search-results">
+        {% for corp in results %}
+          <li>
+            <a href="{% url 'disclosures:company_detail' corp.stock_code %}">{{ corp.name }}</a>
+            <span class="landing-note">{{ corp.stock_code }}</span>
+            {% if corp.corp_code in watched_corp_codes %}
+              <span class="landing-note">· 관심 기업</span>
+            {% else %}
+              {% include 'disclosures/_watch_add_button.html' %}
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty">"{{ query }}"에 맞는 상장사가 없습니다.</p>
+    {% endif %}
+  {% endif %}
+{% endblock %}

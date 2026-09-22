@@ -188,7 +188,7 @@ class AnonymousAccessTest(TestCase):
         'APPS': [{'client_id': 'test-client', 'secret': 'test-secret'}],
     }})
     def test_home_shows_the_landing_with_a_kakao_button(self):
-        response = self.client.get(reverse('disclosures:sector_list'))
+        response = self.client.get(reverse('disclosures:home'))
         self.assertContains(response, '카카오로 시작하기')
         self.assertContains(response, 'action="/accounts/kakao/login/"')
         # 비로그인에게는 목록을 보여주지 않는다.
@@ -198,12 +198,12 @@ class AnonymousAccessTest(TestCase):
                        SOCIALACCOUNT_PROVIDERS={'kakao': {'APPS': []}})
     def test_home_does_not_500_when_kakao_keys_are_missing(self):
         """키 없이 로그인 버튼을 그리면 allauth가 앱을 못 찾아 첫 화면이 통째로 죽는다."""
-        response = self.client.get(reverse('disclosures:sector_list'))
+        response = self.client.get(reverse('disclosures:home'))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, 'action="/accounts/kakao/login/"')
 
     def test_list_pages_send_anonymous_visitors_to_the_landing(self):
-        for url in (reverse('disclosures:sector_detail', args=['semiconductor']),
+        for url in (reverse('disclosures:search'),
                     reverse('disclosures:company_detail', args=['005930'])):
             with self.subTest(url=url):
                 response = self.client.get(url)
@@ -217,9 +217,9 @@ class AnonymousAccessTest(TestCase):
 
     def test_logged_in_member_still_sees_the_lists(self):
         self.client.force_login(get_user_model().objects.create_user(username='kakao_1'))
-        response = self.client.get(reverse('disclosures:sector_list'))
-        self.assertContains(response, '반도체')
-        self.assertNotContains(response, '카카오로 시작하기')
+        response = self.client.get(reverse('disclosures:home'))
+        self.assertContains(response, '내 관심 기업')
+        self.assertNotContains(response, 'action="/accounts/kakao/login/"')
 
     @override_settings(PRIVACY_CONTACT_EMAIL='owner@example.com')
     def test_privacy_policy_is_public_and_names_the_officer(self):
@@ -228,7 +228,7 @@ class AnonymousAccessTest(TestCase):
         self.assertContains(response, 'owner@example.com')
 
     def test_every_page_links_to_the_privacy_policy(self):
-        for url in (reverse('disclosures:sector_list'),
+        for url in (reverse('disclosures:home'),
                     reverse('disclosures:disclosure_detail', args=[self.disclosure.rcept_no]),
                     reverse('accounts:privacy')):
             with self.subTest(url=url):

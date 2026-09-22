@@ -8,6 +8,7 @@
     <p>탈퇴하면 아래 정보가 <strong>즉시 삭제</strong>되며 되돌릴 수 없습니다.</p>
     <ul>
       <li>카카오 회원번호와 닉네임</li>
+      <li>관심 기업 목록</li>
       <li>이 서비스와 카카오 계정의 연결 (다음에 로그인하면 동의를 다시 받습니다)</li>
     </ul>
     <p class="landing-note">
@@ -17,7 +18,7 @@
     <form method="post" action="{% url 'accounts:withdraw' %}">
       {% csrf_token %}
       <button type="submit" class="danger-button">탈퇴하기</button>
-      <a href="{% url 'disclosures:sector_list' %}">취소</a>
+      <a href="{% url 'disclosures:home' %}">취소</a>
     </form>
   </section>
 {% endblock %}

@@ -237,6 +237,15 @@ docker compose exec -T web python manage.py loaddata /app/data/seed.json
 docker compose exec -T web python manage.py createsuperuser
 ```
 
+**상장사 명단을 한 번 받아 둔다** (8단계, 이슈 #44). 기업 검색은 이 명단만 보는데,
+cron은 매일 06:50에야 처음 돈다. 받기 전에는 **검색 결과가 늘 비어 있다** — 오류가 아니라
+"맞는 상장사가 없습니다"로 보여서 고장인지 알기 어렵다.
+
+```bash
+docker compose exec -T web python manage.py sync_listed_corps
+# 상장사 명단 갱신: 전체 3,991곳 · 신규 3991 · 변경 0 · 제외 0   ← 약 4천 곳이면 정상
+```
+
 ### 2.9 자동화
 
 **⚠ crontab 설치 전에 시간대를 먼저 맞춘다.** Ubuntu 기본값은 UTC다. 그대로 두면

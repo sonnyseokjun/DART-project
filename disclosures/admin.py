@@ -3,7 +3,9 @@ from django.db.models import Case, IntegerField, Q, When
 from django.utils import timezone
 from django.utils.html import format_html
 
-from .models import Company, Disclosure, DisclosureSummary, Sector
+from .models import (
+    Company, Disclosure, DisclosureSummary, ListedCorp, Sector, Watch,
+)
 
 #: 일괄 숨김 액션이 남기는 기본 사유. 개별 사유는 변경 화면에서 덧쓴다.
 DEFAULT_HIDDEN_REASON = '검수자 일괄 숨김 처리'
@@ -17,9 +19,36 @@ class SectorAdmin(admin.ModelAdmin):
 
 @admin.register(Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ('name', 'stock_code', 'corp_code', 'sector', 'sub_category', 'is_active')
+    list_display = ('name', 'stock_code', 'corp_code', 'sector', 'sub_category', 'is_active',
+                    'backfill_requested_at', 'backfilled_at')
     list_filter = ('sector', 'is_active')
     search_fields = ('name', 'stock_code', 'corp_code')
+
+
+@admin.register(ListedCorp)
+class ListedCorpAdmin(admin.ModelAdmin):
+    """상장사 명단은 sync_listed_corps가 채운다. 손으로 고치면 다음 갱신에 덮인다."""
+
+    list_display = ('name', 'stock_code', 'corp_code', 'synced_at')
+    search_fields = ('name', 'stock_code', 'corp_code')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Watch)
+class WatchAdmin(admin.ModelAdmin):
+    """관심 기업 현황 확인용. 기업별로 몇 명이 보는지 보는 데 쓴다."""
+
+    list_display = ('company', 'user', 'created_at')
+    list_filter = ('company',)
+    readonly_fields = ('user', 'company', 'created_at')
+
+    def has_add_permission(self, request):
+        return False
 
 
 class DisclosureSummaryInline(admin.StackedInline):

@@ -80,6 +80,14 @@ MAX_FETCH_ATTEMPTS = len(RETRY_BACKOFF_MINUTES) + 1
 #: 상한(MAX_SUMMARY_ATTEMPTS=4)까지 가도 건당 최대 4회, 약 $0.09에서 멈춘다.
 SUMMARY_RETRY_BACKOFF_MINUTES = (10, 60, 360)
 
+#: 관심 기업 백필(최근 공시 채워 넣기)의 재시도 간격(분)과 상한 (이슈 #44).
+#:
+#: 백필 실패는 대개 DART 쪽 일시 장애다. 1분마다 다시 부르면 장애 중에 한도만 닳으므로
+#: 간격을 둔다. 상한에 걸리면 포기한다 — 그 기업은 이후 새 공시부터 정상 수집되고,
+#: 빠지는 것은 추가 전 30일 목록뿐이다. 사용자에게는 "불러오지 못함"으로 보인다.
+BACKFILL_RETRY_BACKOFF_MINUTES = (5, 30)
+MAX_BACKFILL_ATTEMPTS = len(BACKFILL_RETRY_BACKOFF_MINUTES) + 1
+
 
 def is_retry_due(attempts, attempted_at, backoff_minutes, now):
     """이 시도 이력이면 `now`에 다시 시도해도 되는가.

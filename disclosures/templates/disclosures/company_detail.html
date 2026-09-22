@@ -1,47 +1,69 @@
 {% extends 'disclosures/base.html' %}
+{% comment %} 기업 상세. 관심 기업일 때만 공시를 보여준다(views.company_detail).
+   고르지 않은 기업이면 company가 없을 수 있다 — 그때는 명단(listed)의 이름을 쓴다. {% endcomment %}
 
-{% block title %}{{ company.name }} 공시 · 공시 쉽게 보기{% endblock %}
+{% block title %}{% firstof company.name listed.name %} 공시 · 공시 쉽게 보기{% endblock %}
 
 {% block breadcrumb %}
   <nav class="breadcrumb">
-    <a href="{% url 'disclosures:sector_list' %}">홈</a> ›
-    <a href="{% url 'disclosures:sector_detail' company.sector.slug %}">{{ company.sector.name }}</a> ›
-    <span>{{ company.name }}</span>
+    <a href="{% url 'disclosures:home' %}">홈</a> ›
+    <span>{% firstof company.name listed.name %}</span>
   </nav>
 {% endblock %}
 
 {% block content %}
   <header class="company-head">
-    <h1>{{ company.name }}</h1>
+    <h1>{% firstof company.name listed.name %}</h1>
     <dl class="company-meta">
-      <div><dt>종목코드</dt><dd>{{ company.stock_code }}</dd></div>
+      <div><dt>종목코드</dt><dd>{% firstof company.stock_code listed.stock_code %}</dd></div>
       {% if company.sub_category %}
         <div><dt>분류</dt><dd>{{ company.sub_category }}</dd></div>
       {% endif %}
-      <div><dt>섹터</dt><dd>{{ company.sector.name }}</dd></div>
     </dl>
+
+    {% if watching %}
+      <form method="post" action="{% url 'disclosures:watch_remove' %}">
+        {% csrf_token %}
+        <input type="hidden" name="corp_code" value="{{ company.corp_code }}">
+        <input type="hidden" name="next" value="{{ request.get_full_path }}">
+        <button type="submit" class="link-button">관심 기업에서 빼기</button>
+      </form>
+    {% endif %}
   </header>
 
-  <form class="filters" method="get">
-    <label>
-      중요도
-      <select name="importance">
-        <option value="">전체</option>
-        {% for option in importance_options %}
-          <option value="{{ option.value }}"
-                  {% if option.value == selected_importance %}selected{% endif %}>
-            {{ option.label }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit">적용</button>
-    {% if selected_importance %}
-      <a class="filter-reset" href="{% url 'disclosures:company_detail' company.stock_code %}">초기화</a>
+  {% if watching %}
+    {% if company.backfill_requested_at %}
+      <p class="live-note">최근 30일 공시를 불러오고 있습니다. 잠시 뒤 새로고침해 주세요.</p>
+    {% elif company.backfill_gave_up %}
+      <p class="live-note">최근 30일 공시를 불러오지 못했습니다. 앞으로 올라오는 공시는 정상적으로 보입니다.</p>
     {% endif %}
-  </form>
 
-  {% comment %} 기업명은 카드에서 감춘다(hide_company). 이 화면에서는 자명하기 때문이다 —
-     뷰가 컨텍스트로 넘기므로 자동 갱신으로 조각만 다시 받아도 그대로 유지된다. {% endcomment %}
-  {% include 'disclosures/_disclosure_feed.html' %}
+    <form class="filters" method="get">
+      <label>
+        중요도
+        <select name="importance">
+          <option value="">전체</option>
+          {% for option in importance_options %}
+            <option value="{{ option.value }}"
+                    {% if option.value == selected_importance %}selected{% endif %}>
+              {{ option.label }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit">적용</button>
+      {% if selected_importance %}
+        <a class="filter-reset" href="{% url 'disclosures:company_detail' company.stock_code %}">초기화</a>
+      {% endif %}
+    </form>
+
+    {% comment %} 기업명은 카드에서 감춘다(hide_company). 이 화면에서는 자명하기 때문이다 —
+       뷰가 컨텍스트로 넘기므로 자동 갱신으로 조각만 다시 받아도 그대로 유지된다. {% endcomment %}
+    {% include 'disclosures/_disclosure_feed.html' %}
+  {% else %}
+    <p class="empty">관심 기업으로 추가하면 이 기업의 공시를 볼 수 있습니다.</p>
+    {% if listed %}
+      {% include 'disclosures/_watch_add_button.html' with corp=listed %}
+    {% endif %}
+  {% endif %}
 {% endblock %}

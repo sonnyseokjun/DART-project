@@ -43,7 +43,7 @@ from disclosures.management.commands import (
     summarize_disclosures as summarize_command,
 )
 from disclosures.management.commands.seed_companies import TARGET_COMPANIES
-from disclosures.models import Company, Disclosure, DisclosureSummary, Sector
+from disclosures.models import Company, Disclosure, DisclosureSummary, Sector, Watch
 from disclosures.templatetags.review_panel import (
     duplicate_of_label, evidence_field_label, has_key, highlight_terms,
 )
@@ -2018,6 +2018,9 @@ class WebViewTestBase(TestCase):
             sector=self.sector, corp_code='00164779', stock_code='000660',
             name='SK하이닉스', sub_category='메모리',
         )
+        # 목록은 관심 기업의 공시만 보여준다(이슈 #44). 두 기업을 모두 고른 회원이다.
+        for company in (self.samsung, self.hynix):
+            Watch.objects.create(user=self.member, company=company)
         self.high = self._disclosure(
             self.samsung, '20260701000001', '단일판매ㆍ공급계약체결',
             importance=DisclosureSummary.Importance.HIGH,
@@ -2082,8 +2085,7 @@ class ViewsDoNotCallExternalApisTest(WebViewTestBase):
 
     def test_rendering_pages_never_calls_openai_or_dart(self):
         urls = [
-            reverse('disclosures:sector_list'),
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             reverse('disclosures:company_detail', args=['005930']),
             reverse('disclosures:disclosure_detail', args=['20260701000001']),
         ]
@@ -2100,8 +2102,7 @@ class PageRenderingTest(WebViewTestBase):
 
     def _all_urls(self):
         return (
-            reverse('disclosures:sector_list'),
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             reverse('disclosures:company_detail', args=['005930']),
             reverse('disclosures:disclosure_detail', args=['20260701000001']),
         )
@@ -2138,7 +2139,7 @@ class PageRenderingTest(WebViewTestBase):
         """요약이 보이는 곳에는 반드시 원문 링크가 함께 있어야 한다."""
         expected = dart_viewer_url('20260701000001')
         for url in (
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             reverse('disclosures:disclosure_detail', args=['20260701000001']),
         ):
             with self.subTest(url=url):
@@ -2163,20 +2164,11 @@ class PageRenderingTest(WebViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'SK하이닉스')
 
-    def test_unknown_slug_and_company_return_404(self):
-        self.assertEqual(
-            self.client.get(
-                reverse('disclosures:sector_detail', args=['none'])).status_code, 404)
+    def test_unknown_company_returns_404(self):
         self.assertEqual(
             self.client.get(
                 reverse('disclosures:company_detail', args=['999999'])).status_code, 404)
 
-    def test_sector_list_counts_only_summarized_disclosures(self):
-        """섹터 카드의 건수는 화면에 실제로 보이는 수와 같아야 한다."""
-        response = self.client.get(reverse('disclosures:sector_list'))
-        sector = response.context['sectors'][0]
-        self.assertEqual(sector.company_count, 2)
-        self.assertEqual(sector.summary_count, 2)   # 미요약 1건은 세지 않는다
 
 
 class ExposurePolicyTest(WebViewTestBase):
@@ -2189,7 +2181,7 @@ class ExposurePolicyTest(WebViewTestBase):
 
     def test_unsummarized_disclosure_is_hidden_from_lists(self):
         for url in (
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             reverse('disclosures:company_detail', args=['005930']),
         ):
             with self.subTest(url=url):
@@ -2244,7 +2236,7 @@ class ExposurePolicyTest(WebViewTestBase):
         summary.save(update_fields=['review_warnings'])
 
         self.assertContains(
-            self.client.get(reverse('disclosures:sector_detail', args=['semiconductor'])),
+            self.client.get(reverse('disclosures:home')),
             '수치 확인 필요')
 
     def test_style_only_warning_does_not_trigger_banner(self):
@@ -2325,7 +2317,7 @@ class OptimisticRenderingTest(WebViewTestBase):
 
     def _sector_page(self):
         return self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']))
+            reverse('disclosures:home'))
 
     # --- 보인다 ---------------------------------------------------------
 
@@ -2396,18 +2388,12 @@ class OptimisticRenderingTest(WebViewTestBase):
     def test_importance_filter_excludes_pending(self):
         """중요도는 요약이 매기는 값이라 아직 없다. 필터가 거짓말을 하면 안 된다."""
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             {'importance': DisclosureSummary.Importance.HIGH},
         )
 
         self.assertContains(response, self.high.report_name)
         self.assertNotContains(response, self.pending.report_name)
-
-    def test_pending_is_not_promoted_to_highlights(self):
-        """메인 상단 주요 공시는 중요도 '높음'으로 뽑는다. 미상이 섞이면 안 된다."""
-        self.assertNotContains(
-            self.client.get(reverse('disclosures:sector_list')),
-            self.pending.report_name)
 
     # --- 판정 속성 ------------------------------------------------------
 
@@ -2509,15 +2495,19 @@ class LiveUpdateTest(WebViewTestBase):
     # --- 비용 -----------------------------------------------------------
 
     def test_status_endpoint_is_one_query(self):
-        """방문자마다 주기적으로 호출되는 경로다. 쿼리가 늘면 그대로 부하가 된다."""
-        with self.assertNumQueries(1):
+        """방문자마다 주기적으로 호출되는 경로다. 쿼리가 늘면 그대로 부하가 된다.
+
+        3 = 로그인 확인(세션 1 + 회원 1) + 집계 1. 8단계에서 로그인이 필요해져 앞의 둘이
+        붙었다(이슈 #44). 관심 기업 필터는 하위 쿼리라 집계 1회에 들어간다.
+        """
+        with self.assertNumQueries(3):
             self.client.get(reverse('disclosures:latest_status'))
 
     # --- 부분 렌더링 ----------------------------------------------------
 
     def test_partial_returns_only_the_feed(self):
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             {'partial': '1'},
         )
 
@@ -2530,7 +2520,7 @@ class LiveUpdateTest(WebViewTestBase):
     def test_partial_keeps_the_current_filters(self):
         """갱신은 지금 보고 있는 URL을 그대로 다시 받는다. 필터가 풀리면 안 된다."""
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             {'company': '005930', 'partial': '1'},
         )
 
@@ -2551,7 +2541,7 @@ class LiveUpdateTest(WebViewTestBase):
 
     def test_pages_carry_the_endpoint_and_script(self):
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']))
+            reverse('disclosures:home'))
 
         body = response.content.decode()
         self.assertIn('data-live-endpoint', body)
@@ -2570,7 +2560,7 @@ class FilterAndPaginationTest(WebViewTestBase):
 
     def test_importance_filter_narrows_results(self):
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             {'importance': 'high'})
         self.assertEqual(response.context['total_count'], 1)
         self.assertContains(response, '단일판매ㆍ공급계약체결')
@@ -2578,7 +2568,7 @@ class FilterAndPaginationTest(WebViewTestBase):
 
     def test_company_filter_narrows_results(self):
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             {'company': '000660'})
         self.assertEqual(response.context['total_count'], 1)
         self.assertContains(response, '자기주식취득결정')
@@ -2586,7 +2576,7 @@ class FilterAndPaginationTest(WebViewTestBase):
     def test_invalid_importance_is_ignored_not_500(self):
         """잘못된 쿼리스트링으로 서버 오류가 나면 안 된다."""
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             {'importance': '../etc/passwd'})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['total_count'], 2)
@@ -2598,7 +2588,7 @@ class FilterAndPaginationTest(WebViewTestBase):
                 importance=DisclosureSummary.Importance.LOW,
                 filed_at=date(2026, 8, 1))
 
-        url = reverse('disclosures:sector_detail', args=['semiconductor'])
+        url = reverse('disclosures:home')
         first = self.client.get(url)
         self.assertEqual(first.context['page_obj'].paginator.num_pages, 2)
         self.assertEqual(len(first.context['page_obj']), views.PAGE_SIZE)
@@ -2616,7 +2606,7 @@ class FilterAndPaginationTest(WebViewTestBase):
                 filed_at=date(2026, 8, 2))
 
         response = self.client.get(
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             {'importance': 'low'})
         self.assertContains(response, 'importance=low')
         self.assertContains(response, 'page=2')
@@ -2634,7 +2624,7 @@ class QueryEfficiencyTest(WebViewTestBase):
         return len(ctx)
 
     def test_list_query_count_does_not_grow_with_rows(self):
-        url = reverse('disclosures:sector_detail', args=['semiconductor'])
+        url = reverse('disclosures:home')
         baseline = self._query_count(url)
 
         for i in range(10):
@@ -2721,6 +2711,8 @@ class ReviewWorkflowTestBase(TestCase):
             username='reviewer2', email='reviewer2@example.com', password='pw',
         )
         self.client.force_login(self.reviewer)
+        # 목록은 관심 기업의 공시만 보여준다(이슈 #44).
+        Watch.objects.create(user=self.reviewer, company=self.company)
 
     def make_summary(self, seq, *, company=None, report_name=None,
                      filed_at=None, raw_content='공시 원문 · 계약금액 | 1,234,567',
@@ -2817,8 +2809,7 @@ class HiddenSummaryExposureTest(ReviewWorkflowTestBase):
 
     def _feed_urls(self):
         return (
-            reverse('disclosures:sector_list'),
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
             reverse('disclosures:company_detail', args=['005930']),
         )
 
@@ -2829,13 +2820,6 @@ class HiddenSummaryExposureTest(ReviewWorkflowTestBase):
                 self.assertEqual(response.status_code, 200)
                 self.assertNotContains(response, '숨겨진공시')
                 self.assertNotContains(response, self.hidden.disclosure.rcept_no)
-
-    def test_hidden_summary_is_absent_from_main_highlights(self):
-        """하이라이트는 중요도 '높음'만 뽑으므로 숨긴 고중요도 공시가 새기 가장 쉽다."""
-        response = self.client.get(reverse('disclosures:sector_list'))
-        names = [item.report_name for item in response.context['highlights']]
-        self.assertIn('노출되는공시', names)
-        self.assertNotIn('숨겨진공시', names)
 
     def test_hidden_summary_detail_returns_404(self):
         response = self.client.get(
@@ -2859,7 +2843,7 @@ class HiddenSummaryExposureTest(ReviewWorkflowTestBase):
             200,
         )
         self.assertContains(
-            self.client.get(reverse('disclosures:sector_detail', args=['semiconductor'])),
+            self.client.get(reverse('disclosures:home')),
             '숨겨진공시')
 
     def test_published_disclosures_is_the_only_gate(self):
@@ -2867,50 +2851,6 @@ class HiddenSummaryExposureTest(ReviewWorkflowTestBase):
         self.assertNotIn(
             self.hidden.disclosure, list(views.published_disclosures()))
         self.assertIn(self.visible.disclosure, list(views.published_disclosures()))
-
-
-class SectorCardCountConsistencyTest(ReviewWorkflowTestBase):
-    """섹터 카드의 건수 ↔ 실제 목록 건수.
-
-    backend가 스스로 지목한 구조적 중복이다. `sector_list()`의 summary_count는
-    `published_disclosures()`와 별개로 조건을 한 번 더 적었기 때문에, 한쪽만 고치면
-    "카드에 12건인데 들어가면 11건"인 불일치가 조용히 생긴다. 두 수를 같은 테스트에서
-    비교해 못 박는다.
-    """
-
-    def _counts(self):
-        card = self.client.get(reverse('disclosures:sector_list')) \
-            .context['sectors'][0].summary_count
-        feed = self.client.get(reverse('disclosures:sector_detail', args=['semiconductor']))
-        return card, feed.context['total_count'], len(feed.context['page_obj'])
-
-    def test_counts_agree_when_nothing_is_hidden(self):
-        for seq in range(1, 4):
-            self.make_summary(seq)
-
-        card, total, rendered = self._counts()
-        self.assertEqual((card, total, rendered), (3, 3, 3))
-
-    def test_hidden_summary_drops_out_of_the_card_count_too(self):
-        for seq in range(1, 4):
-            self.make_summary(seq)
-        hidden = self.make_summary(4, report_name='숨길공시')
-
-        self.run_action('hide_summaries', [hidden])
-
-        card, total, rendered = self._counts()
-        self.assertEqual((card, total, rendered), (3, 3, 3))
-
-    def test_unsummarized_disclosure_is_counted_by_neither(self):
-        self.make_summary(1)
-        Disclosure.objects.create(
-            company=self.company, rcept_no='20260701009999', report_name='요약없는공시',
-            disclosure_type='지분공시', filed_at=date(2026, 7, 1),
-            dart_url=dart_viewer_url('20260701009999'),
-        )
-
-        card, total, rendered = self._counts()
-        self.assertEqual((card, total, rendered), (1, 1, 1))
 
 
 class HumanEditedBadgeTest(ReviewWorkflowTestBase):
@@ -2928,7 +2868,7 @@ class HumanEditedBadgeTest(ReviewWorkflowTestBase):
         )
         self.detail_url = reverse(
             'disclosures:disclosure_detail', args=[self.summary.disclosure.rcept_no])
-        self.feed_url = reverse('disclosures:sector_detail', args=['semiconductor'])
+        self.feed_url = reverse('disclosures:home')
 
     def test_unreviewed_summary_shows_badge_and_banner(self):
         for url in (self.detail_url, self.feed_url):

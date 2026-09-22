@@ -51,8 +51,8 @@ class PublicPagesShowNoCommentsTest(WebViewTestBase):
 
     def test_member_pages(self):
         urls = [
-            reverse('disclosures:sector_list'),
-            reverse('disclosures:sector_detail', args=['semiconductor']),
+            reverse('disclosures:home'),
+            reverse('disclosures:search') + '?q=삼성',
             reverse('disclosures:company_detail', args=['005930']),
             reverse('disclosures:disclosure_detail', args=['20260701000001']),
             reverse('accounts:privacy'),
@@ -64,7 +64,7 @@ class PublicPagesShowNoCommentsTest(WebViewTestBase):
 
     def test_anonymous_pages(self):
         self.client.logout()
-        for url in (reverse('disclosures:sector_list'),
+        for url in (reverse('disclosures:home'),
                     reverse('disclosures:disclosure_detail', args=['20260701000001']),
                     reverse('accounts:privacy')):
             with self.subTest(url=url):

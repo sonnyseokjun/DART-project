@@ -26,7 +26,18 @@ class Company(models.Model):
     stock_code = models.CharField('종목코드', max_length=6, unique=True)
     name = models.CharField('기업명', max_length=100)
     sub_category = models.CharField('서브 카테고리', max_length=50, blank=True)
+    # 8단계부터 추적 여부는 **사람이 켜지 않는다.** 한 명 이상이 관심 기업으로 고르면
+    # 켜지고, 마지막 한 명이 빼면 꺼진다(disclosures/watchlist.py가 단일 출처).
     is_active = models.BooleanField('추적 여부', default=True)
+    # 새로 추적을 시작한 기업의 최근 공시를 채워 넣는 작업(백필) 상태. 목록 조회만 하므로
+    # 요약 비용은 없고 DART 호출만 든다(기업 1곳당 공시유형 수만큼, poll_dart._backfill).
+    backfill_requested_at = models.DateTimeField('백필 요청 시각', null=True, blank=True)
+    backfill_attempts = models.PositiveSmallIntegerField('백필 시도 횟수', default=0)
+    backfill_attempted_at = models.DateTimeField('마지막 백필 시도 시각', null=True, blank=True)
+    backfilled_at = models.DateTimeField('백필 완료 시각', null=True, blank=True)
+    # 마지막 관심 사용자가 빠진 시각. 다시 추적할 때 백필이 필요한지 판단하는 데 쓴다 —
+    # 잠깐 빠졌다 돌아온 기업은 그 사이 공시를 정기 폴링이 이미 받았다.
+    untracked_at = models.DateTimeField('추적 중단 시각', null=True, blank=True)
 
     class Meta:
         verbose_name = '기업'
@@ -35,6 +46,81 @@ class Company(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.stock_code})'
+
+    @property
+    def backfill_gave_up(self):
+        """백필을 상한까지 실패해 포기했는가. 화면에 "불러오지 못함"을 띄우는 데 쓴다."""
+        from .retry_policy import MAX_BACKFILL_ATTEMPTS
+
+        return (self.backfill_requested_at is None and self.backfilled_at is None
+                and self.backfill_attempts >= MAX_BACKFILL_ATTEMPTS)
+
+
+class ListedCorp(models.Model):
+    """DART corpCode.xml의 상장사 명단 — **기업 검색 전용 사본**(이슈 #44).
+
+    검색 화면이 DART를 부르지 않게 하려고 하루 1회 받아 둔다(sync_listed_corps).
+    사용자가 관심 기업으로 고르는 순간 여기서 Company로 옮겨진다. 추적 대상이 아닌
+    기업까지 Company에 넣지 않는 이유는, Company가 곧 "수집 대상"이기 때문이다.
+    """
+
+    corp_code = models.CharField('DART 고유번호', max_length=8, unique=True)
+    stock_code = models.CharField('종목코드', max_length=6, unique=True)
+    name = models.CharField('기업명', max_length=100, db_index=True)
+    synced_at = models.DateTimeField('명단 갱신 시각', auto_now=True)
+
+    class Meta:
+        verbose_name = '상장사 명단'
+        verbose_name_plural = '상장사 명단'
+        ordering = ['name']
+
+    def __str__(self):
+        return f'{self.name} ({self.stock_code})'
+
+
+class Watch(models.Model):
+    """사용자의 관심 기업. 목록 화면에는 이것으로 고른 기업의 공시만 나온다."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='watches', verbose_name='회원',
+    )
+    company = models.ForeignKey(
+        Company, on_delete=models.CASCADE, related_name='watches', verbose_name='기업',
+    )
+    created_at = models.DateTimeField('추가 시각', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '관심 기업'
+        verbose_name_plural = '관심 기업'
+        ordering = ['company__name']
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'company'], name='unique_watch'),
+        ]
+
+    def __str__(self):
+        return f'{self.user} → {self.company.name}'
+
+
+class WatchAddition(models.Model):
+    """관심 기업 **추가 기록**. 하루 추가 횟수 제한을 세는 데 쓴다.
+
+    Watch 개수로는 셀 수 없다 — 추가했다 빼면 Watch는 사라지므로, "추가 → 삭제 →
+    다른 기업 추가"를 끝없이 반복해도 10곳 제한에 걸리지 않는다. 추가할 때마다
+    백필이 DART를 부를 수 있어서, 반복을 막지 않으면 모든 사용자가 쓰는 DART 하루
+    한도가 한 사람 손에 닳는다(watchlist.MAX_ADDITIONS_PER_DAY).
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name='watch_additions', verbose_name='회원',
+    )
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, verbose_name='기업')
+    created_at = models.DateTimeField('추가 시각', auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = '관심 기업 추가 기록'
+        verbose_name_plural = '관심 기업 추가 기록'
 
 
 #: 요약 생성을 이 횟수만큼 실패하면 더 시도하지 않는다.

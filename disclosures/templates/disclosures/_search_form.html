@@ -1,0 +1,8 @@
+{# 기업 검색창. 저장된 상장사 명단만 찾는다 — DART를 부르지 않는다(views.search). #}
+<form class="filters search-form" method="get" action="{% url 'disclosures:search' %}">
+  <label>
+    기업 검색
+    <input type="search" name="q" value="{{ query|default:'' }}" placeholder="기업명 또는 종목코드" required>
+  </label>
+  <button type="submit">검색</button>
+</form>
