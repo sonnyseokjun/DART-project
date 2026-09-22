@@ -26,8 +26,19 @@ DC=/usr/bin/docker compose
 # 것은 DART 호출 한도만 축낸다. poll_dart --detect가 신규 없을 때 호출 1회로
 # 끝내주므로 (하루 약 966회 = 한도 20,000의 5%) 낮 시간대 1분 주기가 감당된다.
 *  9-18       * * 1-5  cd $PROJECT_DIR && ./deploy/pipeline.sh >> /var/log/dart/pipeline.log 2>&1
-0  0-8,19-23  * * 1-5  cd $PROJECT_DIR && ./deploy/pipeline.sh >> /var/log/dart/pipeline.log 2>&1
-0  *          * * 6,0  cd $PROJECT_DIR && ./deploy/pipeline.sh >> /var/log/dart/pipeline.log 2>&1
+0  0-8,19-23  * * 1-5  cd $PROJECT_DIR && ./deploy/pipeline.sh --wait >> /var/log/dart/pipeline.log 2>&1
+0  *          * * 6,0  cd $PROJECT_DIR && ./deploy/pipeline.sh --wait >> /var/log/dart/pipeline.log 2>&1
+
+# --- 요약 요청 처리 (8단계, 이슈 #44) ---------------------------------------
+# 요약은 사용자가 "AI 요약 보기"를 누른 공시만 만든다. 위 수집 줄만으로는 밤·주말에 누른
+# 요청이 최대 1시간을 기다리므로, 그 시간대에는 매분 **요청만** 확인한다. DART 목록을
+# 부르지 않고 DB만 보므로(pending_work) 할 일이 없으면 DART도 LLM도 부르지 않는다.
+# 평일 낮(9~18시)은 위 매분 수집 줄이 요청까지 함께 처리하므로 이 줄이 없다.
+#
+# 매시 00분을 비운 이유: 그 분에는 위 수집 줄이 뜬다(주의 3). 07:05 전체 폴링·06:50
+# 명단 갱신과는 같은 분에 뜰 수 있지만, 그 둘은 잠금을 **기다리므로** 조용히 죽지 않는다.
+1-59 0-8,19-23 * * 1-5  cd $PROJECT_DIR && ./deploy/pipeline.sh --requests >> /var/log/dart/pipeline.log 2>&1
+1-59 *         * * 6,0  cd $PROJECT_DIR && ./deploy/pipeline.sh --requests >> /var/log/dart/pipeline.log 2>&1
 
 # --- 전체 폴링 (하루 1회) -----------------------------------------------
 # --detect는 최신 100건만 훑으므로, 호출 사이에 시장 전체 공시가 100건을 넘으면

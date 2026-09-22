@@ -88,6 +88,12 @@ class Command(BaseCommand):
             selection_state=SelectionState.TARGET
         ).select_related('company').order_by('filed_at', 'rcept_no')
 
+        # 8단계부터 원문은 요약을 요청받은 공시만 받는다(retry_policy.unfetched_targets).
+        # 사람이 한 건을 콕 집은 --rcept-no는 요청 여부와 무관하게 받는다.
+        if not options['rcept_no']:
+            queryset = queryset.filter(summary_requested_at__isnull=False).order_by(
+                'summary_requested_at', 'rcept_no')
+
         if not options['refetch']:
             queryset = queryset.filter(raw_fetched=False)
         if options['disclosure_type']:
@@ -108,7 +114,8 @@ class Command(BaseCommand):
             return
 
         remaining = Disclosure.objects.filter(
-            selection_state=SelectionState.TARGET, raw_fetched=False
+            selection_state=SelectionState.TARGET, raw_fetched=False,
+            summary_requested_at__isnull=False,
         ).count()
         held = self._describe_held(waiting, stuck)
         self.stdout.write(

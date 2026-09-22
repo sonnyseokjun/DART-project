@@ -13,7 +13,19 @@
 #
 # 사용법:
 #   ./deploy/pipeline.sh            # 감지 모드 — 신규가 없으면 1회 호출로 끝난다
-#   ./deploy/pipeline.sh --full     # 전체 폴링 — 유형 라벨 보정·누락 보강 (하루 1회)
+#   ./deploy/pipeline.sh --wait     # 감지 모드 + 잠금을 기다린다 (매시 정각 줄)
+#   ./deploy/pipeline.sh --full     # 전체 폴링 — 유형 라벨 보정·누락 보강 (하루 1회, 기다림)
+#   ./deploy/pipeline.sh --requests # 요청 처리만 — 수집하지 않는다 (밤·주말 매분, 8단계)
+#
+# --requests (이슈 #44): 8단계부터 요약은 사용자가 요청한 공시만 만든다. 밤·주말에는
+#   수집이 1시간마다라 밤에 누른 요청이 최대 1시간을 기다렸다. 이 모드는 DART 목록을
+#   부르지 않고 DB만 본 뒤(pending_work) 할 일이 있을 때만 원문·요약을 처리한다.
+#   할 일이 없으면 DART도 LLM도 부르지 않고 끝난다.
+#
+# --wait / --full이 잠금을 기다리는 이유: --requests가 매분 뜨면서 정각·07:05 줄과
+#   잠금을 다툴 수 있다. 기다리지 않으면 진 쪽이 "정상"을 찍고 조용히 죽는다
+#   (PLAN.md 9.3 주의 3). 요청 처리는 다음 분에 다시 오면 되지만 정각 감지와 전체
+#   폴링은 한 시간·하루를 잃는다. 그래서 그 둘만 기다린다.
 #
 # 감지 모드는 "신규 없음"이어도 곧바로 끝내지 않는다. 재시도를 기다리던 원문·요약이
 # 있으면 그것만 이어서 처리한다(아래 '재개' 참고).
@@ -38,9 +50,18 @@ NOTHING_NEW=9
 LOCK_FILE="${LOCK_FILE:-/tmp/dart-pipeline.lock}"
 
 FULL=0
-if [ "${1:-}" = "--full" ]; then
-    FULL=1
-fi
+WAIT=0
+REQUESTS=0
+case "${1:-}" in
+    --full)     FULL=1; WAIT=1 ;;
+    --wait)     WAIT=1 ;;
+    --requests) REQUESTS=1 ;;
+    "")         ;;
+    *)          echo "알 수 없는 옵션: $1" >&2; exit 2 ;;
+esac
+
+# 잠금을 기다리는 최대 시간(초). 한 실행은 보통 수십 초, 요약이 밀려도 수 분이다.
+LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-600}"
 
 # 신규는 없지만 대기 중이던 후속 작업만 이어서 도는 실행인지.
 RESUME=0
@@ -68,11 +89,20 @@ exec 9>"$LOCK_FILE"
 # flock이 없는 환경에서 스크립트가 **"평소처럼 건너뜀"을 찍고 종료 0으로 끝난다.**
 # 파이프라인이 며칠 멈춰도 로그가 정상으로 보이는, 가장 나쁜 종류의 실패다.
 set +e
-flock -n 9
+if [ "$WAIT" -eq 1 ]; then
+    flock -w "$LOCK_WAIT_SECONDS" 9
+else
+    flock -n 9
+fi
 lock_rc=$?
 set -e
 
-if [ "$lock_rc" -eq 1 ]; then
+if [ "$lock_rc" -eq 1 ] && [ "$WAIT" -eq 1 ]; then
+    # 기다리는 모드에서 잠금을 못 얻은 것은 "평소"가 아니다. 앞 실행이 비정상적으로
+    # 길다는 뜻이므로 0으로 끝내지 않는다.
+    log "잠금을 ${LOCK_WAIT_SECONDS}초 기다렸으나 얻지 못했습니다 — 앞 실행이 멈췄는지 확인하세요"
+    exit 1
+elif [ "$lock_rc" -eq 1 ]; then
     log "앞 실행이 아직 돌고 있어 건너뜁니다 (정상)"
     exit 0
 elif [ "$lock_rc" -ne 0 ]; then
@@ -81,7 +111,23 @@ elif [ "$lock_rc" -ne 0 ]; then
 fi
 
 # --- 수집 ---------------------------------------------------------------
-if [ "$FULL" -eq 1 ]; then
+if [ "$REQUESTS" -eq 1 ]; then
+    # 수집하지 않는다. 요청받은 공시의 원문·요약만 본다 — DB 확인은 DART·LLM 미호출.
+    # 할 일이 없으면 로그도 남기지 않는다. 밤새 매분 도는 줄이라 남기면 하루 수백 줄이다.
+    set +e
+    dart pending_work > /dev/null
+    pending_rc=$?
+    set -e
+
+    if [ "$pending_rc" -eq "$NOTHING_NEW" ]; then
+        exit 0
+    fi
+    if [ "$pending_rc" -ne 0 ]; then
+        log "대기 확인 실패 (종료 코드 $pending_rc) — 뒷단계를 진행하지 않습니다"
+        exit "$pending_rc"
+    fi
+    RESUME=1
+elif [ "$FULL" -eq 1 ]; then
     log "전체 폴링 시작 (유형 라벨 보정 · 누락 보강)"
     dart poll_dart --days "$POLL_DAYS"
 else

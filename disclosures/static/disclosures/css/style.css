@@ -280,3 +280,7 @@ h3 { font-size: 16px; margin: 0 0 6px; }
 .policy table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
 .policy th, .policy td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
 .policy th { background: var(--surface); }
+
+/* --- 누르면 요약 (이슈 #44) --------------------------------------------- */
+.summary-request { margin: 8px 0; }
+.filter-check { flex-direction: row; align-items: center; gap: 6px; }

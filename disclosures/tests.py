@@ -616,6 +616,42 @@ class PipelineScriptTest(TestCase):
                 for h in self._expand(hour, 0, 23)
                 for m in self._expand(minute, 0, 59)}
 
+    def test_request_runs_never_share_a_minute_with_the_hourly_detect(self):
+        """요청 처리 줄(매분)이 정각 감지 줄과 같은 분에 뜨면 감지가 조용히 죽을 수 있다.
+
+        정각 감지는 --wait로 잠금을 기다리지만, 애초에 같은 분에 띄우지 않는 편이
+        안전하다. 요청 처리 줄은 매시 00분을 비운다(이슈 #44).
+        """
+        requests_runs, detect = set(), set()
+        for minute, hour, _dom, _mon, dow, command in self.CRON_LINE.findall(
+                self._read('crontab')):
+            if '--full' in command:
+                continue
+            target = requests_runs if '--requests' in command else detect
+            target |= self._firings(minute, hour, dow)
+        self.assertTrue(requests_runs, 'crontab에서 요청 처리 줄을 찾지 못했다')
+        self.assertFalse(sorted(requests_runs & detect)[:5])
+
+    def test_scheduled_runs_that_may_meet_a_request_run_wait_for_the_lock(self):
+        """정각 감지·전체 폴링은 잠금을 기다려야 한다. -n이면 진 쪽이 종료 0으로 죽는다."""
+        crontab = self._read('crontab')
+        for line in crontab.splitlines():
+            if line.startswith('#') or 'pipeline.sh' not in line:
+                continue
+            fields = line.split()
+            if fields[0] == '0':
+                self.assertIn('--wait', line, line)
+        script = self._read('pipeline.sh')
+        self.assertIn('--full)     FULL=1; WAIT=1', script)
+        self.assertIn('flock -w "$LOCK_WAIT_SECONDS" 9', script)
+
+    def test_request_mode_does_not_poll_dart(self):
+        """요청 처리 모드는 DART 목록을 부르지 않는다. 밤새 매분 도는 줄이다."""
+        script = self._read('pipeline.sh')
+        branch = script.split('if [ "$REQUESTS" -eq 1 ]; then', 1)[1].split('elif', 1)[0]
+        self.assertNotIn('poll_dart', branch)
+        self.assertIn('pending_work', branch)
+
     def test_full_poll_never_collides_with_the_detect_runs(self):
         """전체 폴링과 감지 폴링이 같은 분에 걸리면 안 된다.
 
@@ -632,6 +668,10 @@ class PipelineScriptTest(TestCase):
         full, detect = set(), set()
         for minute, hour, _dom, _mon, dow, command in self.CRON_LINE.findall(
                 self._read('crontab')):
+            # 요청 처리 줄(--requests)은 수집을 하지 않는다. 전체 폴링과 같은 분에 뜰 수
+            # 있지만 전체 폴링이 잠금을 **기다리므로** 조용히 죽지 않는다(아래 별도 테스트).
+            if '--requests' in command:
+                continue
             target = full if '--full' in command else detect
             target |= self._firings(minute, hour, dow)
 
@@ -1092,6 +1132,8 @@ class FetchDocumentsTest(TestCase):
             report_name='단일판매ㆍ공급계약체결', disclosure_type=disclosure_type,
             filed_at=date(2026, 7, 1), dart_url=dart_viewer_url(rcept_no),
             selection_state=state, raw_fetched=raw_fetched,
+            # 8단계부터 원문은 요약을 요청받은 공시만 받는다(이슈 #44).
+            summary_requested_at=timezone.now(),
         )
 
     def _run(self, side_effect=None, **options):
@@ -2188,11 +2230,16 @@ class ExposurePolicyTest(WebViewTestBase):
                 self.assertNotContains(
                     self.client.get(url), self.unsummarized.report_name)
 
-    def test_unsummarized_disclosure_detail_is_404(self):
-        self.assertEqual(
-            self.client.get(
-                reverse('disclosures:disclosure_detail',
-                        args=['20260703000001'])).status_code, 404)
+    def test_excluded_disclosure_detail_opens_with_only_the_dart_link(self):
+        """8단계부터 "전체 공시 보기"에서 단순 보고도 누를 수 있어 상세가 열린다(이슈 #44).
+
+        요약도 요청 버튼도 없고 DART 원문 링크만 있다 — 요약 대상이 아니기 때문이다.
+        """
+        response = self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260703000001']))
+        self.assertContains(response, '요약 대상이 아닌 단순 보고입니다')
+        self.assertContains(response, dart_viewer_url('20260703000001'))
+        self.assertNotContains(response, 'AI 요약 보기')
 
     def test_unreviewed_summary_is_shown_with_badge(self):
         """검수분만 노출하면 화면이 비므로 미검수도 노출하되 배지를 단다."""
@@ -2306,13 +2353,15 @@ class OptimisticRenderingTest(WebViewTestBase):
 
     def setUp(self):
         super().setUp()
-        # 원문까지 확보됐고 요약만 없는 공시 — 이 PR이 새로 노출하는 대상이다.
+        # 원문까지 확보됐고 요약만 없는 공시. 8단계부터 "정리 중"은 **요청받은** 공시다
+        # (이슈 #44) — 요청 전이면 같은 자리에 "AI 요약 보기" 버튼이 뜬다.
         self.pending = Disclosure.objects.create(
             company=self.samsung, rcept_no='20260704000001',
             report_name='유상증자결정', disclosure_type='주요사항보고',
             filed_at=date(2026, 7, 4), dart_url=dart_viewer_url('20260704000001'),
             selection_state=SelectionState.TARGET,
             raw_fetched=True, raw_content='원문',
+            summary_requested_at=timezone.now(),
         )
 
     def _sector_page(self):
@@ -2345,20 +2394,22 @@ class OptimisticRenderingTest(WebViewTestBase):
 
     # --- 안 보인다 ------------------------------------------------------
 
-    def test_disclosure_without_raw_content_is_not_shown(self):
-        """원문을 못 받은 공시는 노출하지 않는다.
+    def test_unrequested_target_shows_the_request_button(self):
+        """요청 전 공시는 원문이 없어도 보이고, "AI 요약 보기" 버튼이 붙는다(이슈 #44).
 
-        재시도는 상한에서 멈추는데(fetch_documents.MAX_FETCH_ATTEMPTS) 카드는 멈추지
-        않으므로, 감지 즉시 노출하면 "정리 중"인 채로 영원히 남는 공시가 생긴다.
+        7단계에는 원문을 못 받은 공시를 숨겼다 — 원문 확보가 상한에서 멈추면 "정리 중"인
+        채로 영원히 남기 때문이었다. 8단계에서는 원문을 요청이 있을 때만 받으므로
+        요청 전 공시에 원문이 없는 것이 정상이고, 상한에 걸린 공시는 "만들지 못함"으로
+        따로 표시한다(Disclosure.summary_state).
         """
         self.pending.raw_fetched = False
-        self.pending.save(update_fields=['raw_fetched'])
+        self.pending.summary_requested_at = None
+        self.pending.save(update_fields=['raw_fetched', 'summary_requested_at'])
 
-        self.assertNotContains(self._sector_page(), self.pending.report_name)
-        self.assertEqual(
-            self.client.get(
-                reverse('disclosures:disclosure_detail',
-                        args=['20260704000001'])).status_code, 404)
+        response = self._sector_page()
+        self.assertContains(response, self.pending.report_name)
+        self.assertContains(response, 'AI 요약 보기')
+        self.assertNotContains(response, self.PENDING_TEXT)
 
     def test_excluded_disclosure_is_not_shown_even_with_raw_content(self):
         """선별에서 제외된 공시는 원문이 있어도 나오지 않는다."""
@@ -2636,8 +2687,9 @@ class QueryEfficiencyTest(WebViewTestBase):
         self.assertEqual(self._query_count(url), baseline)
 
     def test_detail_query_count_is_bounded(self):
+        """4 = 로그인 확인 2 + 공시 1 + 이번 달 AI 비용 합계 1(월 한도 안내, 이슈 #44)."""
         url = reverse('disclosures:disclosure_detail', args=['20260701000001'])
-        self.assertLessEqual(self._query_count(url), 3)
+        self.assertLessEqual(self._query_count(url), 4)
 
 
 class AccuracyWarningClassificationTest(TestCase):
@@ -4533,7 +4585,7 @@ class CorrectionCachePrefixTest(TestCase):
     def _capture(self, **kwargs):
         captured = []
 
-        def fake_call(messages, model, max_output_tokens, reasoning_effort):
+        def fake_call(messages, model, max_output_tokens, reasoning_effort, on_usage=None):
             captured.append([dict(message) for message in messages])
             return _valid_summary_payload(), FAKE_USAGE, 'gpt-5.6-luna'
 
@@ -4707,8 +4759,11 @@ def _fake_llm(*responses):
     """`_call_openai` 대역. 문자열 하나면 매번 같은 응답을 준다."""
     queue = list(responses)
 
-    def call(messages, model, max_output_tokens, reasoning_effort):
+    def call(messages, model, max_output_tokens, reasoning_effort, on_usage=None):
         body = queue.pop(0) if len(queue) > 1 else queue[0]
+        # 진짜 _call_openai처럼 응답마다 비용 장부 콜백을 부른다(이슈 #44).
+        if on_usage is not None:
+            on_usage(dict(FAKE_USAGE), 'gpt-5.6-luna', 0.01)
         return body, dict(FAKE_USAGE), 'gpt-5.6-luna'
 
     return call
@@ -4734,6 +4789,7 @@ class FetchRetryLimitTest(TestCase):
             report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
             filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
             selection_state=SelectionState.TARGET,
+            summary_requested_at=timezone.now(),  # 8단계: 요청받은 공시만 처리(#44)
         )
 
     def _run_failing(self, **options):
@@ -5049,6 +5105,7 @@ class SummaryRetryLimitTest(TestCase):
             report_name='유상증자결정', disclosure_type='주요사항보고',
             filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
             selection_state=SelectionState.TARGET,
+            summary_requested_at=timezone.now(),  # 8단계: 요청받은 공시만 처리(#44)
             raw_fetched=True, raw_content='원문 본문',
         )
 
@@ -5117,17 +5174,21 @@ class SummaryRetryLimitTest(TestCase):
 
     # --- 화면 -----------------------------------------------------------
 
-    def test_stuck_disclosure_leaves_the_pending_list(self):
-        """만들어지지 않을 요약을 "정리 중"으로 계속 기다리게 하면 안 된다."""
-        from disclosures.views import published_disclosures
+    def test_stuck_disclosure_is_shown_as_failed_not_pending(self):
+        """만들어지지 않을 요약을 "정리 중"으로 계속 기다리게 하면 안 된다.
 
-        self.assertIn(self.target, published_disclosures())
+        7단계에는 목록에서 뺐다. 8단계부터는 "요약을 만들지 못했습니다"로 남기고
+        다시 요청할 수 없게 한다(이슈 #44) — 사용자가 버튼을 찾아 헤매지 않게 한다.
+        """
+        from disclosures.views import published_disclosures
 
         Disclosure.objects.filter(pk=self.target.pk).update(
             summary_attempts=models.MAX_SUMMARY_ATTEMPTS
         )
 
-        self.assertNotIn(self.target, published_disclosures())
+        self.assertIn(self.target, published_disclosures())
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.summary_state, 'failed')
 
     # --- 성공·운영 ------------------------------------------------------
 
@@ -5205,6 +5266,8 @@ class PendingWorkResumeTest(TestCase):
         defaults = dict(
             report_name='최대주주등소유주식변동신고서', disclosure_type='거래소공시',
             filed_at=date(2026, 9, 8), selection_state=SelectionState.TARGET,
+            # 8단계부터 자동 처리는 요청받은 공시만 대상이다(이슈 #44).
+            summary_requested_at=timezone.now(),
         )
         defaults.update(fields)
         return Disclosure.objects.create(
@@ -5386,6 +5449,7 @@ class SummarizeDisclosuresCommandTest(TestCase):
             report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
             filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
             selection_state=SelectionState.TARGET,
+            summary_requested_at=timezone.now(),  # 8단계: 요청받은 공시만 처리(#44)
             raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
         )
 
@@ -5459,6 +5523,7 @@ class SummarizeDisclosuresCommandTest(TestCase):
             report_name='주요사항보고서', disclosure_type='거래소공시',
             filed_at=date(2026, 7, 2), dart_url=dart_viewer_url('20260701000002'),
             selection_state=SelectionState.TARGET,
+            summary_requested_at=timezone.now(),  # 8단계: 요청받은 공시만 처리(#44)
             raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
         )
         # 이미 현재 프롬프트로 만든 요약 — 다시 부르면 안 된다.
@@ -5535,6 +5600,7 @@ class SummarizeDisclosuresCommandTest(TestCase):
             report_name='주요사항보고서', disclosure_type='거래소공시',
             filed_at=date(2026, 7, 2), dart_url=dart_viewer_url('20260701000002'),
             selection_state=SelectionState.TARGET,
+            summary_requested_at=timezone.now(),  # 8단계: 요청받은 공시만 처리(#44)
             raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
         )
         DisclosureSummary.objects.create(
@@ -5702,7 +5768,7 @@ def _fake_summarize_disclosure(outcomes):
              reasoning_effort=summarizer.DEFAULT_REASONING_EFFORT,
              max_retries=summarizer.MAX_RETRIES,
              max_input_tokens=summarizer.MAX_INPUT_TOKENS,
-             correction_warnings=None, correction_previous=None):
+             correction_warnings=None, correction_previous=None, on_usage=None):
         calls.append({'correction_warnings': correction_warnings,
                       'correction_previous': correction_previous})
         outcome = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
@@ -5728,6 +5794,7 @@ class RegenerationLimitTest(TestCase):
             report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
             filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
             selection_state=SelectionState.TARGET,
+            summary_requested_at=timezone.now(),  # 8단계: 요청받은 공시만 처리(#44)
             raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
         )
 
@@ -5826,6 +5893,7 @@ class RegenerationKnownGapTest(TestCase):
             report_name='단일판매ㆍ공급계약체결', disclosure_type='거래소공시',
             filed_at=date(2026, 7, 1), dart_url=dart_viewer_url('20260701000001'),
             selection_state=SelectionState.TARGET,
+            summary_requested_at=timezone.now(),  # 8단계: 요청받은 공시만 처리(#44)
             raw_fetched=True, raw_content=COMMAND_RAW_TEXT,
         )
 

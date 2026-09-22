@@ -6,6 +6,13 @@
 {% block content %}
   <h1>내 관심 기업</h1>
 
+  {% if budget_exhausted %}
+    <p class="live-note" role="status">
+      이번 달 AI 요약 한도에 도달했습니다. 새 요약은 다음 달 1일부터 만들어집니다.
+      이미 요청하신 공시도 그때 정리됩니다.
+    </p>
+  {% endif %}
+
   {% include 'disclosures/_search_form.html' %}
 
   {% if companies %}
@@ -43,8 +50,13 @@
         </select>
       </label>
 
+      <label class="filter-check">
+        <input type="checkbox" name="all" value="1" {% if show_all %}checked{% endif %}>
+        단순 보고도 보기
+      </label>
+
       <button type="submit">적용</button>
-      {% if selected_company or selected_importance %}
+      {% if selected_company or selected_importance or show_all %}
         <a class="filter-reset" href="{% url 'disclosures:home' %}">초기화</a>
       {% endif %}
     </form>
