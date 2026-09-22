@@ -379,7 +379,8 @@ class EnvParsingTest(SimpleTestCase):
         for line in example.read_text(encoding='utf-8').splitlines():
             key, _, value = line.strip().partition('=')
             if key in ('DART_API_KEY', 'OPENAI_API_KEY', 'DJANGO_SECRET_KEY',
-                       'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'):
+                       'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
+                       'KAKAO_CLIENT_ID', 'KAKAO_CLIENT_SECRET', 'KAKAO_ADMIN_KEY'):
                 self.assertEqual(
                     value, '',
                     f'{key}에 예시 값이 남아 있다 — 채워진 것으로 오인한다',
