@@ -83,6 +83,7 @@ Django 독립적인 얇은 함수 모음. 오류는 `DartApiError(status, messag
 
 - 모델 필드·admin에는 한국어 `verbose_name`을 붙인다. 주석·docstring·커밋 메시지도 한국어.
 - 서비스 요약 출력에는 항상 DART 원문 링크(`dart_viewer_url`)를 병기하고, 투자 자문이 아니라는 면책 문구를 UI에 상시 노출한다(PLAN.md 1.4, 5.3).
+- **템플릿의 여러 줄 메모는 `{% comment %}...{% endcomment %}`로 쓴다.** `{# #}`는 한 줄 안에서만 주석이고, 여러 줄이면 **사용자 화면에 글자 그대로 나온다.** 운영 사이트에서 개발자 메모가 한 화면에 23곳 보이고 있었다(이슈 #46). `disclosures/test_templates.py`가 막는다.
 
 ### 깃 워크플로우
 

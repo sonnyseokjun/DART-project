@@ -41,7 +41,7 @@
     {% endif %}
   </form>
 
-  {# 기업명은 카드에서 감춘다(hide_company). 이 화면에서는 자명하기 때문이다 —
-     뷰가 컨텍스트로 넘기므로 자동 갱신으로 조각만 다시 받아도 그대로 유지된다. #}
+  {% comment %} 기업명은 카드에서 감춘다(hide_company). 이 화면에서는 자명하기 때문이다 —
+     뷰가 컨텍스트로 넘기므로 자동 갱신으로 조각만 다시 받아도 그대로 유지된다. {% endcomment %}
   {% include 'disclosures/_disclosure_feed.html' %}
 {% endblock %}
