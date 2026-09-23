@@ -421,10 +421,11 @@ git switch main
 git pull
 git log --oneline -1                 # PR 3 머지 커밋이어야 한다
 
-# 2. .env에 네 줄을 추가한다 (값은 3.1) — nano .env
-#    KAKAO_CLIENT_ID= / KAKAO_CLIENT_SECRET= / KAKAO_ADMIN_KEY= / PRIVACY_CONTACT_EMAIL=
+# 2. .env에 카카오 키 세 줄을 추가한다 (값은 3.1) — nano .env
+#    KAKAO_CLIENT_ID= / KAKAO_CLIENT_SECRET= / KAKAO_ADMIN_KEY=
+#    PRIVACY_CONTACT_EMAIL은 선택이다 — 비우면 방침에 "준비 중"이 뜬다
 awk -F= '/^(KAKAO_|PRIVACY_)/{printf "%s 길이: %d\n", $1, length($2)}' .env
-#    카카오 키 셋은 32, 이메일은 0이 아니어야 한다
+#    카카오 키 셋은 32여야 한다
 
 # 3. 재빌드 — 컨테이너가 뜰 때 마이그레이션(0010~0012 · allauth)이 적용된다
 docker compose up -d --build
