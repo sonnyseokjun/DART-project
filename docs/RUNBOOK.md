@@ -403,6 +403,14 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 
 ### 8단계 적용 (사용자가 고르는 기업 · 이슈 #44)
 
+> **2026-09-23에 적용을 마쳤다. 다시 실행하지 않는다.** 아래는 재구축(6장) 때
+> 참고할 기록으로 남긴다. 실측: 요약 161건 전량 보존 · 상장사 3,993곳 ·
+> 명단 적재 후 메모리 여유 344MB · 반영 중 사이트 중단 약 3분(재빌드).
+>
+> 이날 `/admin`이 404였는데 8단계와 무관한 별건이었다 — 집 회선 IP가 바뀌어
+> `ADMIN_ALLOWED_IP`와 어긋났다(5장 "admin에 못 들어간다"). 반영 직후 admin을
+> 못 열면 코드를 의심하기 전에 이것부터 본다.
+
 **한 번만 하는 절차다.** 카카오 로그인·관심 기업·누르면 요약이 한꺼번에 올라간다.
 PR #45·#48과 그 뒤의 PR 3을 **모두 머지한 뒤에** 한다. 하나라도 빠지면 사이트가 빈
 화면이 되거나(로그인만 있고 볼 것이 없음) 백필한 공시가 자동 요약돼 돈이 나간다.
@@ -436,8 +444,11 @@ docker compose exec -T web python manage.py showmigrations disclosures | tail -3
 docker compose exec -T web python manage.py sync_listed_corps
 
 # 5. cron 교체 — 명단 갱신(06:50)·밤 요청 처리(--requests)·잠금 대기(--wait)가 더해졌다
+crontab -l > ~/crontab.before-stage8   # 되돌릴 때를 위한 사본. 교체는 덮어쓰기다
 crontab deploy/crontab
-crontab -l | grep -c pipeline.sh      # 6
+crontab -l | grep -v '^\s*#' | grep -c 'pipeline.sh'   # 6
+#  주석을 빼고 센다 — deploy/crontab의 설명문에도 pipeline.sh가 나와서
+#  그냥 세면 8이 된다(2026-09-23 반영에서 확인).
 ```
 
 **6. 카카오 콘솔에 연결 해제 웹훅을 등록한다** (3.2). 서버에 이 주소가 생긴 뒤라야 한다.
