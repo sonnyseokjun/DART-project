@@ -4,7 +4,7 @@
 {% block title %}공시 쉽게 보기{% endblock %}
 {% block body_class %}page-marketing{% endblock %}
 
-{% comment %} main 블록을 덮어쓰는 이유: 검정 히어로·연회색 띠·닫는 검정 띠가 화면
+{% comment %} main 블록을 덮어쓰는 이유: 히어로·연회색 띠·닫는 검정 띠가 화면
    끝까지 닿아야 하는데, base의 기본 블록은 내용을 .wrap 안에 가둔다. 여기서는
    섹션마다 .wrap 을 직접 둔다(base.html 의 main 블록 주석 참조). {% endcomment %}
 {% block main %}
@@ -18,7 +18,7 @@
         </p>
         <div class="hero-actions">
           {% include 'disclosures/_kakao_login_button.html' %}
-          <a class="btn btn-outline-dark btn-lg" href="#steps">어떻게 쓰나요</a>
+          <a class="btn btn-secondary btn-lg" href="#steps">어떻게 쓰나요</a>
         </div>
         <p class="hero-note">
           카카오 계정의 <strong>닉네임만</strong> 받습니다. 이메일·전화번호는 받지 않습니다.
@@ -26,7 +26,7 @@
         </p>
       </div>
 
-      {% comment %} 검정 히어로 위에 떠 있는 화면 카드. 제품 스크린샷 대신 이 서비스에서
+      {% comment %} 히어로 아래에 떠 있는 화면 카드. 제품 스크린샷 대신 이 서비스에서
          가장 특징적인 물건 — 공시 카드 — 의 모양을 그려 올린다.
          기업명을 ○○전자로 둔 이유: 실제 기업명에 가짜 공시를 붙이면 공개 화면에서
          거짓 정보로 읽힐 수 있다. 예시임이 라벨로도 드러나게 한다. {% endcomment %}

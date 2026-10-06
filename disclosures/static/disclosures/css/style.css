@@ -123,7 +123,7 @@
   }
 }
 @media (min-width: 64em) {
-  :root { --t-display: 70px; --s-section: 96px; }
+  :root { --t-display: 80px; --s-section: 96px; }
 }
 
 /* --- 바탕 ---------------------------------------------------------------- */
@@ -440,35 +440,41 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
  * 이 디자인 언어의 가장 강한 서명이다. 화면 끝까지 닿는 검정 면 위에 떠 있는
  * 화면 카드를 함께 둔다 — DESIGN.md는 검정 히어로를 반드시 카드와 짝지으라고 한다. */
 
-.hero { padding: var(--s-section) 0; background: var(--surface-dark); color: var(--on-dark); }
-.hero .wrap { display: grid; gap: var(--s-8); align-items: center; }
+.hero { padding: var(--s-section) 0; background: var(--canvas); color: var(--body); }
+.hero .wrap { display: grid; gap: var(--s-8); }
 .hero-title {
-  max-width: 15em; color: var(--on-dark);
+  max-width: 14em; color: var(--ink);
   font-size: var(--t-display); font-weight: 400;
   line-height: var(--lead-display); letter-spacing: var(--track-display);
 }
-.hero-lead { max-width: 34rem; margin-top: var(--s-6); color: var(--on-dark-soft); font-size: var(--t-lead); word-break: keep-all; }
-.hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-4); margin-top: var(--s-7); }
-.hero-note { max-width: var(--measure); margin-top: var(--s-5); color: var(--on-dark-soft); font-size: var(--t-caption); }
-.hero-note a { color: var(--on-dark); text-decoration: underline; }
-.hero-note strong { color: var(--on-dark); }
+.hero-lead { max-width: 44rem; margin-top: var(--s-8); color: var(--body); font-size: var(--t-lead); word-break: keep-all; }
+.hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); margin-top: var(--s-8); }
+.hero-note { max-width: var(--measure); margin-top: var(--s-6); color: var(--muted); font-size: var(--t-caption); }
 
 /* 떠 있는 화면 카드 — 제품 스크린샷이 없으므로 이 서비스에서 가장 특징적인 물건인
    공시 카드를 그려 올린다. */
-.hero-mock { padding: var(--s-7); background: var(--surface-dark-up); border-radius: var(--r-xl); }
+.hero-mock {
+  max-width: 40rem; padding: var(--s-7);
+  background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--r-xl);
+  box-shadow: var(--shadow);
+}
 .hero-mock-label {
   display: inline-flex; margin-bottom: var(--s-3);
   padding: var(--s-1) var(--s-3);
-  background: rgba(255, 255, 255, .1); border-radius: var(--r-pill);
-  color: var(--on-dark-soft); font-size: var(--t-micro); font-weight: 600;
+  background: var(--surface-strong); border-radius: var(--r-pill);
+  color: var(--muted); font-size: var(--t-micro); font-weight: 600;
 }
-.hero-mock-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); color: var(--on-dark-soft); font-size: var(--t-caption); }
-.hero-mock .badge { background: rgba(255, 255, 255, .1); color: #ff8d7a; }
-.hero-mock-title { margin-bottom: var(--s-2); color: var(--on-dark); font-size: var(--t-h3); font-weight: 600; }
-.hero-mock-line { color: var(--on-dark-soft); }
-.hero-mock-foot { margin-top: var(--s-5); color: #7aa6ff; font-size: var(--t-caption); font-weight: 600; }
+.hero-mock-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); color: var(--muted); font-size: var(--t-caption); }
+.hero-mock-title { margin-bottom: var(--s-2); color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
+.hero-mock-line { color: var(--body); }
+.hero-mock-foot { margin-top: var(--s-5); color: var(--primary); font-size: var(--t-caption); font-weight: 600; }
 
-@media (min-width: 64em) { .hero .wrap { grid-template-columns: 1.05fr .95fr; } }
+/* 제목을 한 단으로 둔다 — 옆에 카드를 세우면 제목이 반쪽 폭으로 줄어
+   이 디자인에서 가장 중요한 큰 제목이 작아진다. 카드는 제목 아래에 놓는다. */
+@media (min-width: 64em) {
+  .hero { padding: 112px 0 var(--s-section); }
+  .hero-lead { font-size: 19px; }
+}
 
 /* 쓰는 순서 — 검정 다음에 오는 연한 띠. 밝은 면과 검정 면이 번갈아 나오는 것이
    이 페이지의 리듬이다. 내용이 실제로 순서이므로 번호를 쓰는 것이 맞다. */
@@ -498,9 +504,10 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 .cta-band { padding: var(--s-section) 0; background: var(--surface-dark); color: var(--on-dark); text-align: center; }
 .cta-band h2 {
   max-width: 18em; margin: 0 auto; color: var(--on-dark);
-  font-size: var(--t-display); font-weight: 400;
+  font-size: 30px; font-weight: 400;
   line-height: var(--lead-display); letter-spacing: var(--track-display);
 }
+@media (min-width: 64em) { .cta-band h2 { font-size: 44px; } }
 .cta-band p { max-width: 34rem; margin: var(--s-5) auto 0; color: var(--on-dark-soft); font-size: var(--t-lead); word-break: keep-all; }
 .cta-band .kakao-login-form { margin-top: var(--s-7); }
 .cta-band .empty { background: var(--surface-dark-up); color: var(--on-dark-soft); }
