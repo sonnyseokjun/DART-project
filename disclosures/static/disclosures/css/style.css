@@ -102,7 +102,7 @@
   --t-caption: 13px;
   --t-micro: 12px;
   --t-btn: 15px;
-  --t-nav: 13px;
+  --t-nav: 14px;              /* {nav-link} 원값. 머리말 글자는 이 단계를 쓴다 */
 
   --lead-display: 1.15;        /* DESIGN.md는 1.0이지만 한글은 두 줄이 붙는다 */
   --lead-snug: 1.33;
@@ -180,7 +180,7 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 
 /* --- 머리말 -------------------------------------------------------------- */
 
-.site-header { background: var(--canvas); border-bottom: 1px solid var(--hairline-soft); }
+.site-header { background: var(--surface-soft); border-bottom: 1px solid var(--hairline); }
 .site-header .wrap {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: var(--s-3) var(--s-6);
@@ -193,7 +193,7 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 }
 .brand:hover { color: var(--ink); text-decoration: none; }
 .brand strong { color: var(--primary); font-weight: 600; }
-.brand-sub { flex: 1 1 100%; order: 3; color: var(--muted); font-size: var(--t-caption); }
+.brand-sub { flex: 1 1 100%; order: 3; color: var(--muted); font-size: var(--t-nav); }
 .site-nav { display: flex; flex-wrap: wrap; gap: var(--s-5); font-size: var(--t-nav); font-weight: 500; }
 .site-nav a { color: var(--ink); }
 .header-actions {
