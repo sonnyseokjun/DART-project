@@ -72,7 +72,7 @@
           'Malgun Gothic', system-ui, -apple-system, sans-serif;
 
   /* --- 타이포 ({typography.*}) — 모바일 기준값, 아래에서 단계적으로 커진다 */
-  --t-display: 40px;           /* {display-xxl} 64px의 모바일 값 */
+  --t-display: 44px;           /* {display-xxl}. 아래에서 56 → 72로 커진다 */
   --t-h1: 28px;                /* {display-md} 32px의 모바일 값 */
   --t-h2: 22px;                /* {heading-md} */
   --t-h3: 18px;                /* {heading-sm} */
@@ -92,19 +92,19 @@
 
   /* --- 폭 --------------------------------------------------------------- */
   --wrap-app: 880px;
-  --wrap-marketing: 1240px;
+  --wrap-marketing: 1400px;
   --measure: 38rem;            /* 본문 한 줄 — 한글 약 40자 */
   --gutter: 16px;
 }
 
 @media (min-width: 48em) {
   :root {
-    --t-display: 50px; --t-h1: 32px; --t-h2: 24px; --t-h3: 22px;
+    --t-display: 56px; --t-h1: 32px; --t-h2: 24px; --t-h3: 22px;
     --gutter: 24px;
   }
 }
 @media (min-width: 64em) {
-  :root { --t-display: 64px; --s-section-hero: 96px; }
+  :root { --t-display: 72px; --s-section-hero: 120px; }
 }
 
 /* --- 바탕 ---------------------------------------------------------------- */
@@ -121,7 +121,7 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
-h1, h2, h3 { margin: 0; line-height: var(--lead-snug); }
+h1, h2, h3 { margin: 0; line-height: var(--lead-snug); word-break: keep-all; }
 h1 { font-size: var(--t-h1); font-weight: 700; letter-spacing: var(--track-display); }
 h2 { font-size: var(--t-h2); font-weight: 700; }
 h3 { font-size: var(--t-h3); font-weight: 600; }
@@ -166,7 +166,7 @@ a:hover { color: var(--link-hover); text-decoration: underline; }
 .site-header .wrap {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: var(--s-md) var(--s-2xl);
-  padding-top: var(--s-lg); padding-bottom: var(--s-lg);
+  padding-top: 18px; padding-bottom: 18px;
 }
 .brand {
   display: flex; align-items: baseline; gap: .3em;
@@ -179,12 +179,17 @@ a:hover { color: var(--link-hover); text-decoration: underline; }
   flex: 1 1 100%; order: 3;
   color: var(--ink-mute); font-size: var(--t-caption); letter-spacing: .1px;
 }
-.user-menu {
+.site-nav { display: flex; flex-wrap: wrap; gap: var(--s-lg); font-size: var(--t-caption); font-weight: 600; }
+.site-nav a { color: var(--ink); }
+
+/* 오른쪽 끝의 알약 단추가 이 머리말의 중심이다 — 비워 두면 머리말이 설명문만 남는다. */
+.header-actions {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-md);
   margin-left: auto; font-size: var(--t-caption); color: var(--ink-mute);
 }
-.user-menu form { margin: 0; }
-.user-menu-name { color: var(--ink); font-weight: 700; }
+.header-actions form { margin: 0; }
+.header-name { color: var(--ink); font-weight: 700; }
+.header-quiet { color: var(--ink-mute); }
 
 @media (min-width: 48em) {
   .brand-sub { flex: 0 1 auto; order: 0; }
@@ -208,7 +213,10 @@ a:hover { color: var(--link-hover); text-decoration: underline; }
  * 오베르진 띠로 페이지를 닫는다. DESIGN.md는 480~600px를 말하지만 우리 푸터 내용은
  * 마케팅 CTA가 아니라 법적 고지(출처·비제휴·방침)라 높이는 내용에 맞춘다. */
 
-.site-footer { background: var(--primary); color: var(--on-primary); font-size: var(--t-caption); }
+.site-footer {
+  background: var(--primary); color: var(--on-primary); font-size: var(--t-caption);
+  border-top: 1px solid var(--primary-tint);   /* 닫는 띠와 맞붙을 때 둘을 가른다 */
+}
 .site-footer .wrap {
   display: grid; gap: var(--s-md);
   padding-top: var(--s-3xl); padding-bottom: var(--s-3xl);
@@ -495,26 +503,32 @@ a:hover { color: var(--link-hover); text-decoration: underline; }
 
 .hero {
   position: relative; isolation: isolate; overflow: clip;
-  padding: var(--s-section-hero) 0;
-  background: var(--canvas-cream);
+  padding: 72px 0 80px;
+  background: var(--canvas);
 }
 .hero::before {
-  content: ''; position: absolute; inset: -25% -10%; z-index: -1;
+  content: ''; position: absolute; inset: 0; z-index: -1;
   background:
-    radial-gradient(42% 46% at 16% 22%, rgba(255, 213, 181, .9) 0%, rgba(255, 213, 181, 0) 68%),
-    radial-gradient(46% 50% at 84% 16%, rgba(222, 203, 255, .92) 0%, rgba(222, 203, 255, 0) 70%),
-    radial-gradient(54% 56% at 72% 88%, rgba(198, 226, 203, .75) 0%, rgba(198, 226, 203, 0) 72%),
-    radial-gradient(40% 44% at 28% 94%, rgba(255, 236, 212, .85) 0%, rgba(255, 236, 212, 0) 70%);
-  filter: blur(10px);
+    radial-gradient(70% 90% at 0% 30%, #f7e7d6 0%, rgba(247, 231, 214, 0) 62%),
+    radial-gradient(75% 95% at 100% 8%, #e9d6fb 0%, rgba(233, 214, 251, 0) 66%),
+    radial-gradient(60% 80% at 92% 100%, #dcebe0 0%, rgba(220, 235, 224, 0) 64%),
+    radial-gradient(55% 70% at 18% 100%, #fbeee0 0%, rgba(251, 238, 224, 0) 62%),
+    linear-gradient(120deg, #fdf6ef 0%, #ffffff 45%, #f6eeff 100%);
 }
-.hero .wrap { display: grid; gap: var(--s-section); align-items: center; }
+
+@media (min-width: 64em) {
+  .hero { padding: 128px 0 120px; }
+}
+.hero .wrap { display: grid; gap: var(--s-section); }
 .hero-title {
-  max-width: 18em;
+  max-width: 16em;
   font-size: var(--t-display); font-weight: 700; line-height: var(--lead-tight);
   letter-spacing: var(--track-display);
 }
-.hero-lead { max-width: var(--measure); margin-top: var(--s-2xl); font-size: var(--t-lead); }
+.hero-lead { max-width: 44rem; margin-top: var(--s-2xl); font-size: var(--t-lead); word-break: keep-all; }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-lg); margin-top: var(--s-3xl); }
+.hero .btn-secondary { background: rgba(255, 255, 255, .78); }
+.hero .btn-secondary:hover { background: #fff; }
 .hero-note { max-width: var(--measure); margin-top: var(--s-lg); color: var(--ink-mute); font-size: var(--t-caption); }
 
 /* 떠 있는 화면 견본 — 우리에게는 제품 스크린샷이 없으므로 **실제 공시 카드의 모양**을
@@ -536,8 +550,13 @@ a:hover { color: var(--link-hover); text-decoration: underline; }
 .hero-mock-line { color: var(--ink); }
 .hero-mock-foot { margin-top: var(--s-lg); color: var(--link-blue); font-size: var(--t-caption); font-weight: 600; }
 
+/* 떠 있는 견본은 제목 아래에 둔다. 옆에 세우면 제목이 반쪽 폭으로 줄어
+   이 디자인에서 가장 중요한 큰 제목이 작아진다. */
+.hero-mock { max-width: 36rem; }
+
 @media (min-width: 64em) {
-  .hero .wrap { grid-template-columns: 1.05fr .95fr; }
+  .hero-lead { font-size: 20px; }
+  .hero-mock { max-width: 40rem; margin-left: auto; }
 }
 
 /* 쓰는 순서 — 라벤더 띠로 히어로와 분리한다. 내용이 실제로 순서이므로
@@ -559,6 +578,21 @@ a:hover { color: var(--link-hover); text-decoration: underline; }
 @media (min-width: 48em) {
   .steps ol { grid-template-columns: repeat(3, 1fr); gap: var(--s-section); }
   .steps li { max-width: none; }
+}
+
+/* --- 닫는 CTA 띠 ({card-aubergine-band}) ------------------------------- */
+
+.cta-band { padding: var(--s-section-hero) 0 72px; background: var(--primary); color: var(--on-primary); }
+.cta-band h2 {
+  max-width: 14em;
+  font-size: var(--t-h1); line-height: var(--lead-tight); letter-spacing: var(--track-display);
+}
+.cta-band p { margin-top: var(--s-xl); max-width: var(--measure); color: var(--on-primary-mute); font-size: var(--t-lead); word-break: keep-all; }
+.cta-band .kakao-login-form { margin-top: var(--s-3xl); }
+.cta-band .empty { background: var(--primary-tint); color: var(--on-primary); }
+
+@media (min-width: 64em) {
+  .cta-band h2 { font-size: 44px; }
 }
 
 /* --- 개인정보처리방침 ---------------------------------------------------- */

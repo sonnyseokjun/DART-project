@@ -21,16 +21,26 @@
       </a>
       <p class="brand-sub">DART 전자공시를 AI가 일반인 눈높이로 요약합니다</p>
       {% if user.is_authenticated %}
-        {# 로그아웃은 POST로만 한다(settings.ACCOUNT_LOGOUT_ON_GET). #}
-        <nav class="user-menu">
-          <span class="user-menu-name">{{ user.first_name|default:"회원" }}님</span>
-          <form method="post" action="{% url 'account_logout' %}">
-            {% csrf_token %}
-            <button type="submit" class="link-button">로그아웃</button>
-          </form>
-          <a href="{% url 'accounts:withdraw' %}">탈퇴</a>
+        <nav class="site-nav">
+          <a href="{% url 'disclosures:search' %}">기업 검색</a>
         </nav>
       {% endif %}
+      <div class="header-actions">
+        {% if user.is_authenticated %}
+          <span class="header-name">{{ user.first_name|default:"회원" }}님</span>
+          {# 로그아웃은 POST로만 한다(settings.ACCOUNT_LOGOUT_ON_GET). #}
+          <form method="post" action="{% url 'account_logout' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-secondary btn-cap">로그아웃</button>
+          </form>
+          <a class="header-quiet" href="{% url 'accounts:withdraw' %}">탈퇴</a>
+        {% else %}
+          {% comment %} 머리말 오른쪽 끝의 알약 CTA. 카카오 버튼을 여기 또 두지 않는 이유는
+             카카오 로그인 버튼이 노란 바탕을 요구해 브랜드 색과 부딪히기 때문이다.
+             대신 랜딩의 시작 지점으로 보낸다. {% endcomment %}
+          <a class="btn btn-primary btn-cap" href="{% url 'disclosures:home' %}#start">시작하기</a>
+        {% endif %}
+      </div>
     </div>
   </header>
 
