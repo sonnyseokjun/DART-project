@@ -28,7 +28,7 @@
         {% csrf_token %}
         <input type="hidden" name="rcept_no" value="{{ disclosure.rcept_no }}">
         <input type="hidden" name="next" value="{{ request.get_full_path }}">
-        <button type="submit">🤖 AI 요약 보기</button>
+        <button type="submit" class="btn btn-primary">AI 요약 보기</button>
       </form>
     {% endif %}
   {% elif state == 'failed' %}

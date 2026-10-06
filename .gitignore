@@ -27,3 +27,9 @@ _workspace_*/
 .vscode/
 .idea/
 Thumbs.db
+
+# 스킬은 .agents/skills/ 에 설치되고, .claude/skills/ 쪽은 그것을 가리키는
+# 심볼릭 링크다. 링크가 이 PC의 절대 경로를 담고 있어 다른 환경에서는 깨지고,
+# 이 저장소는 core.symlinks=false 라 git이 링크 대신 파일을 복제해 같은 내용이
+# 두 벌 들어온다. 원본(.agents/)만 추적한다.
+.claude/skills/frontend-design/

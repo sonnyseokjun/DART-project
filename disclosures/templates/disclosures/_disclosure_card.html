@@ -27,7 +27,7 @@
       </a>
       <span class="dot">·</span>
     {% endif %}
-    <time datetime="{{ disclosure.filed_at|date:'Y-m-d' }}">{{ disclosure.filed_at|date:'Y-m-d' }}</time>
+    <time class="num" datetime="{{ disclosure.filed_at|date:'Y-m-d' }}">{{ disclosure.filed_at|date:'Y-m-d' }}</time>
     {% if not disclosure.is_summary_pending %}
       {% if not disclosure.summary.is_reviewed %}
         {% comment %} 조건이 needs_review 가 아니라 is_reviewed 인 이유: needs_review 는 5단계에서
@@ -70,11 +70,11 @@
   <div class="card-foot">
     {% if not disclosure.is_summary_pending %}
       <a class="link-detail" href="{% url 'disclosures:disclosure_detail' disclosure.rcept_no %}">
-        쉬운 설명 보기 →
+        쉬운 설명 보기
       </a>
     {% endif %}
     <a class="link-dart" href="{{ disclosure.dart_url }}" target="_blank" rel="noopener noreferrer">
-      🔗 DART 원문
+      DART 원문
     </a>
   </div>
 </article>

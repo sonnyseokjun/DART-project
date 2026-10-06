@@ -10,6 +10,6 @@
     {% csrf_token %}
     <input type="hidden" name="corp_code" value="{{ corp.corp_code }}">
     <input type="hidden" name="next" value="{{ request.get_full_path }}">
-    <button type="submit">관심 기업에 추가</button>
+    <button type="submit" class="btn btn-secondary btn-cap">관심 기업에 추가</button>
   </form>
 {% endif %}
