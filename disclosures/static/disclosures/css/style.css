@@ -180,7 +180,7 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 
 /* --- 머리말 -------------------------------------------------------------- */
 
-.site-header { background: var(--surface-soft); border-bottom: 1px solid var(--hairline); }
+.site-header { background: var(--canvas); border-bottom: 1px solid var(--hairline); }
 .site-header .wrap {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: var(--s-3) var(--s-6);
