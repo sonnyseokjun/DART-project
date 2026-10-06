@@ -46,17 +46,6 @@
     </div>
   </header>
 
-  {% comment %} 면책 문구는 base에 두어 전 페이지에 상시 노출한다(PLAN.md 1.4·5.3).
-     개별 템플릿으로 옮기면 새 화면을 추가할 때 빠뜨리기 쉽다.
-     띠 전체를 경고색으로 칠하지 않는 이유는 style.css 의 .disclaimer 주석에 있다. {% endcomment %}
-  <div class="disclaimer" role="note">
-    <div class="wrap">
-      <span class="disclaimer-label">면책 고지</span>
-      본 서비스가 제공하는 요약과 해설은 <strong>투자 자문이 아니며</strong>, AI가 생성한 정보에는
-      오류가 있을 수 있습니다. 모든 판단의 근거는 반드시 <strong>DART 원문 공시</strong>로 확인하세요.
-    </div>
-  </div>
-
   <main class="site-main">
     {% if messages %}
       <div class="wrap">
@@ -107,8 +96,16 @@
           </p>
         </div>
       </div>
-      <p class="legal-band">
-        <span>요약과 해설은 투자 자문이 아닙니다. 판단의 근거는 DART 원문으로 확인하세요.</span>
+      {% comment %} 면책 고지. 전 페이지 상시 노출이 요구사항이라(PLAN.md 1.4·5.3)
+         머리말 아래 띠에서 이 자리로 옮겼고, 푸터가 base에 있으므로 노출 자체는 유지된다.
+         다만 눈에 띄는 정도는 낮아졌다 — 이 문구를 다른 템플릿으로 옮기거나 조건부로
+         감추지 말 것. disclosures/tests.py 가 전 화면에서 이 문구를 확인한다. {% endcomment %}
+      <p class="legal-band" role="note">
+        <span class="legal-text">
+          <strong>면책 고지</strong> 본 서비스가 제공하는 요약과 해설은 <strong>투자 자문이 아니며</strong>,
+          AI가 생성한 정보에는 오류가 있을 수 있습니다. 모든 판단의 근거는 반드시
+          <strong>DART 원문 공시</strong>로 확인하세요.
+        </span>
         <a class="legal-spacer" href="{% url 'accounts:privacy' %}">개인정보처리방침</a>
       </p>
     </div>

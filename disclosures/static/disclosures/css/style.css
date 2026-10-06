@@ -206,16 +206,6 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 
 @media (min-width: 48em) { .brand-sub { flex: 0 1 auto; order: 0; } }
 
-/* --- 면책 띠 -------------------------------------------------------------
- * 전 페이지 상시 노출이다(PLAN.md 1.4·5.3). 머리말 바로 아래 자리를 지키고
- * 접거나 읽을 수 없는 크기로 줄이지 않는다.
- * 띠 전체를 경고색으로 칠하지 않는 이유: 매 화면에 뜨는 문구라 전면 경고로 쓰면
- * 눈이 건너뛴다. 라벨만 경고색, 본문은 읽기 좋은 색으로 둔다. */
-
-.disclaimer { background: var(--surface-strong); color: var(--body); font-size: var(--t-caption); }
-.disclaimer .wrap { padding-top: var(--s-3); padding-bottom: var(--s-3); }
-.disclaimer-label { color: var(--high-ink); font-weight: 600; }
-
 /* --- 푸터 ---------------------------------------------------------------
  * 흰 면에 여러 칸으로 벌려 놓는다. 한 칸에 몰아 놓으면 넓은 화면에서 글이 왼쪽으로
  * 치우쳐 오른쪽이 통째로 빈다. 맨 아래 가는 띠에 방침 링크와 고지를 둔다. */
@@ -226,12 +216,15 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 .footer-brand { color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
 .footer-head { margin-bottom: var(--s-2); color: var(--ink); font-size: var(--t-caption); font-weight: 600; }
 .footer-cols p + p { margin-top: var(--s-2); }
+/* 면책 고지가 이 띠에 들어온다(base.html). 글이 길어 한 줄에 다 들어가지 않으므로
+   방침 링크는 넓은 화면에서만 오른쪽 끝으로 가고, 좁은 화면에서는 아래로 내려온다. */
 .legal-band {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-6);
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-3) var(--s-6);
   margin-top: var(--s-7); padding-top: var(--s-5);
   border-top: 1px solid var(--hairline-soft);
-  color: var(--muted); font-size: var(--t-micro);
+  color: var(--muted); font-size: var(--t-micro); line-height: 1.6;
 }
+.legal-text { flex: 1 1 28rem; max-width: 72ch; }
 .legal-band a { color: var(--muted); text-decoration: underline; }
 .legal-spacer { margin-left: auto; }
 
