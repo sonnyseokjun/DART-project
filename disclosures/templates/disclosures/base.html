@@ -7,8 +7,13 @@
   <link rel="stylesheet" href="{% static 'disclosures/css/style.css' %}">
 </head>
 {% comment %} data-live-endpoint 가 있으면 목록 화면이 스스로 갱신한다(live-updates.js).
-   주소를 여기 한 곳에만 두어, 스크립트가 URL 구조를 알지 않게 한다. {% endcomment %}
-<body data-live-endpoint="{% url 'disclosures:latest_status' %}">
+   주소를 여기 한 곳에만 두어, 스크립트가 URL 구조를 알지 않게 한다.
+
+   body_class 는 컨테이너 폭과 세로 여백을 가른다 — 읽는 화면은 page-app(880px),
+   랜딩 같은 소개 화면은 page-marketing(1240px)이다. 기본값이 page-app이라
+   새 화면을 추가해도 읽기 좋은 폭으로 시작한다. {% endcomment %}
+<body class="{% block body_class %}page-app{% endblock %}"
+      data-live-endpoint="{% url 'disclosures:latest_status' %}">
   <header class="site-header">
     <div class="wrap">
       <a class="brand" href="{% url 'disclosures:home' %}">
@@ -18,7 +23,7 @@
       {% if user.is_authenticated %}
         {# 로그아웃은 POST로만 한다(settings.ACCOUNT_LOGOUT_ON_GET). #}
         <nav class="user-menu">
-          <span>{{ user.first_name|default:"회원" }}님</span>
+          <span class="user-menu-name">{{ user.first_name|default:"회원" }}님</span>
           <form method="post" action="{% url 'account_logout' %}">
             {% csrf_token %}
             <button type="submit" class="link-button">로그아웃</button>
@@ -29,30 +34,42 @@
     </div>
   </header>
 
-  {# 면책 문구는 base에 두어 전 페이지에 상시 노출한다(PLAN.md 1.4·5.3). #}
-  {# 개별 템플릿으로 옮기면 새 화면을 추가할 때 빠뜨리기 쉽다. #}
+  {% comment %} 면책 문구는 base에 두어 전 페이지에 상시 노출한다(PLAN.md 1.4·5.3).
+     개별 템플릿으로 옮기면 새 화면을 추가할 때 빠뜨리기 쉽다.
+     띠 전체를 경고색으로 칠하지 않는 이유는 style.css 의 .disclaimer 주석에 있다. {% endcomment %}
   <div class="disclaimer" role="note">
     <div class="wrap">
-      <strong>⚠️ 면책 고지</strong>
+      <span class="disclaimer-label">면책 고지</span>
       본 서비스가 제공하는 요약과 해설은 <strong>투자 자문이 아니며</strong>, AI가 생성한 정보에는
       오류가 있을 수 있습니다. 모든 판단의 근거는 반드시 <strong>DART 원문 공시</strong>로 확인하세요.
     </div>
   </div>
 
-  <main class="wrap">
+  <main class="site-main">
     {% if messages %}
-      <ul class="messages">
-        {% for message in messages %}<li>{{ message }}</li>{% endfor %}
-      </ul>
+      <div class="wrap">
+        <ul class="messages">
+          {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+        </ul>
+      </div>
     {% endif %}
-    {% block breadcrumb %}{% endblock %}
-    {% block content %}{% endblock %}
+
+    {% comment %} 읽는 화면은 이 기본 블록을 그대로 쓴다. 랜딩처럼 화면 끝까지 닿는 띠
+       (파스텔 메시 그라데이션·라벤더 섹션)가 필요한 화면만 main 블록을 덮어쓰고
+       자기 안에서 .wrap 을 직접 둔다. 이렇게 두면 그라데이션이 컨테이너에 갇히지
+       않으면서도 다른 화면의 구조는 손대지 않는다. {% endcomment %}
+    {% block main %}
+      <div class="wrap">
+        {% block breadcrumb %}{% endblock %}
+        {% block content %}{% endblock %}
+      </div>
+    {% endblock %}
   </main>
 
-  {# 출처·비제휴 고지도 base에 둔다. OpenDART 이용약관은 재배포와 출처표시를 #}
-  {# 따로 규정하지 않지만, 사이트 저작권 표시가 'all rights reserved'이고 #}
-  {# 공공누리 표시가 없어 보수적으로 간다. 약관 제23조는 금융감독원조차 #}
-  {# 공시정보의 정확성을 보장하지 않는다고 밝히므로 그 취지도 함께 옮긴다. #}
+  {% comment %} 출처·비제휴 고지도 base에 둔다. OpenDART 이용약관은 재배포와 출처표시를
+     따로 규정하지 않지만, 사이트 저작권 표시가 'all rights reserved'이고
+     공공누리 표시가 없어 보수적으로 간다. 약관 제23조는 금융감독원조차
+     공시정보의 정확성을 보장하지 않는다고 밝히므로 그 취지도 함께 옮긴다. {% endcomment %}
   <footer class="site-footer">
     <div class="wrap">
       <p>
@@ -65,7 +82,9 @@
         공시 정보는 공시제출인의 책임 하에 작성된 것으로, 금융감독원과 본 서비스 모두
         그 정확성·완전성을 보장하지 않습니다.
       </p>
-      <p class="footer-note"><a href="{% url 'accounts:privacy' %}">개인정보처리방침</a></p>
+      <p class="footer-links">
+        <a href="{% url 'accounts:privacy' %}">개인정보처리방침</a>
+      </p>
     </div>
   </footer>
   {% comment %} defer: 문서를 다 읽은 뒤 실행한다. 목록이 없는 화면에서는 스스로 아무것도

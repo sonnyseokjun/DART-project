@@ -70,11 +70,11 @@
   <div class="card-foot">
     {% if not disclosure.is_summary_pending %}
       <a class="link-detail" href="{% url 'disclosures:disclosure_detail' disclosure.rcept_no %}">
-        쉬운 설명 보기 →
+        쉬운 설명 보기
       </a>
     {% endif %}
     <a class="link-dart" href="{{ disclosure.dart_url }}" target="_blank" rel="noopener noreferrer">
-      🔗 DART 원문
+      DART 원문
     </a>
   </div>
 </article>

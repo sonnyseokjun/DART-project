@@ -55,7 +55,7 @@
         단순 보고도 보기
       </label>
 
-      <button type="submit">적용</button>
+      <button type="submit" class="btn btn-secondary btn-cap">적용</button>
       {% if selected_company or selected_importance or show_all %}
         <a class="filter-reset" href="{% url 'disclosures:home' %}">초기화</a>
       {% endif %}
