@@ -4,8 +4,8 @@
 {% block title %}공시 쉽게 보기{% endblock %}
 {% block body_class %}page-marketing{% endblock %}
 
-{% comment %} main 블록을 덮어쓰는 이유: 파스텔 메시 그라데이션·라벤더 띠·닫는 오베르진 띠가
-   화면 끝까지 닿아야 하는데, base의 기본 블록은 내용을 .wrap 안에 가둔다. 여기서는
+{% comment %} main 블록을 덮어쓰는 이유: 검정 히어로·연회색 띠·닫는 검정 띠가 화면
+   끝까지 닿아야 하는데, base의 기본 블록은 내용을 .wrap 안에 가둔다. 여기서는
    섹션마다 .wrap 을 직접 둔다(base.html 의 main 블록 주석 참조). {% endcomment %}
 {% block main %}
   <section class="hero" id="start">
@@ -18,7 +18,7 @@
         </p>
         <div class="hero-actions">
           {% include 'disclosures/_kakao_login_button.html' %}
-          <a class="btn btn-secondary" href="#steps">어떻게 쓰나요</a>
+          <a class="btn btn-outline-dark btn-lg" href="#steps">어떻게 쓰나요</a>
         </div>
         <p class="hero-note">
           카카오 계정의 <strong>닉네임만</strong> 받습니다. 이메일·전화번호는 받지 않습니다.
@@ -26,8 +26,8 @@
         </p>
       </div>
 
-      {% comment %} 떠 있는 화면 견본. 제품 스크린샷 대신 이 서비스에서 가장 특징적인
-         물건 — 공시 카드 — 의 모양을 그려 그라데이션 위에 올린다.
+      {% comment %} 검정 히어로 위에 떠 있는 화면 카드. 제품 스크린샷 대신 이 서비스에서
+         가장 특징적인 물건 — 공시 카드 — 의 모양을 그려 올린다.
          기업명을 ○○전자로 둔 이유: 실제 기업명에 가짜 공시를 붙이면 공개 화면에서
          거짓 정보로 읽힐 수 있다. 예시임이 라벨로도 드러나게 한다. {% endcomment %}
       <div class="hero-mock" aria-hidden="true">
@@ -35,6 +35,7 @@
         <div class="hero-mock-head">
           <span class="badge badge-high">중요도 높음</span>
           <span>○○전자</span>
+          <span class="num">2026-10-06</span>
         </div>
         <p class="hero-mock-title">단일판매ㆍ공급계약체결</p>
         <p class="hero-mock-line">2조 원 규모의 반도체 공급 계약을 맺었습니다. 지난해 매출의 약 7%에 해당합니다.</p>
@@ -55,8 +56,9 @@
     </div>
   </section>
 
-  {% comment %} 닫는 오베르진 띠. DESIGN.md가 "페이지의 서명"이라 부르는 요소로,
-     마케팅 화면은 이 띠로 닫힌다. 끝까지 읽은 사람에게 시작할 자리를 한 번 더 준다. {% endcomment %}
+  {% comment %} 닫는 검정 띠. 푸터 바로 앞에서 페이지를 닫고, 끝까지 읽은 사람에게
+     시작할 자리를 한 번 더 준다. 내용을 가운데로 모으는 이유는 style.css 의
+     .cta-band 주석에 있다. {% endcomment %}
   <section class="cta-band">
     <div class="wrap">
       <h2>관심 기업을 고르면, 공시가 쉬워집니다</h2>

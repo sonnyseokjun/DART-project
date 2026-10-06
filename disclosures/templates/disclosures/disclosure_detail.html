@@ -46,7 +46,7 @@
           {{ disclosure.company.name }}
         </a>
         <span class="dot">·</span>
-        <time datetime="{{ disclosure.filed_at|date:'Y-m-d' }}">
+        <time class="num" datetime="{{ disclosure.filed_at|date:'Y-m-d' }}">
           {{ disclosure.filed_at|date:'Y년 n월 j일' }} 접수
         </time>
       </p>

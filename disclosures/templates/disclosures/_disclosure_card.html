@@ -27,7 +27,7 @@
       </a>
       <span class="dot">·</span>
     {% endif %}
-    <time datetime="{{ disclosure.filed_at|date:'Y-m-d' }}">{{ disclosure.filed_at|date:'Y-m-d' }}</time>
+    <time class="num" datetime="{{ disclosure.filed_at|date:'Y-m-d' }}">{{ disclosure.filed_at|date:'Y-m-d' }}</time>
     {% if not disclosure.is_summary_pending %}
       {% if not disclosure.summary.is_reviewed %}
         {% comment %} 조건이 needs_review 가 아니라 is_reviewed 인 이유: needs_review 는 5단계에서
