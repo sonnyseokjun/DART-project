@@ -331,3 +331,124 @@ The system runs predominantly flat. Elevation is reserved for two interaction la
 - Animation/transition timings are not extracted; recommend 150–250ms ease-out for primary surface transitions and 300ms ease-in-out for accordion expand/collapse.
 - Specific dark-mode token values for canvas, surface, ink, and hairline are not defined; the brand has not surfaced a published dark-mode token set on these commerce pages.
 - Pastel decorative tints inside accessory cards (soft pink, ice blue, mint) appear visually but are not formalized — treat them as photographic content, not as system colors.
+
+---
+
+# 적용 규칙 — 공시 쉽게 보기
+
+위 문서는 **영문 하드웨어 커머스 사이트**에서 뜬 디자인 언어다. 사진이 한 장도 없고
+파는 물건도 없는 한글 서비스에 옮기려면 비는 자리를 메워야 한다. 그 결정을 여기 적는다.
+구현(`style.css`)은 이 절까지 포함해 따른다. 값을 바꿀 일이 생기면 여기를 먼저 고친다.
+
+## 1. 색 — 값 확정
+
+위 문서는 토큰 **이름만** 적고 hex를 적지 않는다(`{colors.primary}` 식). 문서 안에
+직접 박힌 값 둘만 확정값이고, 나머지는 아래로 고정한다. 대비비는 모두 실제로 계산했다.
+
+| 토큰 | 값 | 출처 / 근거 |
+|---|---|---|
+| `primary` (코발트) | `#0064e0` | 커머스 전용. **이 서비스에는 등장하지 않는다**(아래 4번) |
+| `primary-deep` | `#0143b5` | **문서에 명시**(`radio-option-selected`). 본문 링크 색도 이것 |
+| `primary-soft` | `rgba(0,100,224,.15)` | 문서가 "15% alpha"로 규정 |
+| `fb-blue` | `#0866ff` | 입력 포커스 테두리 |
+| `ink-deep` | `#0a1317` | **문서에서 도출** — `rgba(10,19,23,.12)`가 두 번 나온다 |
+| `ink-button` | `#14161a` | **문서에서 도출** — 그림자 `rgba(20,22,26,.3)` |
+| `ink` | `#1c2b33` | 본문 강조 |
+| `charcoal` | `#465a69` | 1차 버튼 눌림 상태 |
+| `slate` | `#52646f` | 흰 바탕 5.6:1 |
+| `steel` | `#5e6b73` | 흰 바탕 5.4:1 |
+| `stone` | `#8a8d91` | **비활성 전용** — 읽어야 하는 글자에 쓰지 않는다 |
+| `canvas` | `#ffffff` | |
+| `surface-soft` | `#f1f4f7` | |
+| `hairline` | `#dadde1` | |
+| `hairline-soft` | `#e9ebee` | |
+| `success` | `#1a7f37` | 흰 글자 5.1:1 |
+| `attention` | `#9a5b00` | 흰 글자 5.4:1 |
+| `warning` | `#f7b928` | 먹 글자 10.4:1 |
+| `critical` | `#c9252d` | 흰 글자 5.6:1 |
+| `critical-strong` | `#9c1620` | |
+
+**의미 색의 원값을 한 단 어둡게 잡은 이유:** 배지 글자가 12px/700인데, 굵어도
+18.66px 미만이면 WCAG는 **4.5:1**을 요구한다. Meta의 원래 초록(#31a24c)·빨강(#fa383e)은
+흰 글자를 얹으면 3.3:1 / 3.7:1이라 읽기 기준에 못 미친다. 같은 색상(hue)을 유지한 채
+명도만 내렸다.
+
+`oculus-purple`·`meta-link`는 쓰지 않는다 — VR 제품 강조색과 레거시 내비게이션 색이라
+이 서비스에 해당 자리가 없다.
+
+## 2. 글꼴 — Optimistic VF 대신 Pretendard
+
+Optimistic VF는 Meta 전용 서체라 쓸 수 없고, 문서가 적은 대체(Montserrat, Helvetica,
+Arial, Noto Sans) 중 앞의 셋에는 **한글 글리프가 없다.** 화면이 거의 전부 한글인
+이 서비스에서 그 셋을 앞에 두면 숫자·영문만 바뀌고 본문은 기기마다 갈라진다.
+
+**Pretendard**(SIL OFL, 자체 호스팅)로 간다 — 문서가 Optimistic VF의 성격으로 적은
+"기하학적이되 약간 휴머니스트"에 가장 가까우면서 한글을 덮는 가변 서체다. 가중치
+300 / 400 / 500 / 700을 모두 쓸 수 있어 문서의 3단 리듬(300 편집용 부제 → 500 디스플레이
+→ 400 본문)이 그대로 성립한다.
+
+`ss01` / `ss02` 스타일 세트는 **재현하지 않는다.** Optimistic VF 고유의 대체 글리프라
+다른 서체에는 같은 자리에 다른 것이 들어 있거나 아예 없다. 켜면 의도와 다른 모양이 나온다.
+
+자간은 본문의 `-0.14px` ~ `-0.16px`를 **em으로 환산해 그대로** 쓴다(-0.01em).
+다만 제목(`hero-display` 등)은 문서가 0으로 두므로 0을 지킨다 — 한글은 제목에서
+자간을 좁히면 뭉치므로 이 규정이 마침 한글에 맞다.
+
+## 3. 사진 자리 — 이 서비스에는 사진이 없다
+
+이 언어의 핵심은 **"제품 사진이 곧 표면 처리"**(Key Characteristics 6번)다. 그런데
+이 서비스에는 사진이 한 장도 없고, 앞으로도 없다 — 다루는 것이 텍스트 공시다.
+
+장식용 이미지를 지어내지 않는다. 대신 **이 서비스에서 가장 특징적인 물건 — 공시
+원문과 그 요약 — 을 사진 자리에 놓는다.** `card-feature-photo`(테두리·그림자 없는
+32px 둥근 전면 타일)의 자리에 사진 대신 **실제 화면에 나오는 공시 카드의 모양**을
+그린다. 문서의 "카드 크롬 없이 내용 자체가 표면"이라는 성질은 그대로 지켜진다.
+
+`product-gallery-pdp` · `color-sku-picker-row` · `card-checkout-summary` ·
+`color-swatch-circle` · `product-thumbnail` · `testimonial-customer-card` ·
+`faq-accordion` · `tech-specs-table`는 **쓰지 않는다.** 상품 상세·장바구니·후기에
+해당하는 화면이 이 서비스에 없다.
+
+## 4. 코발트는 등장하지 않는다 — 1차 버튼은 검정
+
+문서는 코발트를 **구매 흐름 전용**으로 못 박고("Don't use cobalt for marketing-surface
+primary buttons"), 마케팅 면의 1차 버튼은 **검정 알약**이라고 규정한다.
+
+이 서비스에는 구매 흐름이 없다. 그러므로 **코발트 채움 버튼은 어느 화면에도 없다.**
+
+- 1차 행동(AI 요약 요청 · DART 원문 보기 · 기업 추가) → `button-primary` 검정 알약
+- 2차 행동 → `button-secondary` 2px 먹 테두리 고스트
+- 본문·목록 링크 → `primary-deep` `#0143b5` (문서가 "active link color"로 규정)
+
+검정은 **버튼·고른 알약·작은 띠**에만 쓴다. 배경 전면을 덮는 검정 면은 두지 않는다.
+
+## 5. 배지 — 네 개로는 모자란다
+
+문서의 배지는 넷(promo-yellow · attention · success · critical)인데, 이 서비스는
+**중요도 3단계와 검수 상태**까지 여섯을 구분해야 한다(PLAN.md 9.5). Iteration Guide
+4번이 허용하는 대로 변형을 추가해 아래로 고정한다.
+
+| 뜻 | 배지 | 모양 |
+|---|---|---|
+| 중요도 높음 | `badge-critical` | `critical` 면 + 흰 글자 |
+| 중요도 보통 | `badge-neutral-dark` *(추가)* | `ink-deep` 면 + 흰 글자 |
+| 중요도 낮음 | `badge-neutral` *(추가)* | `surface-soft` 면 + `steel` 글자 |
+| 수치 확인 필요 | `badge-attention` | `attention` 면 + 흰 글자 |
+| 사람이 검토·수정함 | `badge-success` | `success` 면 + 흰 글자 |
+| AI 생성 · 미검수 | `badge-outline` *(추가)* | 면 없음 + `hairline` 테두리 + `steel` 글자 |
+| 요약 대기 / 정리 중 | `badge-neutral` | 위와 같음 |
+
+**미검수만 면이 없는 이유:** 사람이 안 봤다는 것은 *없음*의 신호라, 면을 칠하면
+상태가 있는 것처럼 읽힌다.
+
+## 6. 그 밖
+
+- **hover를 새로 만들지 않는다.** 문서가 "no-hover policy"로 기본·눌림만 규정하므로,
+  마우스 hover에는 **문서가 적은 눌림(pressed) 값을 그대로** 쓴다. 없는 상태를
+  지어내지 않으면서 마우스 사용자도 반응을 받는다.
+- **`npx @google/design.md lint`는 돌리지 않는다**(Iteration Guide 3번). 이 저장소는
+  빌드 체인과 node 의존성을 두지 않는다(PLAN.md 9.5) — 재배포가 1GB 서버에서
+  `docker compose up -d --build`로 돌기 때문이다. 대비비는 위 1번처럼 직접 계산한다.
+- 한글은 어절 중간에서 잘리므로 제목에 `word-break: keep-all`을 준다.
+- 수치는 Pretendard의 고정폭 숫자(`tabular-nums`)로 세로줄을 맞춘다. 접수번호처럼
+  **값이 아니라 식별자**인 것에만 시스템 모노를 쓴다.
