@@ -87,12 +87,11 @@
    * 4.5:1을 넘기도록 Meta 원값에서 명도만 내렸다(적용 규칙 1번). */
   --success: #1a7f37;          /* 흰 글자 5.1:1 */
   --attention: #9a5b00;        /* 흰 글자 5.4:1 */
-  --warning: #f7b928;          /* 먹 글자 10.4:1 */
   --critical: #c9252d;         /* 흰 글자 5.6:1 */
   --critical-strong: #9c1620;
 
   /* --- 간격: 4px 기준, 8px가 기본 걸음 ----------------------------------- */
-  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
   --s-5: 20px; --s-6: 24px; --s-7: 32px; --s-8: 40px;
   --s-9: 48px;
   --s-section: 48px;           /* 읽는 화면. 아래에서 64px로 */
@@ -103,12 +102,16 @@
   --r-xl: 16px;                /* 기능 타일·아코디언 */
   --r-xxl: 24px;               /* 보증·고스트 액션 타일 */
   --r-xxxl: 32px;              /* 사진 타일·큰 띠 */
-  --r-feature: 40px;           /* 히어로 패널 */
   --r-full: 100px;             /* 모든 버튼·알약·배지 */
   --r-circle: 50%;
 
-  /* --- 깊이 — 거의 쓰지 않는다 ------------------------------------------- */
-  --shadow-sticky: rgba(20, 22, 26, .3) 0 1px 4px 0;
+  /* --- 깊이 ---------------------------------------------------------------
+   * 그림자 토큰을 두지 않는다. DESIGN.md의 두 단계는 모두 커머스 신호다 —
+   * 알약 탭 활성 표시와 구매 패널 고정 바. 이 서비스에는 둘 다 없고, 문서도
+   * "소개 면의 카드에 무거운 그림자를 주지 말라"고 못 박는다.
+   * {colors.warning} 노랑과 {rounded.feature} 40px도 같은 이유로 두지 않는다
+   * (시한 할인 띠·액세서리 패널이 없다). 쓰지 않을 토큰을 정의해 두면
+   * 언젠가 자리를 찾아 쓰이게 된다 — 코발트를 만들지 않은 것과 같은 판단이다. */
 
   /* --- 글꼴 -------------------------------------------------------------- */
   --font: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo",
@@ -227,7 +230,6 @@ a:hover { text-decoration: underline; }
 .page-read .wrap { max-width: var(--wrap-read); }
 .site-main { padding: var(--s-section) 0 var(--s-section-lg); }
 .page-marketing .site-main { padding: 0; }
-.measure { max-width: var(--measure); }
 
 .site-header > .wrap, .site-footer > .wrap { max-width: var(--wrap-wide); }
 
@@ -246,7 +248,6 @@ a:hover { text-decoration: underline; }
   letter-spacing: -0.02em;
 }
 .brand:hover { color: var(--ink-deep); text-decoration: none; }
-.brand-sub { flex: 1 1 100%; order: 3; color: var(--steel); font-size: var(--t-sm); }
 /* 메뉴를 오른쪽으로 민다 — 왼쪽에만 글이 몰려 오른쪽 절반이 비는 것을 막는다. */
 .site-nav {
   display: flex; flex-wrap: wrap; gap: var(--s-5); margin-left: auto;
@@ -260,8 +261,6 @@ a:hover { text-decoration: underline; }
 .header-actions form { margin: 0; }
 .header-name { color: var(--ink); font-weight: 700; }
 .header-quiet { color: var(--steel); }
-
-@media (min-width: 48em) { .brand-sub { flex: 0 1 auto; order: 0; } }
 
 /* --- 알림 띠 -------------------------------------------------------------
  * `promo-banner` 는 원래 머리말 **위**의 시한 할인 띠다. 우리에게는 할인이 없고
@@ -396,6 +395,10 @@ a:hover { text-decoration: underline; }
   margin-bottom: var(--s-3); color: var(--steel); font-size: var(--t-sm);
 }
 .filing-company { min-width: 0; color: var(--ink); font-weight: 700; }
+/* 날짜를 오른쪽 끝으로. 가운뎃점으로 메타를 엮지 않는다 — 이름 왼쪽·값 오른쪽이
+   이 언어의 행 구조이고(tech-specs-table), 날짜가 한 열로 서면 시간순 명단을
+   훑기 쉬워진다. 좁은 화면에서 줄이 접히면 자기 줄의 오른쪽 끝으로 간다. */
+.filing-date { margin-left: auto; font-variant-numeric: tabular-nums; }
 .filing-title { margin: 0 0 var(--s-2); font-size: var(--t-h3); font-weight: 500; line-height: 1.25; }
 .filing-title a { color: var(--ink-deep); }
 .filing-line { margin: 0 0 var(--s-4); max-width: var(--measure); }
@@ -596,8 +599,12 @@ a:hover { text-decoration: underline; }
 /* 아래 여백을 0으로 두는 이유: 쇼케이스 타일이 이미 아래 여백을 갖고 있고,
    다음 띠(.steps)가 80px 위 여백을 갖는다. 둘을 더하면 화면 하나가 비어 버린다. */
 .hero { padding: var(--s-section-lg) 0 0; background: var(--canvas); }
+/* 제목 전체를 Facebook Blue 로 칠한다. DESIGN.md는 이 색을 폼 컨트롤 활성 상태의
+   색으로 적지만, 이 화면에서는 브랜드의 목소리를 내는 자리로 쓴다(적용 규칙 1번에
+   역할을 적어 두었다). 흰 바탕 4.82:1 — 64px 큰 글자라 AAA를 넘는다.
+   한 단어만 색을 달리하는 것과는 다르다. 문장 전체가 한 덩어리로 칠해진다. */
 .hero-title {
-  max-width: 14em; color: var(--ink-deep);
+  max-width: 14em; color: var(--fb-blue);
   font-size: var(--t-hero); font-weight: 500;
   line-height: var(--lead-hero); letter-spacing: 0;
 }
@@ -650,6 +657,7 @@ a:hover { text-decoration: underline; }
   padding: var(--s-7) var(--s-6);
   border: 1px solid var(--hairline-soft); border-radius: var(--r-xl);
   counter-increment: step;
+  color: var(--slate); font-size: var(--t-sm); line-height: var(--lead-sm);
 }
 .steps li::before {
   content: counter(step);
@@ -660,7 +668,6 @@ a:hover { text-decoration: underline; }
   font-variant-numeric: tabular-nums;
 }
 .steps strong { display: block; margin-bottom: var(--s-2); color: var(--ink-deep); font-size: var(--t-subtitle); font-weight: 700; }
-.steps li { color: var(--slate); font-size: var(--t-sm); line-height: var(--lead-sm); }
 
 @media (min-width: 48em) {
   .steps ol { grid-template-columns: repeat(3, 1fr); }

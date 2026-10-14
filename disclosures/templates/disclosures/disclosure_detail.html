@@ -38,8 +38,10 @@
         {% endif %}
         {% if summary.was_human_edited %}
           {# 미검수 배지와 동시에 뜨지 않는다(was_human_edited는 is_reviewed를 포함). #}
+          {% comment %} 체크 표시를 붙이지 않는 이유는 _disclosure_row.html 의 주석에 있다.
+             목록과 상세의 문구는 같아야 신호가 어긋나지 않는다. {% endcomment %}
           <span class="badge badge-human" title="사람이 DART 원문과 대조해 검토·수정한 요약입니다">
-            ✓ 사람이 검토·수정함
+            사람이 검토·수정함
           </span>
         {% endif %}
       </div>
