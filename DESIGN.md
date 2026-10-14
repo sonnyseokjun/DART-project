@@ -1,120 +1,113 @@
 ## Overview
 
-Coinbase reads like an institutional financial brand that happens to trade crypto — the marketing surfaces are quiet, white-canvas, editorially-spaced, and almost monochromatic. The single brand voltage is **Coinbase Blue** (`{colors.primary}` — #0052ff), used scarcely: every primary CTA pill, the brand wordmark, and inline emphasis links. Beyond that one blue, the system is white canvas + ink + soft gray elevation bands + a deep near-black editorial canvas (`{colors.surface-dark}` — #0a0b0d) for full-bleed product-mockup heroes.
+Meta's commerce surfaces (homepage, Quest configurator, Ray-Ban product detail, prescription page) read as a confident hardware merchandiser. The brand voice is photography-first: large, full-bleed product imagery dominates above-the-fold real estate, with white space and tight typographic hierarchy carrying the rest. The system has a recognizable dual-CTA pattern — a black pill-shaped primary on marketing surfaces shifting to a saturated cobalt blue ({colors.primary}) inside the buy-now flows, paired with an outlined ghost button for secondary navigation.
 
-Type pairs **CoinbaseDisplay** for hero headlines with **CoinbaseSans** for body, captions, and navigation. Display sits at **weight 400** — not the 700+ typical of trading platforms. The choice signals editorial calm and institutional trust rather than fintech urgency.
-
-The page rhythm rotates three modes: bright white editorial sections, soft-gray elevation bands, and **full-bleed dark editorial heroes** carrying layered product-UI mockup cards. The dark hero with floating dashboard mockups is the single most distinctive component.
+Optimistic VF — Meta's variable display face — anchors the entire system, ranging from a 64px hero display down to a 12px caption. The face's `ss01` and `ss02` stylistic sets are switched on across every heading role, contributing to the brand's slightly humanist, friendly geometric character. Below 768px the system collapses cleanly: hero stacks, pill nav becomes a hamburger, three-up feature grids flatten to a single column, and product configurators drop their right-rail summary into a sticky bottom bar.
 
 **Key Characteristics:**
-- Single accent color: `{colors.primary}` (#0052ff Coinbase Blue) carries every primary CTA, wordmark, and inline brand link. Used scarcely.
-- Modest display weights — CoinbaseDisplay at weight 400, never 700+.
-- Editorial pill geometry: every CTA is `{rounded.pill}` (100px), every asset glyph is `{rounded.full}`, every card is `{rounded.xl}` (24px). Sharp corners absent.
-- Full-bleed dark heroes with floating product-UI cards: `{component.hero-band-dark}` plus inline `{component.product-ui-card-dark}` mockups is the brand's strongest signature pattern.
-- Trading semantics: `{colors.semantic-up}` (#05b169) and `{colors.semantic-down}` (#cf202f) — text color only, never background fills.
-- 96px section rhythm — generous editorial pacing.
+- Stark white canvas ({colors.canvas}) carrying full-bleed product photography with `{rounded.xxxl}` (32px) corner softening on showcase tiles
+- Two-tier primary button system: marketing CTAs use {colors.ink-button} pills; commerce CTAs use {colors.primary} cobalt pills inside buy-now panels
+- Optimistic VF as the universal display + body face with consistent `ss01, ss02` OpenType features
+- Pill-shaped buttons ({rounded.full}) and `{rounded.xxxl}`/`{rounded.feature}` cards as the dominant geometric signature
+- Saturated promotional banners (yellow {colors.warning}, dark {colors.ink-deep}) used sparingly above the nav for time-bound offers
+- Photographic feature cards with no card chrome (no border, no shadow) — the product imagery IS the surface treatment
 
 ## Colors
 
+> Source pages: meta.com/ (homepage), /ai-glasses/ray-ban-meta-skyler-gen-2/ (PDP), /quest/quest-3s/buy-now/ (configurator), /ai-glasses/prescription/ (lens upsell). Token coverage was identical across all four pages — the design system is genuinely unified.
+
 ### Brand & Accent
-- **Coinbase Blue** (`{colors.primary}` — #0052ff): The single brand color. Every primary CTA pill, the Coinbase wordmark, and inline brand links.
-- **Coinbase Blue Active** (`{colors.primary-active}` — #003ecc): Press-state darken on the primary pill.
-- **Coinbase Blue Disabled** (`{colors.primary-disabled}` — #a8b8cc): Faded-blue tint for disabled CTAs.
-- **Accent Yellow** (`{colors.accent-yellow}` — #f4b000): A small sub-brand accent used very sparingly on Bitcoin/asset glyph fills inside feature cards. Illustrative-only, not an action color.
+- **Cobalt Primary** ({colors.primary}): The buy-now CTA color. Used on every "Add to cart", "Configure", "Pre-order" button inside the commerce flow and the right-rail purchase panel.
+- **Deep Cobalt** ({colors.primary-deep}): Pressed-state and dark-surface variant of the cobalt primary; also the active link color.
+- **Soft Cobalt** ({colors.primary-soft}): Translucent background tint for informational callouts (`{colors.primary-soft}` at 15% alpha).
+- **Facebook Blue** ({colors.fb-blue}): Selected radio/checkbox state and inline form-control activation color.
+- **Meta Link Blue** ({colors.meta-link}): Reserved for legacy navigation and footer link affordances.
+- **Oculus Purple** ({colors.oculus-purple}): VR product accent — used inside Quest-branded surfaces for category emphasis.
 
 ### Surface
-- **Canvas** (`{colors.canvas}` — #ffffff): The default page floor.
-- **Surface Soft** (`{colors.surface-soft}` — #f7f7f7): Subtle alternating band surface.
-- **Surface Strong** (`{colors.surface-strong}` — #eef0f3): The light-gray fill behind secondary buttons, search pills, asset-icon plates.
-- **Surface Dark** (`{colors.surface-dark}` — #0a0b0d): Deep near-black canvas for full-bleed dark heroes, CTA bands. Same hex as `{colors.ink}` — page-floor and text-color share the value.
-- **Surface Dark Elevated** (`{colors.surface-dark-elevated}` — #16181c): One step lighter, used for floating product-UI mockup cards inside dark heroes.
-
-### Hairlines
-- **Hairline** (`{colors.hairline}` — #dee1e6): Default 1px divider on white surfaces.
-- **Hairline Soft** (`{colors.hairline-soft}` — #eef0f3): Lighter divider — same hex as `{colors.surface-strong}`.
+- **Canvas White** ({colors.canvas}): Page background and primary card surface.
+- **Soft Cloud** ({colors.surface-soft}): Subtle product-thumbnail and warranty-card background; also the search-pill rest state.
+- **Hairline Gray** ({colors.hairline}): 1px input border and form-control divider.
+- **Hairline Soft** ({colors.hairline-soft}): Quieter divider used on cards, footer separators, and section breaks.
 
 ### Text
-- **Ink** (`{colors.ink}` — #0a0b0d): Display headings, primary nav, body emphasis.
-- **Body** (`{colors.body}` — #5b616e): Default running-text — slightly cool gray.
-- **Body Strong** (`{colors.body-strong}` — #0a0b0d): Same as ink, used for stronger emphasis.
-- **Muted** (`{colors.muted}` — #7c828a): Sub-titles, breadcrumbs, footer secondary.
-- **Muted Soft** (`{colors.muted-soft}` — #a8acb3): Disabled link text.
-- **On Primary** (`{colors.on-primary}` — #ffffff): White text on Coinbase Blue CTAs.
-- **On Dark** (`{colors.on-dark}` — #ffffff): White text on dark heroes.
-- **On Dark Soft** (`{colors.on-dark-soft}` — #a8acb3): Muted off-white for secondary text on dark.
+- **Deep Ink** ({colors.ink-deep}): Primary headline and body text on light surfaces.
+- **Ink** ({colors.ink}): Standard body and secondary headline text.
+- **Charcoal** ({colors.charcoal}): Tertiary body text and form-button labels.
+- **Slate** ({colors.slate}): Section-header copy and supporting microcopy.
+- **Steel** ({colors.steel}): Quieter caption text and footer link hierarchy.
+- **Stone** ({colors.stone}): Disabled or de-emphasized labels.
 
-### Trading Semantics
-- **Semantic Up** (`{colors.semantic-up}` — #05b169): "Price up" green, text color only.
-- **Semantic Down** (`{colors.semantic-down}` — #cf202f): "Price down" red, text color only.
+### Semantic
+- **Success** ({colors.success}): "In stock", "Free returns" affirmations.
+- **Attention** ({colors.attention}): Mid-priority alerts and timed callouts.
+- **Warning** ({colors.warning}): Promotional banners ("Get 25% off…") and limited-time tags.
+- **Critical** ({colors.critical}): Validation errors, destructive feedback.
+- **Critical Strong** ({colors.critical-strong}): Form-input error border and inline error labels.
 
 ## Typography
 
 ### Font Family
-The system runs **CoinbaseDisplay** (display headlines), **CoinbaseSans** (body, navigation, captions, buttons), **CoinbaseIcons** (icon font), and **CoinbaseMono** for tabular numerical data. Fallback stack: `-apple-system, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif`.
+**Optimistic VF** is Meta's proprietary variable display face. Fallbacks: Montserrat, Helvetica, Arial, Noto Sans. The variable axes carry from 300 (light heading-md, used for editorial intro headlines like "Look forward") through 500 (display, hero, heading-sm) up to 700 (subtitle, body emphasis, button labels). Stylistic sets `ss01` and `ss02` are switched on across every heading role — they soften the geometry and give the type a slightly humanist breathing.
 
-The display/body split is functional: CoinbaseDisplay carries hero headlines only; CoinbaseSans carries everything else.
+A secondary Helvetica fallback chain is used for technical microcopy (12px) inside spec sheets and footer fine print.
 
 ### Hierarchy
 
-| Token | Size | Weight | Line Height | Letter Spacing | Use |
-|---|---|---|---|---|---|
-| `{typography.display-mega}` | 80px | 400 | 1.0 | -2px | Homepage hero h1 |
-| `{typography.display-xl}` | 64px | 400 | 1.0 | -1.6px | Subsidiary heroes |
-| `{typography.display-lg}` | 52px | 400 | 1.0 | -1.3px | Section heads |
-| `{typography.display-md}` | 44px | 400 | 1.09 | -1px | CTA-band headlines |
-| `{typography.display-sm}` | 36px | 400 | 1.11 | -0.5px | Sub-section heads — CoinbaseSans |
-| `{typography.title-lg}` | 32px | 400 | 1.13 | -0.4px | Card group titles |
-| `{typography.title-md}` | 18px | 600 | 1.33 | 0 | Component titles, asset row primary |
-| `{typography.title-sm}` | 16px | 600 | 1.25 | 0 | List labels |
-| `{typography.body-md}` | 16px | 400 | 1.5 | 0 | Default body |
-| `{typography.body-strong}` | 16px | 700 | 1.5 | 0 | Emphasized body |
-| `{typography.body-sm}` | 14px | 400 | 1.5 | 0 | Footer body |
-| `{typography.caption}` | 13px | 400 | 1.5 | 0 | Photo captions |
-| `{typography.caption-strong}` | 12px | 600 | 1.5 | 0 | Badge pill labels |
-| `{typography.number-display}` | 18px | 500 | 1.4 | 0 | Asset prices, percent changes — CoinbaseMono |
-| `{typography.button}` | 16px | 600 | 1.15 | 0 | Standard CTA pill |
-| `{typography.nav-link}` | 14px | 500 | 1.4 | 0 | Top-nav menu items |
+| Token | Size | Weight | Line Height | Letter Spacing | OpenType | Use |
+|---|---|---|---|---|---|---|
+| `{typography.hero-display}` | 64px | 500 | 1.16 | 0 | ss01, ss02 | Homepage hero ("Get 25% off…", category opener) |
+| `{typography.display-lg}` | 48px | 500 | 1.17 | 0 | ss01, ss02 | Section-opener display ("Made for prescriptions. Built for comfort.") |
+| `{typography.heading-lg}` | 36px | 500 | 1.28 | 0 | ss01, ss02 | Subsection headlines ("Why buy from Meta", "Tech specs") |
+| `{typography.heading-md}` | 28px | 300 | 1.21 | 0 | ss01, ss02 | Editorial subheads in lighter weight ("Look forward", "Built for prescriptions") |
+| `{typography.heading-sm}` | 24px | 500 | 1.25 | 0 | ss01, ss02 | Card titles, feature-tile headers |
+| `{typography.subtitle-lg}` | 18px | 700 | 1.44 | 0 | — | Bold callouts, FAQ question titles |
+| `{typography.subtitle-md}` | 18px | 400 | 1.44 | 0 | — | Body lead and longer-line subtitles |
+| `{typography.body-md}` | 16px | 400 | 1.50 | -0.16px | — | Primary body text |
+| `{typography.body-md-bold}` | 16px | 700 | 1.50 | -0.16px | — | Body emphasis and link-md |
+| `{typography.body-sm}` | 14px | 400 | 1.43 | -0.14px | — | Secondary body, helper text |
+| `{typography.body-sm-bold}` | 14px | 700 | 1.43 | -0.14px | — | Pill tab labels, footer headings |
+| `{typography.caption-bold}` | 12px | 700 | 1.33 | 0 | — | Badge labels, timestamps |
+| `{typography.caption}` | 12px | 400 | 1.33 | 0 | — | Footer fine print, legal microcopy |
+| `{typography.button-md}` | 14px | 700 | 1.43 | -0.14px | — | Pill button labels |
+| `{typography.link-md}` | 16px | 700 | 1.50 | -0.16px | — | Inline navigation links |
 
 ### Principles
-- **Display weight stays at 400.** The single most distinctive typographic choice — signals "calm institutional brand" rather than "trading-platform urgency."
-- **Negative letter-spacing on display only.** Display uses -1px to -2px tracking; body stays at 0.
-- **CoinbaseMono on every number.** Asset prices, percent changes — anything tabular renders in CoinbaseMono.
-
-### Note on Font Substitutes
-CoinbaseDisplay, CoinbaseSans, and CoinbaseMono are licensed Coinbase typefaces.
-- **CoinbaseDisplay → Inter** at weight 400, letter-spacing -1.5%.
-- **CoinbaseSans → Inter** at weight 400/600.
-- **CoinbaseMono → JetBrains Mono** or **Geist Mono** at weight 500.
+- Negative letter-spacing on body roles (`-0.14px` to `-0.16px`) tightens the type fractionally — Optimistic VF was designed for this snug-but-not-condensed setting.
+- Editorial subheads use the 300 weight to introduce visual rest between the 500-weight display headlines and the 400-weight body, creating a three-tier visual rhythm.
+- All headings carry `ss01, ss02` stylistic sets together — the design treats them as a paired alternates package, never one without the other.
+- Buttons, pill tabs, and footer headings share `{typography.body-sm-bold}` (14px / 700 / -0.14px), creating a tight visual relationship between interactive elements.
 
 ## Layout
 
 ### Spacing System
-- **Base unit:** 4px.
-- **Tokens:** `{spacing.xxs}` 4px · `{spacing.xs}` 8px · `{spacing.sm}` 12px · `{spacing.base}` 16px · `{spacing.md}` 20px · `{spacing.lg}` 24px · `{spacing.xl}` 32px · `{spacing.xxl}` 48px · `{spacing.section}` 96px.
-- **Section padding:** `{spacing.section}` (96px) for every major editorial band.
-- **Card internal padding:** `{spacing.xl}` (32px) for feature cards and product-UI mockups.
+- **Base unit**: 4px increment with 8px as the dominant primary step.
+- **Tokens**: `{spacing.xxs}` (4px) · `{spacing.xs}` (8px) · `{spacing.sm}` (10px) · `{spacing.md}` (12px) · `{spacing.base}` (16px) · `{spacing.lg}` (20px) · `{spacing.xl}` (24px) · `{spacing.xxl}` (32px) · `{spacing.xxxl}` (40px) · `{spacing.section-sm}` (48px) · `{spacing.section}` (64px) · `{spacing.section-lg}` (80px) · `{spacing.hero}` (120px).
+- **Section rhythm**: Marketing sections separate at `{spacing.section-lg}` (80px); product detail sections compress to `{spacing.section}` (64px); FAQ stacks tighten further to `{spacing.xxl}` (32px).
+- **Card internal padding**: Standard `{spacing.xxl}` (32px); icon-feature tiles compress to `{spacing.xl}` (24px); promo-strip cards expand to `{spacing.section}` (64px) for hero presence.
 
 ### Grid & Container
-- **Max content width:** ~1200px centered. Hero photography full-bleed.
-- **Editorial body:** Single 12-column grid.
-- **Feature card grids:** 2-up at desktop for hero splits, 3-up for benefit grids.
-- **Footer:** 6-column link list at desktop.
+- Marketing page max-width sits around 1280px with 32–48px gutters.
+- The PDP layout uses a 2-column split: hero gallery (~58% width) + sticky purchase rail (~42%, with `max-width: 380px` on the rail).
+- Three-up feature grids ("Why buy from Meta") use a 24px column gap; six-up product thumbnail rows (color/SKU pickers) use a 12px gap.
 
 ### Whitespace Philosophy
-Generous editorial pacing — closer to Bloomberg or the Financial Times than to a trading dashboard. 96px between bands; cards inside bands sit 24px apart. Density lives behind login walls, not on marketing.
+Whitespace is product-photography-first. Hero sections give product imagery 50–70% of the viewport height; copy is given oxygen to breathe in `{spacing.xxl}` to `{spacing.xxxl}` blocks above and below. Inside the configurator, whitespace tightens — the buy-now panel is information-dense, with `{spacing.base}` to `{spacing.lg}` rhythm between option groups.
 
 ## Elevation & Depth
 
+The system runs predominantly flat. Elevation is reserved for two interaction layers:
+
 | Level | Treatment | Use |
 |---|---|---|
-| Flat | No shadow, no border | 80% of surfaces |
-| Hairline border | 1px `{colors.hairline}` | Feature card outlines on white |
-| Soft drop | `0 4px 12px rgba(0, 0, 0, 0.04)` | Single shadow tier — hovered cards |
-| Photographic | Full-bleed product-UI mockups | Hero depth |
+| 0 (flat) | No shadow; `{rounded.xxxl}` rounding + `{colors.hairline-soft}` border | Default product cards, why-buy tiles |
+| 1 (subtle) | `rgba(0, 0, 0, 0.2) 1px 1px 0px 0px` | Pill-tab activation indicator |
+| 2 (sticky panel) | `rgba(20, 22, 26, 0.3) 0px 1px 4px 0px` | PDP right-rail purchase summary, sticky mobile checkout bar |
 
 ### Decorative Depth
-- **Layered product-UI cards inside dark heroes** is the most distinctive decorative pattern — a `{component.product-ui-card-dark}` floats above a darker base canvas, often with a second smaller card overlapping at an angle.
-- **Geometric brand illustrations** carry illustrative depth where shadows would otherwise.
+- Photography-as-depth: full-bleed product imagery on `{rounded.xxxl}` cards creates atmospheric layering without shadows.
+- Translucent overlays (`rgba(255, 255, 255, 0.1)` to `rgba(10, 19, 23, 0.12)`) cover dark hero photography to lift legibility of overlaid text.
+- Decorative pastel tints inside accessory cards — soft pink, ice-blue, mint — appear briefly behind product cutouts but are NOT formalized as system tokens (treated as photographic content).
 
 ## Shapes
 
@@ -122,222 +115,219 @@ Generous editorial pacing — closer to Bloomberg or the Financial Times than to
 
 | Token | Value | Use |
 |---|---|---|
-| `{rounded.none}` | 0px | Reserved (essentially unused) |
-| `{rounded.xs}` | 4px | Inline tags |
-| `{rounded.sm}` | 8px | Compact rows |
-| `{rounded.md}` | 12px | Form inputs |
-| `{rounded.lg}` | 16px | Mid-size cards |
-| `{rounded.xl}` | 24px | Feature cards, product-UI mockups, pricing tiers |
-| `{rounded.pill}` | 100px | All CTA buttons, search pills, badges |
-| `{rounded.full}` | 9999px | Asset icon circles, avatars |
+| `{rounded.xs}` | 2px | Inline checkbox marks, fine UI corners |
+| `{rounded.sm}` | 4px | Tags, micro-controls |
+| `{rounded.md}` | 6px | Square thumbnail rounding |
+| `{rounded.lg}` | 8px | Form inputs, radio-option containers |
+| `{rounded.xl}` | 16px | Standard feature cards, FAQ accordion items |
+| `{rounded.xxl}` | 24px | Warranty / accessory tiles, ghost-style action cards |
+| `{rounded.xxxl}` | 32px | Photographic feature cards, big promo strips |
+| `{rounded.feature}` | 40px | Accessory hero panels, "Built for prescriptions" cards |
+| `{rounded.full}` | 100px | Pill buttons, tab chips, badges |
+| `{rounded.circle}` | 50% | Color swatches, circular icon buttons |
 
-Pill for interactive, card-radius (24px) for containers, full circle for icons. Sharp corners absent.
+### Photography Geometry
+- Product hero photography sits in `{rounded.xxxl}` (32px) frames more often than rectangles.
+- Color/material swatches are perfect circles (`{rounded.circle}`, 32px diameter, 2px white border ring when selected).
+- Square product thumbnails (`aspect-ratio: 1/1`) use `{rounded.xl}` rounding.
+- Six-up "color & SKU" picker rows use 1:1 aspect tiles with `{rounded.lg}` (8px) corners — tighter than the hero photography frames to differentiate selection-grid context from showcase context.
 
 ## Components
 
-### Top Navigation
-
-**`top-nav-light`** — Default top nav on white pages. Background `{colors.canvas}`, text `{colors.ink}`, height 64px. Layout: Coinbase wordmark left, primary horizontal menu (Cryptocurrencies / Individuals / Businesses / Institutions / Developers / Company), search-icon + globe + Sign In + Sign Up CTAs right.
-
-**`top-nav-on-dark`** — Top nav over a dark hero band. Background `{colors.surface-dark}`, text `{colors.on-dark}`. Same layout.
+> Per the no-hover policy, hover states are NOT documented for any component below. Default and pressed/active states only.
 
 ### Buttons
 
-**`button-primary`** — The signature Coinbase Blue pill. Background `{colors.primary}`, text `{colors.on-primary}`, type `{typography.button}` (16px / 600), padding 12px × 20px, height 44px, rounded `{rounded.pill}` (100px).
+**`button-primary`** — Black pill primary CTA for marketing surfaces ("Shop", "Pre-order").
+- Background `{colors.ink-button}`, text `{colors.on-ink-button}`, typography `{typography.button-md}`, padding `14px 30px`, rounded `{rounded.full}`.
+- Pressed state `button-primary-pressed` flips background to `{colors.charcoal}`.
+- Disabled state `button-primary-disabled` uses `{colors.disabled-text}` background.
 
-**`button-primary-active`** — Press state. Background `{colors.primary-active}`, deeper blue.
+**`button-buy-cta`** — Cobalt pill primary CTA for commerce flows ("Add to cart", "Configure", "Continue").
+- Background `{colors.primary}`, text `{colors.on-primary}`, typography `{typography.button-md}`, padding `14px 30px`, rounded `{rounded.full}`.
+- Pressed state `button-buy-cta-pressed` deepens background to `{colors.primary-deep}`.
+- This variant ONLY appears inside the buy-now configurator and PDP purchase rail. Marketing surfaces use `button-primary` instead.
 
-**`button-primary-disabled`** — Faded blue tint. Background `{colors.primary-disabled}`. Cursor not-allowed.
+**`button-secondary`** — Outlined ghost CTA, often paired with primary in dual-CTA hero patterns.
+- Background transparent, text `{colors.ink-deep}`, border `2px solid {colors.ink-deep}`, typography `{typography.button-md}`, padding `12px 28px`, rounded `{rounded.full}`.
 
-**`button-secondary-light`** — Soft-gray secondary on white surfaces. Background `{colors.surface-strong}`, text `{colors.ink}`, same pill geometry.
+**`button-ghost`** — Quieter outlined variant used for tertiary CTAs.
+- Background transparent, text `{colors.ink-deep}`, border `2px solid rgba(10, 19, 23, 0.12)`, typography `{typography.button-md}`, padding `10px 22px`, rounded `{rounded.full}`.
 
-**`button-secondary-dark`** — Used on dark heroes. Background `{colors.surface-dark-elevated}`, text `{colors.on-dark}`, same pill geometry.
+**`button-pill-tab`** + **`button-pill-tab-active`** — Top-of-page category navigation pills ("Glasses / Quest / Apps").
+- Inactive: background `{colors.canvas}`, text `{colors.ink}`, border `1px solid {colors.hairline}`, padding `8px 16px`, rounded `{rounded.full}`.
+- Active: background `{colors.ink-deep}`, text `{colors.canvas}`. No border in active state — the dark fill replaces it.
 
-**`button-outline-on-dark`** — Transparent pill with white outline. Background transparent, text `{colors.on-dark}`, 1px white border.
+**`button-icon-circular`** — 40×40px circular utility buttons (carousel arrows, share, favorite).
+- Background `{colors.canvas}`, icon color `{colors.ink}`, rounded `{rounded.circle}`.
 
-**`button-tertiary-text`** — Inline text link. Background transparent, text `{colors.primary}`, type `{typography.button}`.
+### Cards & Containers
 
-**`button-pill-cta`** — Larger pill CTA used on the homepage hero ("Get started"). Same Coinbase Blue palette but with 56px height and 16px × 32px padding for a prouder stance.
+**`card-product-feature`** — White feature card with product photography and copy (homepage "Designed for sport", "Advanced. Inside and out.").
+- Background `{colors.canvas}`, rounded `{rounded.xxxl}`, padding `{spacing.xxl}`, border `1px solid {colors.hairline-soft}`.
 
-### Hero Bands
+**`card-feature-photo`** — Edge-to-edge photographic showcase tile with NO chrome (homepage "Built for prescriptions" full-bleed glasses card).
+- Background `{colors.canvas}` (visible only at the corners), rounded `{rounded.xxxl}`, no padding, no border. The image fills the card; copy is overlaid bottom-left in white.
 
-**`hero-band-dark`** — The signature full-bleed dark hero. Background `{colors.surface-dark}`, text `{colors.on-dark}`, full-bleed layered product-UI mockup cards. Display headline left in `{typography.display-mega}` (80px / 400), subhead in `{typography.body-md}`, two CTAs.
+**`card-promo-strip`** — Dark full-width promo card with embedded copy + CTAs (homepage "Meta Quest brings the magic of virtual reality" wide strip).
+- Background `{colors.ink-deep}`, text `{colors.canvas}`, rounded `{rounded.xxxl}`, padding `{spacing.section}`.
 
-**`hero-band-light`** — White-canvas variant used on Wealth and Explore. Background `{colors.canvas}`, text `{colors.ink}`. Same skeleton, light palette.
+**`card-icon-feature`** — Three-up feature tile with line icon, headline, and short copy ("Free 2-day delivery", "Free 30-day returns", "Worry-free warranty", "Buy now, pay later").
+- Background `{colors.canvas}`, rounded `{rounded.xl}`, padding `{spacing.xl}`, border `1px solid {colors.hairline-soft}`.
 
-### Cards
+**`card-checkout-summary`** — PDP right-rail sticky summary with title, price, color picker, "Add to cart" button.
+- Background `{colors.canvas}`, rounded `{rounded.xl}`, padding `{spacing.xl}`, border `1px solid {colors.hairline-soft}`, shadow `rgba(20, 22, 26, 0.3) 0px 1px 4px 0px`.
 
-**`product-ui-card-dark`** — The floating product-UI mockup. Background `{colors.surface-dark-elevated}`, text `{colors.on-dark}`, rounded `{rounded.xl}` (24px), padding 32px. Often shown as 2-3 stacked cards at slight rotation, mimicking a layered dashboard.
+**`product-thumbnail`** — Square product image cell used in color/SKU pickers and "People also bought" rows.
+- Background `{colors.surface-soft}`, rounded `{rounded.xl}`, padding `{spacing.base}`, aspect-ratio `1 / 1`.
 
-**`product-ui-card-light`** — Light-canvas variant used on Explore for asset cards. Background `{colors.canvas}`, text `{colors.ink}`, same geometry, 1px hairline border.
+**`warranty-card`** — Promo callout for warranty + finance offers ("1y Warranty", "Meta Horizon+").
+- Background `{colors.surface-soft}`, rounded `{rounded.xxl}`, padding `{spacing.xxl}`. Uses pastel-tinted variants for additional perks.
 
-**`feature-card`** — Used in 3-up and 2-up grids. Background `{colors.canvas}`, text `{colors.ink}`, type `{typography.title-md}`, rounded `{rounded.xl}`, padding 32px.
+**`why-buy-tile`** — 4-up reassurance tile row in the lower marketing zone.
+- Background `{colors.canvas}`, rounded `{rounded.xl}`, padding `{spacing.xxl} {spacing.xl}`, border `1px solid {colors.hairline-soft}`. Heading in `{typography.subtitle-lg}`, body in `{typography.body-sm}`.
 
-### Trading Surfaces
+### Inputs & Forms
 
-**`asset-row`** — Horizontal row in asset lists (Explore, Wealth). Background transparent, 1px hairline divider. Layout: 32px circular asset icon left, asset name + ticker, price column in `{typography.number-display}`, 24h change column with `{component.price-up-cell}` or `{component.price-down-cell}`.
+**`text-input`** — Standard form field (footer email subscribe, support form).
+- Background `{colors.canvas}`, text `{colors.ink}`, border `1px solid {colors.hairline}`, rounded `{rounded.lg}`, padding `{spacing.md}`, height 44px.
 
-**`price-up-cell`** + **`price-down-cell`** — Inline price-change cells. Color only — green or red text in `{typography.number-display}`, no background fill.
+**`text-input-focused`** — Activated state.
+- Border switches to `2px solid {colors.fb-blue}`.
 
-**`asset-icon-circular`** — Circular plate behind asset glyphs. Background `{colors.surface-strong}`, rounded `{rounded.full}`, 32px diameter.
+**`text-input-error`** — Validation error state.
+- Border switches to `1px solid {colors.critical-strong}`; error label below in `{colors.critical-strong}` `{typography.body-sm}`.
 
-### Pricing
+**`search-pill`** — Top-nav search field.
+- Background `{colors.surface-soft}`, text `{colors.steel}`, typography `{typography.body-sm}`, rounded `{rounded.full}`, height 40px.
 
-**`pricing-tier-card`** — Standard pricing tier on Developer Platform. Background `{colors.canvas}`, rounded `{rounded.xl}`, padding 32px, 1px hairline border. Layout: tier name + price + feature checklist + CTA pill.
+**`radio-option`** + **`radio-option-selected`** — Configurator option cards (storage, color variant, shipping option).
+- Inactive: background `{colors.canvas}`, rounded `{rounded.lg}`, padding `{spacing.lg}`, border `1px solid rgba(10, 19, 23, 0.12)`.
+- Selected: border switches to `2px solid #0143b5` (deep cobalt) — the cobalt theme persists into form-control selection signaling.
 
-**`pricing-tier-featured`** — The featured tier. Background `{colors.surface-dark}`, text `{colors.on-dark}`. Same skeleton, dark palette — visual inversion signals "highlighted choice" without colored ribbons.
+**`color-swatch-circle`** — Round color/material picker (Ray-Ban frame finishes, glass colors).
+- 32px diameter, `{rounded.circle}`, `2px solid {colors.canvas}` ring on selection over the swatch's own fill color.
 
-### Forms
+### Badges & Status
 
-**`text-input`** — Standard text input. Background `{colors.canvas}`, text `{colors.ink}`, rounded `{rounded.md}` (12px), padding 14px × 16px, height 48px, 1px hairline border. On focus, border thickens to 2px Coinbase Blue.
+**`badge-promo-yellow`** — Limited-time offer chip ("Limited time", "Sale").
+- Background `{colors.warning}`, text `{colors.ink-deep}`, typography `{typography.caption-bold}`, rounded `{rounded.full}`, padding `4px 10px`.
 
-**`search-input-pill`** — Pill-shaped search bar. Background `{colors.surface-strong}`, rounded `{rounded.pill}`, padding 12px × 20px, height 44px.
+**`badge-attention`** — Mid-priority status indicator ("Almost gone", "Selling fast").
+- Background `{colors.attention}`, text `{colors.canvas}`, typography `{typography.caption-bold}`, rounded `{rounded.full}`, padding `4px 10px`.
 
-### Tags & Badges
+**`badge-success`** — Affirmative status ("In stock", "Verified", "Free shipping").
+- Background `{colors.success}`, text `{colors.canvas}`, typography `{typography.caption-bold}`, rounded `{rounded.full}`, padding `4px 10px`.
 
-**`badge-pill`** — Small uppercase pill used as section labels ("INSTITUTIONAL", "REGULATED"). Background `{colors.surface-strong}`, text `{colors.ink}`, type `{typography.caption-strong}`, rounded `{rounded.pill}`.
+**`badge-critical`** — Urgent/destructive label ("Out of stock", "Discontinued", error chips).
+- Background `{colors.critical}`, text `{colors.canvas}`, typography `{typography.caption-bold}`, rounded `{rounded.full}`, padding `4px 10px`.
 
-### CTA / Footer
+**`promo-banner`** — Sticky full-width promotional strip ABOVE the top nav ("Get 25% off the #1 selling AI glasses").
+- Background `{colors.ink-deep}` (or `{colors.warning}` for yellow promo variants), text `{colors.canvas}` (or `{colors.ink-deep}` on yellow), typography `{typography.body-sm-bold}`, padding `{spacing.md} {spacing.xl}`. Carries one-line offer copy plus an inline CTA link.
 
-**`cta-band-dark`** — Pre-footer "Take control of your money" band. Background `{colors.surface-dark}`, text `{colors.on-dark}`, vertical padding 96px. Centered headline + two CTAs.
+### Navigation
 
-**`footer-light`** — Closing white-canvas footer. Background `{colors.canvas}`, text `{colors.body}`. 6-column link list.
+**Top Navigation (Desktop)** — Sticky white bar with category pill tabs, search, account, cart.
+- Background `{colors.canvas}`, height ~64px with bottom `1px solid {colors.hairline-soft}`.
+- Left: Meta wordmark logo (61×14px). Center: pill-tab category nav. Right: search-pill + circular icon buttons (account, cart).
 
-**`footer-link`** — Individual footer link. Background transparent, text `{colors.body}`.
+**Top Navigation (Mobile)** — Compressed to logo + hamburger + cart icon. Pill-tab nav slides into a full-screen drawer below 768px.
 
-**`legal-band`** — Bottom strip beneath footer columns. All text `{colors.muted}` at `{typography.caption}`.
+**Promo Banner** — Full-width strip ABOVE the nav for time-bound offers.
+- Background `{colors.ink-deep}` or `{colors.warning}` (yellow), text `{colors.canvas}` or `{colors.ink-deep}`, typography `{typography.body-sm-bold}`, padding `{spacing.md} {spacing.xl}`. Carries one-line offer copy + inline link.
+
+**Breadcrumb (PDP)** — Inline path above the product hero ("Glasses › Ray-Ban Meta › Skyler (Gen 2)").
+- Typography `{typography.body-sm}`, separator dot in `{colors.stone}`, active leaf in `{colors.ink}`, parent links in `{colors.steel}`.
+
+### Signature Components
+
+**`hero-band-marketing`** — Full-bleed photographic hero with overlaid copy + dual-CTA pair.
+- Edge-to-edge product photography on a dark or photographic background. Overlay copy in `{typography.hero-display}` white. Below the title: 1-line subtitle in `{typography.subtitle-md}` then `button-primary` + `button-secondary` pair.
+
+**`product-gallery-pdp`** — Product detail page main hero: 4-up vertical thumbnail strip on the left, large product image center, sticky purchase rail right.
+- Thumbnails: 80×80px, `{rounded.lg}`, `{colors.surface-soft}` background, 1px `{colors.hairline-soft}` border (active border switches to `{colors.ink-deep}`).
+- Main image area: ~720×720px on desktop, `{rounded.xxxl}` rounding, photographic surface.
+- Sticky rail uses `card-checkout-summary`.
+
+**`color-sku-picker-row`** — Six-up grid of square product variants with name + price below each.
+- Tile background `{colors.surface-soft}`, rounded `{rounded.lg}`, image padded `{spacing.base}`. Active tile border switches to `2px solid {colors.ink-deep}`. Below the tile: variant name in `{typography.body-sm-bold}` and price in `{typography.body-sm}`.
+
+**`feature-icon-row`** — Four reassurance benefits ("Free 2-day delivery", "Free 30-day returns", "Worry-free warranty", "Buy now, pay later").
+- 4-column grid, each cell uses `card-icon-feature` chrome with a 32px line icon at top, headline `{typography.subtitle-lg}`, body `{typography.body-sm}`.
+
+**`faq-accordion`** — Vertical stack of expandable Q&A items.
+- Each item uses `faq-accordion-item` chrome. Question in `{typography.subtitle-lg}` left, chevron icon (`{colors.steel}`, 20px) right. Expanded answer drops in `{typography.body-md}` text below with `{spacing.base}` top padding.
+
+**`tech-specs-table`** — Two-column key/value table for product specifications.
+- Row layout: spec label (`{typography.body-sm-bold}` `{colors.ink}`) left, spec value (`{typography.body-sm}` `{colors.charcoal}`) right. Row separator `1px solid {colors.hairline-soft}`. Section headers in `{typography.heading-sm}` above each spec group.
+
+**`testimonial-customer-card`** — Small editorial card with author + quote + photo.
+- Background `{colors.canvas}`, rounded `{rounded.xl}`, padding `{spacing.xxl}`, border `1px solid {colors.hairline-soft}`. Avatar circle 40px, byline in `{typography.body-sm-bold}`, quote in `{typography.body-md}`.
+
+**`footer-region`** — Dense multi-column site footer.
+- Background `{colors.canvas}`, top border `1px solid {colors.hairline-soft}`, padding `{spacing.section} {spacing.xxl}`. Six column groups with section headings in `{typography.body-sm-bold}` `{colors.ink}` and link lists in `{typography.body-sm}` `{colors.steel}`. Bottom row contains language picker, region selector, legal links in `{typography.caption}` `{colors.stone}`.
 
 ## Do's and Don'ts
 
 ### Do
-- Reserve `{colors.primary}` (Coinbase Blue) for primary CTAs, wordmark, brand-glyph illustrations, inline accent links.
-- Set every CTA as `{rounded.pill}` (100px); every asset glyph as `{rounded.full}`.
-- Keep CoinbaseDisplay headlines at weight 400.
-- Use the dark/light band rotation as page rhythm.
-- Render every numerical value in CoinbaseMono via `{typography.number-display}`.
-- Pair every dark hero with a layered product-UI mockup card stack.
+- Reserve `{colors.primary}` (cobalt) for buy-now CTAs only — its visual weight is meaningful precisely because it doesn't appear on marketing pages.
+- Use `{colors.ink-button}` (black) for marketing-surface primary CTAs. Pair with `{colors.button-secondary}` ghost outline for the secondary action.
+- Apply `{rounded.full}` to every button, every category pill, every badge, every chip — buttons are NEVER squared in Meta's system.
+- Apply `{rounded.xxxl}` to photographic product cards and `{rounded.xl}` to icon-feature tiles to maintain the visible card-hierarchy contrast.
+- Switch on `ss01, ss02` together for any Optimistic VF heading. Never one stylistic set without the other.
+- Use the 300-weight `{typography.heading-md}` for editorial subheads — it creates the brand's signature visual rhythm against the 500-weight displays.
 
 ### Don't
-- Don't introduce a secondary brand color. Coinbase Blue is the only action color; trading green/red are semantic-only.
-- Don't bold display copy — display sits at weight 400; bolding shifts the brand voice.
-- Don't add drop shadow tiers — system has one shadow tier.
-- Don't use sharp `{rounded.none}` (0px) on CTAs.
-- Don't mix CoinbaseDisplay and CoinbaseSans inside the same headline.
-- Don't use trading green/red as a button background.
-- Don't extract a CTA color from a third-party widget (cookie consent, OneTrust). The brand's CTA color is what appears on actual product CTAs, not on injected modals.
+- Don't use `{colors.primary}` (cobalt) for marketing-surface primary buttons — it conflicts with Meta's brand-history positioning of black-CTA-on-white-canvas marketing.
+- Don't introduce additional accent colors beyond cobalt + Oculus purple. The hardware brand is deliberately monochromatic outside its product photography.
+- Don't soften the corners of pill buttons below `{rounded.full}`. The pill is a brand signature.
+- Don't run feature cards without rounding — `{rounded.xxxl}` is the minimum for any photographic surface.
+- Don't reduce `{typography.body-md}` line-height below 1.50 — the negative letter-spacing already tightens the metric and any further compression breaks legibility.
+- Don't apply heavy shadows to marketing cards. Elevation is a commerce-flow signal, not a marketing flourish.
 
 ## Responsive Behavior
 
 ### Breakpoints
-
 | Name | Width | Key Changes |
 |---|---|---|
-| Mobile | < 640px | Hero h1 80→40px; feature card grid 1-up; asset row stacks; nav collapses to hamburger; layered product-UI cards collapse to single card. |
-| Tablet | 640–1024px | Hero h1 64px; feature card grid 2-up; asset rows stay horizontal but compress columns. |
-| Desktop | 1024–1280px | Full hero h1 80px; feature card grid 3-up; full asset row layout. |
-| Wide | > 1280px | Content caps at 1200px; hero photography full-bleed. |
+| Mobile (small) | < 480px | Single column. Hero text drops to `{typography.display-lg}` or smaller. Pill tabs collapse into hamburger drawer. PDP gallery stacks above purchase rail; rail becomes sticky bottom bar. |
+| Mobile (large) | 480 – 767px | Same as small but feature tiles render two-up. |
+| Tablet | 768 – 1023px | Two-column feature grids. Pill-tab nav returns. PDP gallery + purchase rail render side-by-side at compressed proportions (~60/40). |
+| Desktop | 1024 – 1359px | Full three- and four-up feature grids; full pill-tab category nav; PDP at standard 58/42 split. |
+| Wide Desktop | ≥ 1360px | Same as desktop with wider hero gutters and larger product photography. |
 
 ### Touch Targets
-- Primary CTA pill at 44px height — at WCAG AAA.
-- Larger hero pill (`{component.button-pill-cta}`) at 56px — well above AAA.
-- Asset icon circles at 32px — borderline; padded 8px row creates effective 48px tap zone.
-- Search pill at 44px height — at AAA.
+- Pill buttons render at 40–44px effective height (with the 14px button text + `14px 30px` padding). Above the WCAG AAA 44px floor.
+- Circular icon buttons are 40×40px — at the AA floor; bumps to 44×44px on mobile via override.
+- Color swatch circles are 32×32px. To hit AAA, the swatch carries a 12px clear hit zone around it (effective hit target ~56px).
+- Form inputs render at 44px height to align with primary button height.
 
 ### Collapsing Strategy
-- Top nav switches to hamburger sheet below 768px. Sign Up CTA stays visible.
-- Hero h1 steps down: 80 → 64 → 52 → 44 → 36px on smallest screens.
-- Layered product-UI mockup cards collapse from 2-3 stacked into a single card on mobile.
-- Pricing tier rows: 3-up → 2-up → 1-up.
-- Asset rows on mobile stack vertically: ticker line on top, price + change line beneath.
+- **Promo banner** stays full-width on all breakpoints; truncates with ellipsis on small mobile, retains the inline link affordance.
+- **Pill-tab nav** below 768px collapses into a hamburger drawer; the active tab is rendered as a label inside the closed nav.
+- **PDP layout**: gallery stacks above the purchase summary at < 1024px; the summary becomes a sticky bottom bar with price + "Add to cart" button at < 768px. The full summary remains scrollable above the sticky bar.
+- **Feature grids** (3-up, 4-up) collapse to 2-up at 768–1023px and 1-up at < 768px. Card padding compresses from `{spacing.xxl}` to `{spacing.xl}` at the 1-up breakpoint.
+- **Hero typography**: `{typography.hero-display}` (64px) drops to `{typography.heading-lg}` (36px) at < 768px and `{typography.heading-sm}` (24px) at < 480px.
+- **Footer**: 6-column desktop layout reflows to 2-column at tablet and accordion-collapsed groups at mobile.
+
+### Image Behavior
+- Product photography uses 1:1 (thumbnails, color pickers), 4:3 (PDP gallery), and 16:9 (homepage promo strips) ratios.
+- Hero photography is full-bleed with `{rounded.xxxl}` corners; lazy-loaded below the fold.
+- Product variant images preserve their `{rounded.lg}` thumbnails across all breakpoints — they never go full-width on mobile.
 
 ## Iteration Guide
 
-1. Focus on a single component at a time. Reference YAML keys directly.
-2. New CTAs default to `{rounded.pill}` (100px); new icon plates default to `{rounded.full}`. Cards use `{rounded.xl}`.
-3. Variants live as separate entries inside the `components:` block.
-4. Use `{token.refs}` everywhere — never inline hex.
-5. Hover state never documented. Only Default and Active/Pressed.
-6. CoinbaseDisplay 400 for display, CoinbaseSans 400/600/700 for body. CoinbaseMono on every number.
-7. Coinbase Blue stays scarce — one or two blue moments per band.
+1. Focus on ONE component at a time. The system has high internal consistency — small precision wins compound.
+2. Reference component names and tokens directly (`{colors.primary}`, `{component-name}-pressed`, `{rounded.full}`) — do not paraphrase.
+3. Run `npx @google/design.md lint DESIGN.md` after edits to catch broken refs, contrast issues, orphaned tokens.
+4. Add new variants as separate `components:` entries (`-pressed`, `-disabled`, `-focused`) — do not bury them inside prose.
+5. Default to `{typography.body-md}` for body and `{typography.subtitle-lg}` for emphasis. Headlines step down through `hero-display → display-lg → heading-lg → heading-md → heading-sm`.
+6. Keep `{colors.primary}` (cobalt) scarce. If it appears outside the buy-now flow on a viewport, ask whether the surface really needs to look like a checkout panel.
+7. Pill-shaped buttons (`{rounded.full}`) always; squared buttons signal "third-party widget" in this design language and should be filtered out of any work surface.
 
 ## Known Gaps
 
-- CoinbaseDisplay, CoinbaseSans, CoinbaseMono are licensed; Inter and JetBrains Mono are documented substitutes.
-- In-product trading surfaces (order book, charts, order forms) are behind login walls — this document covers marketing only.
-- Animation timings out of scope.
-- Form validation states beyond focus not visible on captured surfaces.
-- Accent yellow appears only inside Bitcoin asset glyph illustrations; documented as illustrative-only.
-
-
-## Korean Adaptation — 공시 쉽게 보기
-
-위 문서는 영문 금융 브랜드에서 뜬 디자인 언어다. 화면이 거의 전부 한글인 이
-서비스에 옮기면서 **의도적으로 다르게 한 것**을 여기 적는다. 구현(`style.css`)은
-이 절까지 포함해 따른다. 다시 바꿀 일이 생기면 여기를 먼저 고친다.
-
-### Typeface — Inter 대신 Pretendard
-
-문서는 대체 서체로 Inter를 지정하지만 Inter에는 한글 글리프가 없다. 그대로 쓰면
-숫자·영문만 Inter가 되고 본문은 기기 기본 글꼴로 갈라진다(윈도우 맑은 고딕 /
-맥 애플 산돌고딕). **Pretendard**(SIL OFL)는 같은 기하학적 산세리프 성격을 한글까지
-덮으므로 display와 body를 한 가족으로 맡는다. 가변 폰트 `woff2` 한 개를 저장소에
-넣어 자체 호스팅한다 — 외부 CDN을 쓰지 않는다(PLAN.md 9.5).
-
-CoinbaseMono 자리에는 **두 번째 글꼴을 받지 않는다.** 수치는 Pretendard의 고정폭
-숫자(`tabular-nums`)로 세로줄을 맞춘다 — "줄마다 숫자가 흔들리지 않는다"는 목적은
-같고 내려받는 파일이 늘지 않는다. 시스템 모노는 **값이 아니라 식별자**인 것
-(접수번호 14자리)에만 남긴다.
-
-### Metrics — 한글에 맞춘 셋
-
-| 항목 | 원 문서 | 여기 | 이유 |
-|---|---|---|---|
-| display 자간 | -1.5% / -1~-2px | -0.01em | 한글은 좁히면 글자가 뭉쳐 읽기가 나빠진다 |
-| display 행간 | 1.0 | 1.15 | 한글은 글자틀이 꽉 차 1.0이면 두 줄 제목이 붙는다 |
-| 줄바꿈 | — | `word-break: keep-all` | 기본값은 어절 중간에서도 자른다 |
-
-`{colors.muted}`(#7c828a)는 흰 바탕에서도 3.9:1이라 읽는 글자에 쓸 수 없다.
-같은 회색 계열에서 **가장 어두운 면(#eef0f3 배지) 위에서도 4.5:1을 넘기는**
-#666c76으로 내렸다.
-
-### 띠 순서 — 검정은 한 번만
-
-문서는 히어로(`hero-band-dark`)와 푸터 앞 닫는 띠(`cta-band-dark`)를 **둘 다**
-검정으로 지정한다. 우리 랜딩은 띠가 셋뿐이라(히어로 · 사용법 · 닫는 띠) 그대로
-하면 검정-흰-검정이 되어 리듬이 아니라 줄무늬로 읽힌다. **검정은 히어로에
-한 번만 쓰고** 닫는 띠는 `{colors.surface-soft}`로 둔다. 띠가 다섯 이상으로
-늘면 다시 본다.
-
-### 파랑은 한 화면에 한 번
-
-문서의 "Coinbase Blue stays scarce — one or two blue moments per band"를
-우리 화면에 맞춰 **세는 단위를 띠가 아니라 화면으로** 바꿨다. 공시 목록은 같은
-행동(요약 요청)이 줄마다 반복되는 구조라, 띠 기준으로 세면 꽉 찬 파랑 알약이
-한 화면에 다섯 개까지 생긴다.
-
-- 꽉 찬 파랑 알약(`button-primary`)은 **그 화면의 1차 행동 하나**에만 준다.
-- 목록의 줄에서는 회색 알약(`button-secondary-light`)을 쓴다.
-- 고르개에서 **고른 것**은 파랑이 아니라 **먹으로 뒤집는다**(흰 글자 / 먹 바탕).
-  고르개가 둘(기업 · 중요도)이라 파랑이면 한 화면에 파랑이 둘이 된다. 색 없이
-  명암을 뒤집어 선택을 알리는 방식은 문서의 `pricing-tier-featured`와 같다.
-- 검정 히어로의 워드마크는 파랑이 아니라 **흰색**이다 — #0052ff는 #0a0b0d 위에서
-  2.9:1이라 읽히지 않는다.
-
-### 목록은 카드가 아니라 줄
-
-문서의 카드 항목(`feature-card`, 24px 둥근 면)을 공시 목록에 쓰지 않는다. 공시
-피드는 **시간순 명단**이지 나란히 놓인 상품이 아니다. 문서의 `asset-row`를 따라
-면·테두리·그림자 없이 가는 선으로만 나눈다. 24px 둥근 면은 실제로 무언가를
-담는 것(히어로 목업 · 경고 · 빈 상태)에만 남긴다.
-
-### 의미 색 — 둘이 아니라 다섯
-
-문서는 의미 색을 둘만 둔다(상승 초록 · 하락 빨강). 우리는 중요도 3단계와 검수
-상태까지 **다섯**을 구분해야 한다(PLAN.md 9.5). 문서의 규칙("색은 글자색으로만,
-면을 칠하지 않는다")을 그대로 지키면 색을 더 만들지 않고도 다섯이 구분된다 —
-배지의 면은 모두 같은 `{colors.surface-strong}`이고 **글자색만** 빨강 / 먹 /
-회색 / 초록 / 파랑으로 가른다. 연회색 면 위 4.5:1을 넘기려고 원값을 한 단
-어둡게 잡았다(#c01d2b · #666c76 · #04734a · #0047d6).
-
-어두운 목업 카드 안에서는 같은 빨강을 #ff6a74로 올린다(#16181c 위 6.5:1).
-새 브랜드 색이 아니라 같은 색의 밝기 변형이고, 히어로 목업 안에서만 쓴다.
+- Selected/checked states for non-button form controls (toggle, multi-select) were not visible on the captured surfaces — implement following the cobalt-on-white pattern from `radio-option-selected`.
+- Animation/transition timings are not extracted; recommend 150–250ms ease-out for primary surface transitions and 300ms ease-in-out for accordion expand/collapse.
+- Specific dark-mode token values for canvas, surface, ink, and hairline are not defined; the brand has not surfaced a published dark-mode token set on these commerce pages.
+- Pastel decorative tints inside accessory cards (soft pink, ice blue, mint) appear visually but are not formalized — treat them as photographic content, not as system colors.
