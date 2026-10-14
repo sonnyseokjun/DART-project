@@ -1,4 +1,7 @@
 {% extends 'disclosures/base.html' %}
+{% comment %} 공시 상세 — 이 화면은 카드가 아니라 문서다. 바깥 테두리를 두르지 않고
+   절과 절 사이를 가는 선으로만 나눈다. 가장 먼저 읽혀야 하는 것은 한 줄 요약이라
+   제목 바로 아래에 큰 글씨로 둔다(style.css 의 .oneline 참조). {% endcomment %}
 
 {% block title %}{{ disclosure.report_name }} · {{ disclosure.company.name }}{% endblock %}
 
@@ -11,7 +14,7 @@
 {% endblock %}
 
 {% block content %}
-  <article class="detail {% if summary %}importance-{{ summary.importance }}{% else %}detail-pending{% endif %}">
+  <article class="detail">
     <header class="detail-head">
       <div class="detail-badges">
         {% if summary %}
@@ -27,7 +30,7 @@
           <span class="badge badge-type">{{ disclosure.disclosure_type }}</span>
         {% endif %}
         {% if summary and not summary.is_reviewed %}
-          {% comment %} _disclosure_card.html 과 같은 조건이어야 목록과 상세의 신호가 어긋나지 않는다.
+          {% comment %} _disclosure_row.html 과 같은 조건이어야 목록과 상세의 신호가 어긋나지 않는다.
              needs_review(검수 큐 운영 개념)가 아니라 is_reviewed(사람이 봤는가)를 본다. {% endcomment %}
           <span class="badge badge-unreviewed" title="사람 검수를 거치지 않은 AI 생성 요약입니다">
             AI 생성 · 미검수
@@ -53,12 +56,14 @@
     </header>
 
     {% if not summary %}
-      {% comment %} 요약을 기다리는 화면. 목록에 카드가 보이는데 눌렀더니 404가 나면 사용자에게는
+      {% comment %} 요약을 기다리는 화면. 목록에 줄이 보이는데 눌렀더니 404가 나면 사용자에게는
          고장으로 읽히므로, 상세도 같은 상태를 그대로 보여준다.
+         요청 버튼은 여기서만 파랑이다 — 이 화면에는 그 공시 하나뿐이라 파랑이 하나로
+         끝난다(style.css 규칙 1).
          원문 링크는 아래 "원문 확인" 절에 그대로 있다 — 요약이 없을수록 그 경로가
          더 필요하다(PLAN.md 5.3). {% endcomment %}
       <aside class="pending-note" role="status">
-        {% include 'disclosures/_summary_status.html' %}
+        {% include 'disclosures/_summary_status.html' with request_button_class='btn btn-primary' %}
         <p><strong>지금 바로 내용을 확인하시려면 아래 DART 원문을 보세요.</strong></p>
       </aside>
     {% endif %}
@@ -96,7 +101,9 @@
       </aside>
     {% endif %}
 
-    {# PLAN.md 7장의 카드 순서: 한 줄 요약 → 쉬운 설명 → 왜 중요한가 → 원문 근거 → 원문 링크 #}
+    {% comment %} PLAN.md 7장의 순서: 한 줄 요약 → 쉬운 설명 → 왜 중요한가 → 원문 근거 → 원문 링크.
+       disclosures/tests.py 가 이 순서를 확인하므로 절을 지우거나 섞지 말 것.
+       절 이름은 안내판이지 제목이 아니라 작고 조용하게 둔다 — 내용이 앞서야 한다. {% endcomment %}
     {% if summary %}
       <section class="block block-oneline">
         <h2>한 줄 요약</h2>
@@ -137,8 +144,12 @@
         아래 링크에서 금융감독원 전자공시시스템(DART)의 원문을 직접 확인할 수 있습니다.
         <strong>요약과 원문이 다를 경우 원문이 우선합니다.</strong>
       </p>
-      <a class="btn btn-primary" href="{{ disclosure.dart_url }}" target="_blank" rel="noopener noreferrer">
-        DART 원문 보기 (접수번호 {{ disclosure.rcept_no }})
+      {% comment %} 요약이 있는 화면에서는 이것이 그 화면의 1차 행동이라 파랑 알약이다.
+         요약이 없는 화면에서는 위의 "AI 요약 보기"가 이미 파랑을 썼으므로 회색으로
+         내린다 — 파랑 알약 둘이 한 화면에 서지 않게 한다(style.css 규칙 1). {% endcomment %}
+      <a class="btn {% if summary %}btn-primary{% else %}btn-secondary{% endif %}"
+         href="{{ disclosure.dart_url }}" target="_blank" rel="noopener noreferrer">
+        DART 원문 보기 <span class="code">접수번호 {{ disclosure.rcept_no }}</span>
       </a>
     </section>
 

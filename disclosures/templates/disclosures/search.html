@@ -9,18 +9,24 @@
 {% endblock %}
 
 {% block content %}
-  <h1>기업 검색</h1>
+  <header class="screen-head">
+    <h1>기업 검색</h1>
+    <p>관심 기업 <span class="num">{{ watch_count }} / {{ watch_limit }}</span>곳을 고르고 있습니다.</p>
+  </header>
+
   {% include 'disclosures/_search_form.html' %}
-  <p class="lead">관심 기업 {{ watch_count }} / {{ watch_limit }}곳</p>
 
   {% if query %}
     {% if results %}
+      <p class="result-count">"{{ query }}" 검색 결과 {{ results|length }}곳</p>
       <ul class="search-results">
         {% for corp in results %}
           <li>
-            <a href="{% url 'disclosures:company_detail' corp.stock_code %}">{{ corp.name }}</a>
-            <span class="landing-note">{{ corp.stock_code }}</span>
+            <a class="search-name" href="{% url 'disclosures:company_detail' corp.stock_code %}">{{ corp.name }}</a>
+            <span class="landing-note num">{{ corp.stock_code }}</span>
             {% if corp.corp_code in watched_corp_codes %}
+              {% comment %} 배지로 올리지 않는다 — 배지의 색은 공시의 중요도·검수 상태를
+                 뜻하므로 여기에 쓰면 신호가 섞인다. 종목코드에 이어 붙는 조용한 글자로 둔다. {% endcomment %}
               <span class="landing-note">· 관심 기업</span>
             {% else %}
               {% include 'disclosures/_watch_add_button.html' %}
@@ -29,7 +35,10 @@
         {% endfor %}
       </ul>
     {% else %}
-      <p class="empty">"{{ query }}"에 맞는 상장사가 없습니다.</p>
+      <div class="empty">
+        <h2>"{{ query }}"에 맞는 상장사가 없습니다</h2>
+        <p>기업명은 띄어쓰기 없이, 종목코드는 여섯 자리로 적어 보세요.</p>
+      </div>
     {% endif %}
   {% endif %}
 {% endblock %}

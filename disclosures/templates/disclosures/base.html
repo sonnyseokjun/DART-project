@@ -4,14 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}공시 쉽게 보기{% endblock %}</title>
+  {% comment %} 본문 글꼴을 미리 받아 둔다. CSS를 다 해석한 뒤에야 글꼴 요청이
+     시작되면 글자가 시스템 글꼴로 한 번 그려졌다가 바뀌는 시간이 길어진다.
+     crossorigin 이 없으면 preload 와 실제 요청이 서로 다른 것으로 취급돼
+     같은 파일을 두 번 받는다. {% endcomment %}
+  <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="{% static 'disclosures/fonts/PretendardVariable.woff2' %}">
   <link rel="stylesheet" href="{% static 'disclosures/css/style.css' %}">
 </head>
 {% comment %} data-live-endpoint 가 있으면 목록 화면이 스스로 갱신한다(live-updates.js).
    주소를 여기 한 곳에만 두어, 스크립트가 URL 구조를 알지 않게 한다.
 
-   body_class 는 컨테이너 폭과 세로 여백을 가른다 — 읽는 화면은 page-app(880px),
-   랜딩 같은 소개 화면은 page-marketing(1240px)이다. 기본값이 page-app이라
-   새 화면을 추가해도 읽기 좋은 폭으로 시작한다. {% endcomment %}
+   body_class 는 컨테이너 폭과 머리말 색을 가른다.
+     · page-app       공시를 읽는 화면 — 960px, 흰 머리말 (기본값)
+     · page-marketing 소개 화면 — 1200px, 검정 머리말(검정 히어로로 이어진다)
+     · page-read      글만 있는 화면(방침·탈퇴) — 704px
+   기본값이 page-app 이라 새 화면을 추가해도 읽기 좋은 폭으로 시작한다. {% endcomment %}
 <body class="{% block body_class %}page-app{% endblock %}"
       data-live-endpoint="{% url 'disclosures:latest_status' %}">
   <header class="site-header">
@@ -33,14 +41,19 @@
           {# 로그아웃은 POST로만 한다(settings.ACCOUNT_LOGOUT_ON_GET). #}
           <form method="post" action="{% url 'account_logout' %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-secondary btn-cap">로그아웃</button>
+            <button type="submit" class="btn btn-secondary btn-sm">로그아웃</button>
           </form>
           <a class="header-quiet" href="{% url 'accounts:withdraw' %}">탈퇴</a>
         {% else %}
           {% comment %} 머리말 오른쪽 끝의 알약 CTA. 카카오 버튼을 여기 또 두지 않는 이유는
              카카오 로그인 버튼이 노란 바탕을 요구해 브랜드 색과 부딪히기 때문이다.
-             대신 랜딩의 시작 지점으로 보낸다. {% endcomment %}
-          <a class="btn btn-primary btn-cap" href="{% url 'disclosures:home' %}#start">시작하기</a>
+             대신 랜딩의 시작 지점으로 보낸다.
+
+             랜딩 자신은 이 블록을 비운다 — 히어로의 "카카오로 시작하기"가 바로 아래
+             200px 안에 있는데 같은 뜻의 단추를 하나 더 두면 둘 다 흐려진다. {% endcomment %}
+          {% block header_cta %}
+            <a class="btn btn-primary btn-sm" href="{% url 'disclosures:home' %}#start">시작하기</a>
+          {% endblock %}
         {% endif %}
       </div>
     </div>
@@ -56,8 +69,8 @@
     {% endif %}
 
     {% comment %} 읽는 화면은 이 기본 블록을 그대로 쓴다. 랜딩처럼 화면 끝까지 닿는 띠
-       (파스텔 메시 그라데이션·라벤더 섹션)가 필요한 화면만 main 블록을 덮어쓰고
-       자기 안에서 .wrap 을 직접 둔다. 이렇게 두면 그라데이션이 컨테이너에 갇히지
+       (검정 히어로·연회색 닫는 띠)가 필요한 화면만 main 블록을 덮어쓰고
+       자기 안에서 .wrap 을 직접 둔다. 이렇게 두면 띠가 컨테이너에 갇히지
        않으면서도 다른 화면의 구조는 손대지 않는다. {% endcomment %}
     {% block main %}
       <div class="wrap">

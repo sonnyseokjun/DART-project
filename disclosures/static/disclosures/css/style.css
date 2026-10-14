@@ -13,23 +13,63 @@
  *   · 96px 섹션 간격, 그림자는 한 단계뿐.
  *
  * 빌드 단계·외부 CDN·CSS 프레임워크를 쓰지 않는다(PLAN.md 9.5). 재배포가 1GB 서버에서
- * docker compose up -d --build 로 돌기 때문이다.
+ * docker compose up -d --build 로 돌기 때문이다. 글꼴도 같은 이유로 자체 호스팅한다.
  *
- * 한글에 맞춘 조정 넷 — DESIGN.md와 다른 곳이므로 근거를 남긴다.
- *   1. 웹폰트를 받지 않는다. 대체 서체로 지정된 Inter에는 한글 글리프가 없어서
- *      우리 화면(거의 전부 한글)에는 숫자·영문만 바뀐다. 글꼴 스택 앞에 두어
- *      설치된 사용자만 쓰게 하고, 파일은 추가하지 않는다.
- *   2. 자간은 -0.01em까지만 쓴다. DESIGN.md는 display에 -1.5%를 지정하지만
+ * ── 이 파일이 지키는 네 가지 규칙 ──────────────────────────────────────────
+ *
+ * 1. **파랑은 한 화면에 한 번만 칠한다.** 꽉 찬 파랑 알약은 그 화면의 1차 행동
+ *    하나에만 준다. 목록처럼 같은 행동이 여러 줄 반복되는 곳에서는 회색 알약
+ *    (`btn-secondary`)을 쓴다 — 요약 대기 공시가 다섯 줄이면 파랑 알약도 다섯
+ *    개가 되어, DESIGN.md가 말하는 "한 띠에 파랑 한두 번"이 깨진다.
+ * 2. **공시 목록은 줄(row)이고, 카드는 그릇이다.** 공시 피드는 시간순 명단이지
+ *    나란히 놓인 상품이 아니다. 줄은 가는 선으로만 나누고 면·테두리·그림자를
+ *    주지 않는다(DESIGN.md의 `asset-row`). 24px 둥근 카드는 실제로 무언가를
+ *    담는 것(히어로 목업·경고·빈 상태)에만 남긴다.
+ * 3. **상태는 같은 회색 알약 위의 글자색으로만 가른다.** 면을 상태마다 다르게
+ *    칠하지 않는다. 덕분에 색을 더 만들지 않고도 다섯 상태가 구분된다.
+ * 4. **움직임은 사람이 누른 것에만 답한다.** 스크롤에 따라 나타나는 효과를
+ *    넣지 않는다.
+ *
+ * ── 한글에 맞춘 조정 다섯 ─────────────────────────────────────────────────
+ * DESIGN.md와 다른 곳이므로 근거를 남긴다.
+ *   1. 글꼴은 Inter가 아니라 **Pretendard**다. DESIGN.md는 대체 서체로 Inter를
+ *      적지만 Inter에는 한글 글리프가 없어, 화면이 거의 전부 한글인 이 서비스에서는
+ *      숫자·영문만 바뀌고 본문은 기기마다 달라진다(윈도우 맑은 고딕 / 맥 애플
+ *      산돌고딕). Pretendard는 같은 기하학적 산세리프 성격을 한글까지 덮으므로
+ *      한 가족으로 display와 body를 모두 맡는다. 가변 폰트 하나(2MB)만 받는다.
+ *   2. 숫자는 고정폭 서체 대신 **Pretendard의 고정폭 숫자**(tabular-nums)를 쓴다.
+ *      DESIGN.md는 모든 수치에 모노 서체를 요구하지만, 그것만을 위해 두 번째
+ *      글꼴 파일을 받게 하지 않는다. 줄마다 숫자가 흔들리지 않는다는 목적은 같다.
+ *      접수번호처럼 **값이 아니라 식별자**인 것에만 시스템 모노를 남긴다.
+ *   3. 자간은 -0.01em까지만 쓴다. DESIGN.md는 display에 -1.5%를 지정하지만
  *      한글은 자간을 좁히면 글자가 뭉쳐 읽기가 나빠진다.
- *   3. display 행간을 1.0이 아니라 1.15로 둔다. 한글은 글자틀이 꽉 차서 1.0이면
+ *   4. display 행간을 1.0이 아니라 1.15로 둔다. 한글은 글자틀이 꽉 차서 1.0이면
  *      두 줄짜리 제목의 위아래가 서로 붙는다.
- *   4. 제목에 word-break: keep-all 을 준다. 기본값은 어절 중간에서도 자른다.
+ *   5. 제목에 word-break: keep-all 을 준다. 기본값은 어절 중간에서도 자른다.
+ *
+ * ── 띠 순서에 관한 판단 ───────────────────────────────────────────────────
+ * DESIGN.md는 푸터 앞 닫는 띠도 검정(`cta-band-dark`)으로 지정한다. 하지만 우리
+ * 랜딩은 띠가 셋뿐이라(히어로·사용법·닫는 띠) 둘을 검정으로 하면 검정-흰-검정이
+ * 되어 리듬이 아니라 줄무늬로 읽힌다. **검정은 히어로에 한 번만 쓰고** 닫는 띠는
+ * 연회색으로 둔다. 띠가 다섯 이상으로 늘면 그때 다시 본다.
  */
+
+/* --- 글꼴 ----------------------------------------------------------------
+ * Pretendard 가변 폰트(SIL OFL). 라이선스 전문은 fonts/Pretendard-LICENSE.txt.
+ * font-display: swap — 2MB를 받는 동안 글자가 사라져 있으면 안 된다. 시스템
+ * 글꼴로 먼저 그리고 도착하면 바꿔 끼운다. */
+@font-face {
+  font-family: "Pretendard Variable";
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url("../fonts/PretendardVariable.woff2") format("woff2-variations");
+}
 
 :root {
   /* --- 색: 브랜드 ---------------------------------------------------------
    * 파랑은 이 시스템의 유일한 강조색이다. 1차 CTA 알약·워드마크·본문 링크에만
-   * 쓰고, 한 띠에 한두 번을 넘기지 않는다. */
+   * 쓰고, 한 화면에서 꽉 찬 알약은 한 번을 넘기지 않는다(규칙 1). */
   --primary: #0052ff;
   --primary-active: #003ecc;
 
@@ -37,12 +77,13 @@
   --canvas: #ffffff;
   --surface-soft: #f7f7f7;     /* 번갈아 나오는 연한 띠 */
   --surface-strong: #eef0f3;   /* 2차 버튼·검색 알약·배지 면 */
-  --surface-dark: #0a0b0d;     /* 화면 끝까지 닿는 검정 히어로·CTA 띠 */
+  --surface-dark: #0a0b0d;     /* 화면 끝까지 닿는 검정 히어로 */
   --surface-dark-up: #16181c;  /* 검정 위에 떠 있는 화면 카드 */
 
   /* --- 색: 선 ------------------------------------------------------------ */
   --hairline: #dee1e6;
   --hairline-soft: #eef0f3;
+  --hairline-dark: #26282e;    /* 검정 면 위의 가는 선 */
 
   /* --- 색: 글자 ---------------------------------------------------------- */
   --ink: #0a0b0d;              /* 제목·강조 */
@@ -71,6 +112,9 @@
   --low-ink:  #666c76;   /* 중요도 낮음 */
   --ok-ink:   #04734a;   /* 사람이 검토·수정함 */
   --wait-ink: #0047d6;   /* 요약 대기 — 오류가 아니라 진행이다 */
+  /* 같은 빨강을 어두운 면 위에서 읽히게 올린 값(#16181c 위 6.5:1). 새 브랜드
+   * 색이 아니라 같은 색의 밝기 변형이고, 히어로 목업 안에서만 쓴다. */
+  --high-on-dark: #ff6a74;
 
   /* --- 간격: 4px 기준 ---------------------------------------------------- */
   --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
@@ -86,44 +130,52 @@
   --shadow: 0 4px 12px rgba(0, 0, 0, .04);   /* 그림자는 이 한 단계뿐이다 */
 
   /* --- 글꼴 -------------------------------------------------------------- */
-  --font: Inter, "Apple SD Gothic Neo", Pretendard, "Noto Sans KR",
-          "Malgun Gothic", -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo",
+          "Noto Sans KR", "Malgun Gothic", -apple-system, system-ui,
+          "Segoe UI", Roboto, sans-serif;
+  /* 값이 아니라 식별자인 것에만 쓴다 — 접수번호 14자리 같은 것. */
+  --font-code: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 
   /* --- 타이포 — 모바일 기준, 아래에서 단계적으로 커진다.
-   * 직전 단계보다 1~1.5px씩 줄였다. 12px(배지)만 그대로 두는데, 한글은 11px부터
-   * 획이 뭉개져 읽기가 눈에 띄게 나빠진다. */
-  --t-display: 42px;
-  --t-h1: 27px;
+   * 12px(배지)만 단계를 두지 않는데, 한글은 11px부터 획이 뭉개져 읽기가
+   * 눈에 띄게 나빠진다. */
+  --t-display: 40px;           /* {display-mega} — 히어로 h1 */
+  --t-h1: 28px;                /* {display-sm} — 화면 제목 */
   --t-h2: 21px;
-  --t-h3: 17px;
+  --t-h3: 17px;                /* {title-md} — 공시 줄 제목 */
+  --t-oneline: 23px;           /* {title-lg} — 한 줄 요약 */
   --t-lead: 17px;
   --t-body: 15px;
   --t-caption: 13px;
   --t-micro: 12px;
   --t-btn: 15px;
-  --t-nav: 14px;              /* {nav-link} 원값. 머리말 글자는 이 단계를 쓴다 */
+  --t-nav: 14px;               /* {nav-link} */
 
   --lead-display: 1.15;        /* DESIGN.md는 1.0이지만 한글은 두 줄이 붙는다 */
   --lead-snug: 1.33;
-  --lead-body: 1.5;
+  --lead-body: 1.65;           /* 한글 본문은 라틴보다 한 단 넉넉해야 읽힌다 */
   --track-display: -0.01em;    /* 한글 상한 */
 
   /* --- 폭 --------------------------------------------------------------- */
-  --wrap-app: 960px;
-  --wrap-wide: 1200px;
+  --wrap-wide: 1200px;         /* 머리말·푸터·랜딩 띠 */
+  --wrap-app: 960px;           /* 공시를 읽는 화면 */
+  --wrap-read: 44rem;          /* 글만 있는 화면(방침·탈퇴) */
   --measure: 36rem;            /* 본문 한 줄 — 한글 약 40자 */
   --gutter: 20px;
 }
 
 @media (min-width: 48em) {
   :root {
-    --t-display: 54px; --t-h1: 31px; --t-h2: 23px; --t-h3: 21px;
+    --t-display: 56px; --t-h1: 32px; --t-h2: 23px; --t-h3: 18px;
+    --t-oneline: 27px; --t-body: 16px; --t-btn: 16px;
     --gutter: 32px; --s-section: 72px;
   }
 }
 @media (min-width: 64em) {
-  :root { --t-display: 80px; --s-section: 96px; }
+  :root {
+    --t-display: 80px; --t-h1: 36px; --t-oneline: 32px; --t-lead: 19px;
+    --s-section: 96px;
+  }
 }
 
 /* --- 바탕 ---------------------------------------------------------------- */
@@ -138,11 +190,14 @@ body {
   font-size: var(--t-body);
   line-height: var(--lead-body);
   -webkit-text-size-adjust: 100%;
+  /* 한글에서 기본값은 어절 중간을 잘라 읽기 흐름을 끊는다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 /* 제목은 굵게 쓰지 않는다 — 이 브랜드의 가장 특징적인 선택이다.
-   부품 제목(카드 제목 등)만 600으로 올린다. */
-h1, h2, h3 { margin: 0; color: var(--ink); word-break: keep-all; }
+   부품 제목(줄 제목·절 제목)만 600으로 올린다. */
+h1, h2, h3 { margin: 0; color: var(--ink); }
 h1 { font-size: var(--t-h1); font-weight: 400; line-height: var(--lead-display); letter-spacing: var(--track-display); }
 h2 { font-size: var(--t-h2); font-weight: 600; line-height: var(--lead-snug); }
 h3 { font-size: var(--t-h3); font-weight: 600; line-height: var(--lead-snug); }
@@ -163,25 +218,43 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
   }
 }
 
-/* 숫자는 고정폭으로 — 날짜·접수번호가 줄마다 흔들리지 않는다. */
-.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* 눈에는 안 보이고 화면 낭독기만 읽는 글자. 켜고 끄는 알약의 상태처럼 모양으로만
+   알리던 것에 말을 붙일 때 쓴다. display:none 은 낭독기도 건너뛰므로 쓸 수 없다. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip-path: inset(50%); overflow: hidden; white-space: nowrap;
+}
+
+/* 숫자가 줄마다 흔들리지 않게 한다. Pretendard의 고정폭 숫자를 쓰므로 글꼴을
+   바꾸지 않는다 — 본문과 같은 가족 안에서 폭만 고른다. */
+.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+/* 값이 아니라 식별자(접수번호)일 때만 모노. */
+.code { font-family: var(--font-code); font-size: .92em; letter-spacing: 0; }
 
 /* --- 폭·여백 ------------------------------------------------------------ */
 
 .wrap { width: 100%; max-width: var(--wrap-app); margin: 0 auto; padding: 0 var(--gutter); }
 .page-marketing .wrap { max-width: var(--wrap-wide); }
+/* 글만 있는 화면은 더 좁다. **이 규칙들은 아래의 머리말·푸터 규칙보다 먼저 와야
+   한다** — 셋 다 특정성이 같아서 나중에 쓴 것이 이긴다. 뒤로 가면 머리말까지
+   704px로 눌려 메뉴가 두 줄로 접힌다. */
+.page-read .wrap { max-width: var(--wrap-read); }
 .site-main { padding: var(--s-section) 0; }
 .page-marketing .site-main { padding: 0; }
 .measure { max-width: var(--measure); }
 
 /* 머리말·푸터는 어느 화면에서나 넓은 폭을 쓴다 — 내용은 좁게 읽히더라도
    틀은 화면 폭을 따라가는 편이 자연스럽다. */
-.site-header .wrap, .site-footer .wrap { max-width: var(--wrap-wide); }
+.site-header > .wrap, .site-footer > .wrap { max-width: var(--wrap-wide); }
 
-/* --- 머리말 -------------------------------------------------------------- */
+/* --- 머리말 --------------------------------------------------------------
+ * 흰 화면에서는 흰 머리말(`top-nav-light`), 검정 히어로를 쓰는 소개 화면에서는
+ * 검정 머리말(`top-nav-on-dark`)이다. 검정일 때 머리말과 히어로가 같은 색이라
+ * 경계선 없이 이어지고, 화면 맨 위부터 검정 면이 시작된다. */
 
 .site-header { background: var(--canvas); border-bottom: 1px solid var(--hairline); }
-.site-header .wrap {
+.site-header > .wrap {
   display: flex; flex-wrap: wrap; align-items: center;
   gap: var(--s-3) var(--s-6);
   min-height: 64px; padding-top: var(--s-3); padding-bottom: var(--s-3);
@@ -194,11 +267,16 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 .brand:hover { color: var(--ink); text-decoration: none; }
 .brand strong { color: var(--primary); font-weight: 600; }
 .brand-sub { flex: 1 1 100%; order: 3; color: var(--muted); font-size: var(--t-nav); }
-.site-nav { display: flex; flex-wrap: wrap; gap: var(--s-5); font-size: var(--t-nav); font-weight: 500; }
+/* 메뉴를 오른쪽으로 민다. 머리말 오른쪽 끝의 알약이 없는 화면(랜딩)에서
+   왼쪽에만 글이 몰려 오른쪽 절반이 통째로 비는 것을 막는다. */
+.site-nav {
+  display: flex; flex-wrap: wrap; gap: var(--s-5); margin-left: auto;
+  font-size: var(--t-nav); font-weight: 500;
+}
 .site-nav a { color: var(--ink); }
 .header-actions {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3);
-  margin-left: auto; font-size: var(--t-nav); color: var(--muted);
+  font-size: var(--t-nav); color: var(--muted);
 }
 .header-actions form { margin: 0; }
 .header-name { color: var(--ink); font-weight: 500; }
@@ -206,12 +284,22 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 
 @media (min-width: 48em) { .brand-sub { flex: 0 1 auto; order: 0; } }
 
+/* 검정 머리말. 워드마크는 파랑이 아니라 전부 흰색으로 둔다 — 검정 위의
+   #0052ff는 2.9:1이라 읽히지 않고, 파랑을 아껴 쓰는 규칙에도 맞는다. */
+.page-marketing .site-header { background: var(--surface-dark); border-bottom: 0; }
+.page-marketing .brand,
+.page-marketing .brand:hover,
+.page-marketing .brand strong,
+.page-marketing .site-nav a { color: var(--on-dark); }
+.page-marketing .brand-sub,
+.page-marketing .header-actions { color: var(--on-dark-soft); }
+
 /* --- 푸터 ---------------------------------------------------------------
  * 흰 면에 여러 칸으로 벌려 놓는다. 한 칸에 몰아 놓으면 넓은 화면에서 글이 왼쪽으로
  * 치우쳐 오른쪽이 통째로 빈다. 맨 아래 가는 띠에 방침 링크와 고지를 둔다. */
 
 .site-footer { background: var(--canvas); border-top: 1px solid var(--hairline); color: var(--body); font-size: var(--t-caption); }
-.site-footer .wrap { padding-top: var(--s-8); padding-bottom: var(--s-6); }
+.site-footer > .wrap { padding-top: var(--s-8); padding-bottom: var(--s-6); }
 .footer-cols { display: grid; gap: var(--s-7); }
 .footer-brand { color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
 .footer-head { margin-bottom: var(--s-2); color: var(--ink); font-size: var(--t-caption); font-weight: 600; }
@@ -233,7 +321,8 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 }
 
 /* --- 버튼 ---------------------------------------------------------------
- * 모든 CTA는 100px 알약이다. 각진 버튼을 쓰지 않는다. */
+ * 모든 CTA는 100px 알약이다. 각진 버튼을 쓰지 않는다.
+ * 꽉 찬 파랑(`btn-primary`)은 그 화면의 1차 행동 하나에만 준다(규칙 1). */
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2);
@@ -270,13 +359,13 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
   border: 0; border-radius: var(--r-pill);
   background: #fee500; color: rgba(0, 0, 0, .85);
   font-family: inherit; font-size: var(--t-btn); font-weight: 600; cursor: pointer;
+  transition: background-color .12s ease;
 }
 .kakao-login:hover { background: #f5dc00; }
 .kakao-login-form { margin: 0; }
 
 /* --- 배지 ---------------------------------------------------------------
- * 면은 모두 같은 연회색이고 글자색만 다르다. 의미 색을 면에 칠하지 않는 것이
- * 이 시스템의 규칙이고, 덕분에 색을 더 만들지 않고도 다섯 상태가 구분된다. */
+ * 면은 모두 같은 연회색이고 글자색만 다르다(규칙 3). */
 
 .badge {
   display: inline-flex; align-items: center;
@@ -298,27 +387,33 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
    있는 것처럼 읽힌다. */
 .badge-unreviewed { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--hairline); }
 
-/* --- 공시 카드 ----------------------------------------------------------- */
+/* --- 공시 줄 -------------------------------------------------------------
+ * 공시 피드는 시간순 명단이다(규칙 2). 가는 선으로만 나누고 면·테두리·그림자를
+ * 주지 않는다. 줄 사이를 넉넉히 띄워 선이 아니라 여백이 구분을 맡게 한다. */
 
-.card-list { display: grid; gap: var(--s-6); }
-.card { padding: var(--s-6); background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--r-xl); }
-.card-head {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2);
+.filings { border-top: 1px solid var(--hairline); }
+.filing { padding: var(--s-6) 0; border-bottom: 1px solid var(--hairline); }
+.filing-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3);
   margin-bottom: var(--s-3); color: var(--muted); font-size: var(--t-caption);
 }
-.card-company { min-width: 0; color: var(--ink); font-weight: 600; }
-.card-title { margin: 0 0 var(--s-2); font-size: var(--t-h3); }
-.card-title a { color: var(--ink); overflow-wrap: anywhere; }
-.card-title a:hover { color: var(--primary); }
-.card-oneline { margin: 0 0 var(--s-5); max-width: var(--measure); }
-.card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-6); }
-.link-dart { color: var(--primary); }
+.filing-company { min-width: 0; color: var(--ink); font-weight: 600; }
+.filing-company:hover { color: var(--primary); }
+.filing-title { margin: 0 0 var(--s-2); font-size: var(--t-h3); }
+.filing-title a { color: var(--ink); }
+.filing-title a:hover { color: var(--primary); }
+.filing-line { margin: 0 0 var(--s-4); max-width: var(--measure); }
+.filing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-6); }
 
-/* 요약을 기다리는 카드. 연회색 면으로 아직 비어 있다는 것을 알린다 — 테두리 색만
-   바꾸면 목록에서 알아채지 못한다. */
-.card-pending { background: var(--surface-soft); border-color: var(--hairline-soft); }
+/* 요약을 기다리는 줄. 면을 칠하지 않고 **글자를 한 단 흐리게** 해서 아직 비어
+   있음을 알린다 — 줄 시스템에서는 면을 칠하는 순간 그 줄만 카드가 되어
+   목록의 결이 깨진다. 요청 버튼은 회색 알약이다(규칙 1). */
+.filing-pending .filing-title a { color: var(--body); }
+.filing-note { margin: 0 0 var(--s-4); max-width: var(--measure); color: var(--muted); }
+.filing-note a { font-weight: 600; }
+.summary-request { margin: 0 0 var(--s-4); }
 
-@media (min-width: 48em) { .card { padding: var(--s-7); } }
+@media (min-width: 48em) { .filing { padding: var(--s-7) 0; } }
 
 /* --- 목록 보조 ----------------------------------------------------------- */
 
@@ -326,41 +421,89 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 .lead { margin-bottom: var(--s-5); max-width: var(--measure); color: var(--body); }
 .section-sub { margin-bottom: var(--s-3); max-width: var(--measure); color: var(--muted); font-size: var(--t-caption); }
 .landing-note { color: var(--muted); font-size: var(--t-caption); }
-.dot { color: var(--hairline); }
-.empty { padding: var(--s-8) var(--s-6); background: var(--surface-soft); border-radius: var(--r-xl); color: var(--body); text-align: center; }
+.dot { color: var(--muted-soft); }
+.link-detail { color: var(--primary); font-weight: 600; }
+.link-dart { color: var(--primary); }
+
+/* 빈 화면은 분위기가 아니라 방향을 준다 — 무엇을 하면 되는지 적고 그 자리에서
+   할 수 있게 한다. 이것은 그릇이므로 24px 둥근 면을 쓴다. */
+.empty {
+  padding: var(--s-8) var(--s-6);
+  background: var(--surface-soft); border-radius: var(--r-xl);
+  color: var(--body); text-align: center;
+}
+.empty h2 { margin-bottom: var(--s-3); font-size: var(--t-h3); }
+.empty p { max-width: var(--measure); margin: 0 auto; }
+.empty .btn, .empty form { margin-top: var(--s-6); }
+.empty form .btn { margin-top: 0; }
+
 .live-note { margin-bottom: var(--s-5); padding: var(--s-3) var(--s-4); background: var(--surface-strong); border-radius: var(--r-md); color: var(--ink); font-size: var(--t-caption); }
 .messages { margin: 0 0 var(--s-6); padding: var(--s-3) var(--s-4); list-style: none; background: var(--surface-strong); border-radius: var(--r-md); font-size: var(--t-caption); }
 .breadcrumb { margin-bottom: var(--s-5); color: var(--muted); font-size: var(--t-caption); }
 
-/* --- 필터·검색 ----------------------------------------------------------- */
+/* --- 화면 머리 ----------------------------------------------------------- */
 
-.filters {
-  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s-3) var(--s-4);
-  margin-bottom: var(--s-6); padding: var(--s-5);
-  background: var(--surface-soft); border-radius: var(--r-xl);
+.screen-head { margin-bottom: var(--s-7); }
+.screen-head h1 { margin-bottom: var(--s-3); }
+.screen-head p { max-width: var(--measure); color: var(--muted); font-size: var(--t-caption); }
+
+/* --- 고르개(관심 기업·중요도) --------------------------------------------
+ * 필터를 폼이 아니라 **링크 알약**으로 둔다. 고른 값이 곧 주소이고, 누르는
+ * 즉시 적용되므로 "적용" 버튼과 회색 상자가 통째로 사라진다. 관심 기업은
+ * 10곳, 중요도는 4개뿐이라 목록을 접어 둘 이유가 없다.
+ * 고른 알약은 **먹으로 뒤집는다.** 파랑으로 칠하지 않는 이유는 고르개가 둘
+ * (기업·중요도)이라 둘 다 파랑이면 한 화면에 꽉 찬 파랑이 두 개가 되기 때문이다
+ * (규칙 1). 색을 쓰지 않고 명암을 뒤집어 "고른 것"을 알리는 방식은 DESIGN.md가
+ * 강조 요금제(`pricing-tier-featured`)에서 쓰는 것과 같다. */
+
+.picker-row {
+  display: flex; flex-wrap: wrap; align-items: flex-end;
+  gap: var(--s-4) var(--s-6); margin-bottom: var(--s-6);
 }
-.filters label { display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; color: var(--muted); font-size: var(--t-caption); }
-.filters select,
-.filters input[type="search"] {
-  min-height: 48px; padding: 14px 16px;
-  background: var(--canvas); color: var(--ink);
-  border: 1px solid var(--hairline); border-radius: var(--r-md);
+/* 고르개 묶음 다음에 바로 목록이 오면 붙어 보인다. 마지막 묶음만 더 띄운다. */
+.picker-row:last-of-type { margin-bottom: var(--s-7); }
+.picker-label { margin-bottom: var(--s-2); color: var(--muted); font-size: var(--t-caption); }
+.chips { display: flex; flex-wrap: wrap; gap: var(--s-2); margin: 0; padding: 0; list-style: none; }
+.chip {
+  display: inline-flex; align-items: center; min-height: 36px;
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r-pill);
+  background: var(--surface-strong); color: var(--ink);
+  font-size: var(--t-nav); font-weight: 500;
+  transition: background-color .12s ease;
+}
+.chip:hover { background: #e3e6ea; color: var(--ink); text-decoration: none; }
+.chip-on { background: var(--ink); color: var(--on-dark); font-weight: 600; }
+.chip-on:hover { background: #2b2e35; color: var(--on-dark); }
+/* 켜고 끄는 알약(단순 보고도 보기). 고른 알약(먹 채움)과 구분되도록 테두리만 준다. */
+.chip-toggle { background: transparent; box-shadow: inset 0 0 0 1px var(--hairline); color: var(--muted); }
+.chip-toggle:hover { background: var(--surface-soft); color: var(--ink); }
+.chip-toggle-on { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink); color: var(--ink); font-weight: 600; }
+.chip-toggle-on:hover { background: var(--surface-soft); color: var(--ink); }
+
+/* --- 검색 ---------------------------------------------------------------
+ * `search-input-pill` — 알약 모양 검색창. 테두리 상자 대신 연회색 면이다. */
+
+.search-form { display: flex; flex-wrap: wrap; gap: var(--s-3); margin-bottom: var(--s-7); }
+.search-form label { flex: 1 1 18rem; min-width: 0; }
+.search-input {
+  width: 100%; min-height: 48px; padding: 12px 20px;
+  border: 1px solid transparent; border-radius: var(--r-pill);
+  background: var(--surface-strong); color: var(--ink);
   font-family: inherit; font-size: var(--t-body);
 }
-.filters input[type="search"] { min-width: 0; width: 100%; }
-.filters select:focus, .filters input[type="search"]:focus { border: 2px solid var(--primary); outline: none; }
-.search-form label { flex: 1 1 15rem; }
-/* .filters label 이 (0,1,1)이라 .filter-check (0,1,0)보다 세다 — 같은 자리에서
-   방향을 되돌리려면 특정성을 맞춰야 한다. 안 맞추면 체크박스가 글자 위로 올라간다. */
-.filters label.filter-check { flex-direction: row; align-items: center; gap: var(--s-2); color: var(--ink); }
-.filter-reset { align-self: center; font-size: var(--t-caption); }
+.search-input::placeholder { color: var(--muted); }
+.search-input:focus { border-color: var(--primary); background: var(--canvas); outline: 2px solid var(--primary); outline-offset: -2px; }
 
-.search-results { margin: 0; padding: 0; list-style: none; }
+.search-results { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--hairline); }
 .search-results li {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3);
-  padding: var(--s-4) 0; border-bottom: 1px solid var(--hairline-soft);
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-4);
+  padding: var(--s-4) 0; border-bottom: 1px solid var(--hairline);
 }
-.search-results li > a:first-child { color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
+.search-name { color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
+.search-name:hover { color: var(--primary); }
+/* 줄 오른쪽 끝에 붙는 것은 추가 버튼뿐이다. "· 관심 기업"은 종목코드에 이어
+   붙는 글이라 그 자리에 둔다 — 오른쪽으로 보내면 앞의 가운뎃점이 떨어져 나온다. */
 .search-results form { margin-left: auto; }
 
 /* --- 페이지네이션 -------------------------------------------------------- */
@@ -369,22 +512,32 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 .pagination .disabled { color: var(--muted-soft); }
 .page-status { color: var(--muted); }
 
-/* --- 공시 상세 ----------------------------------------------------------- */
+/* --- 공시 상세 -----------------------------------------------------------
+ * 상세는 카드가 아니라 **문서**다. 바깥 테두리를 두르지 않고, 절과 절 사이를
+ * 가는 선으로만 나눈다. 이 화면에서 가장 먼저 읽혀야 하는 것은 한 줄 요약이라
+ * 제목 바로 아래에 큰 글씨로 둔다. */
 
-.detail { padding: var(--s-6); background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--r-xl); }
+.detail { max-width: 46rem; }
 .detail-badges { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-4); }
-.detail-head h1 { overflow-wrap: anywhere; }
-.detail-meta { margin-top: var(--s-3); color: var(--muted); font-size: var(--t-caption); }
+.detail-meta { margin-top: var(--s-4); color: var(--muted); font-size: var(--t-caption); }
 .detail-meta a { font-weight: 600; }
 
 .block { margin-top: var(--s-7); padding-top: var(--s-7); border-top: 1px solid var(--hairline-soft); }
-.block h2 { margin-bottom: var(--s-3); }
+/* 절 이름은 안내판이지 제목이 아니다. 작고 조용하게 두어 내용이 앞서게 한다. */
+.block h2 { margin-bottom: var(--s-3); color: var(--muted); font-size: var(--t-caption); font-weight: 600; }
 .block p { max-width: var(--measure); }
+
+/* 한 줄 요약 — 이 화면의 주인공. 선 없이 제목에 바로 이어 붙인다. */
 .block-oneline { margin-top: var(--s-6); padding-top: 0; border-top: 0; }
-.oneline { max-width: var(--measure); color: var(--ink); font-size: var(--t-h2); font-weight: 400; line-height: var(--lead-snug); }
+.oneline {
+  max-width: 30ch; color: var(--ink);
+  font-size: var(--t-oneline); font-weight: 400;
+  line-height: var(--lead-display); letter-spacing: var(--track-display);
+}
+@media (min-width: 48em) { .oneline { max-width: 34ch; } }
 
 .evidence-list { display: grid; gap: var(--s-5); margin: 0; padding: 0; list-style: none; }
-.evidence-claim { margin-bottom: var(--s-2); color: var(--ink); font-weight: 600; }
+.evidence-claim { max-width: var(--measure); margin-bottom: var(--s-2); color: var(--ink); font-weight: 600; }
 .evidence-list blockquote {
   margin: 0; padding: var(--s-4) var(--s-5);
   background: var(--surface-soft); border-radius: var(--r-lg);
@@ -394,8 +547,11 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 
 .detail-foot { margin-top: var(--s-7); padding-top: var(--s-5); border-top: 1px solid var(--hairline-soft); color: var(--muted); font-size: var(--t-caption); }
 .human-edited-note { margin-top: var(--s-2); color: var(--ok-ink); font-weight: 600; }
-.pending-note { margin: var(--s-6) 0 0; padding: var(--s-5); background: var(--surface-soft); border-radius: var(--r-xl); }
-.pending-note p { margin-top: var(--s-3); max-width: var(--measure); }
+/* 요약을 기다리는 안내. 그릇이므로 둥근 면을 쓴다. */
+.pending-note { margin: var(--s-6) 0 0; padding: var(--s-6); background: var(--surface-soft); border-radius: var(--r-xl); }
+.pending-note .filing-note,
+.pending-note .summary-request { margin-bottom: var(--s-3); }
+.pending-note p { max-width: var(--measure); }
 
 /* 정확성 경고. 의미 색으로 면을 칠하지 않는 규칙을 지키되, 요약보다 먼저 읽혀야 하므로
    왼쪽에 굵은 선을 둔다. */
@@ -411,104 +567,128 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
   padding: var(--s-1) var(--s-3);
   background: var(--canvas); border-radius: var(--r-pill);
   color: var(--high-ink); font-size: var(--t-caption); font-weight: 600;
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
-.summary-request { margin: 0; }
-
-@media (min-width: 48em) { .detail { padding: var(--s-7); } }
 
 /* --- 기업 개황 ----------------------------------------------------------- */
 
-.company-head { margin-bottom: var(--s-6); }
-.company-meta { display: flex; flex-wrap: wrap; gap: var(--s-4) var(--s-8); margin: var(--s-3) 0; }
+.company-head { margin-bottom: var(--s-7); }
+.company-meta { display: flex; flex-wrap: wrap; gap: var(--s-4) var(--s-8); margin: var(--s-4) 0; }
 .company-meta div { display: flex; flex-direction: column; }
 .company-meta dt { color: var(--muted); font-size: var(--t-micro); }
 .company-meta dd { margin: 0; color: var(--ink); font-weight: 600; }
 
 .intro { max-width: var(--measure); }
-.intro h1 { margin-bottom: var(--s-3); }
+.intro h1 { margin-bottom: var(--s-4); }
 .intro p, .intro ul { margin-bottom: var(--s-4); }
+.intro form { margin-top: var(--s-6); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-4); }
 
 /* --- 검정 히어로 ---------------------------------------------------------
  * 이 디자인 언어의 가장 강한 서명이다. 화면 끝까지 닿는 검정 면 위에 떠 있는
- * 화면 카드를 함께 둔다 — DESIGN.md는 검정 히어로를 반드시 카드와 짝지으라고 한다. */
+ * 화면 카드를 함께 둔다 — DESIGN.md는 검정 히어로를 반드시 카드와 짝지으라고 한다.
+ * 머리말도 같은 검정이라 화면 맨 위부터 이어진다. */
 
-.hero { padding: var(--s-section) 0; background: var(--canvas); color: var(--body); }
-.hero .wrap { display: grid; gap: var(--s-8); }
+.hero { padding: var(--s-section) 0 0; background: var(--surface-dark); color: var(--on-dark-soft); }
 .hero-title {
-  max-width: 14em; color: var(--ink);
+  max-width: 13em; color: var(--on-dark);
   font-size: var(--t-display); font-weight: 400;
   line-height: var(--lead-display); letter-spacing: var(--track-display);
 }
-.hero-lead { max-width: 44rem; margin-top: var(--s-8); color: var(--body); font-size: var(--t-lead); word-break: keep-all; }
+.hero-lead { max-width: 38rem; margin-top: var(--s-7); color: var(--on-dark-soft); font-size: var(--t-lead); }
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); margin-top: var(--s-8); }
-.hero-note { max-width: var(--measure); margin-top: var(--s-6); color: var(--muted); font-size: var(--t-caption); }
+.hero-note { max-width: 34rem; margin-top: var(--s-6); color: var(--on-dark-soft); font-size: var(--t-caption); }
+.hero-note strong { color: var(--on-dark); }
+.hero-note a { color: var(--on-dark); text-decoration: underline; }
 
-/* 떠 있는 화면 카드 — 제품 스크린샷이 없으므로 이 서비스에서 가장 특징적인 물건인
-   공시 카드를 그려 올린다. */
-.hero-mock {
-  max-width: 40rem; padding: var(--s-7);
-  background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--r-xl);
-  box-shadow: var(--shadow);
+/* 떠 있는 화면 카드 두 장. 제품 스크린샷이 없으므로 **이 서비스가 실제로 하는
+   일** 자체를 그린다 — 뒤 카드는 DART가 주는 그대로의 공시, 앞 카드는 같은
+   공시를 쉬운 말로 옮긴 결과다. 겹쳐 놓으면 설명 없이도 전후가 읽힌다. */
+.hero-stack { position: relative; margin-top: var(--s-8); padding-bottom: var(--s-section); }
+.mock {
+  padding: var(--s-6);
+  background: var(--surface-dark-up); border-radius: var(--r-xl);
+  color: var(--on-dark-soft);
 }
-.hero-mock-label {
-  display: inline-flex; margin-bottom: var(--s-3);
-  padding: var(--s-1) var(--s-3);
-  background: var(--surface-strong); border-radius: var(--r-pill);
-  color: var(--muted); font-size: var(--t-micro); font-weight: 600;
-}
-.hero-mock-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); color: var(--muted); font-size: var(--t-caption); }
-.hero-mock-title { margin-bottom: var(--s-2); color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
-.hero-mock-line { color: var(--body); }
-.hero-mock-foot { margin-top: var(--s-5); color: var(--primary); font-size: var(--t-caption); font-weight: 600; }
+.mock-kicker { margin-bottom: var(--s-4); color: var(--muted-soft); font-size: var(--t-micro); font-weight: 600; }
+.mock-source { max-width: 30rem; box-shadow: inset 0 0 0 1px var(--hairline-dark); }
+.mock-form { color: var(--on-dark); font-size: var(--t-h3); font-weight: 600; }
+.mock-rows { margin: var(--s-4) 0 0; font-size: var(--t-caption); }
+.mock-rows div { display: flex; justify-content: space-between; gap: var(--s-4); padding: var(--s-3) 0; border-top: 1px solid var(--hairline-dark); }
+.mock-rows dt { color: var(--muted-soft); }
+.mock-rows dd { margin: 0; color: var(--on-dark); font-variant-numeric: tabular-nums; }
 
-/* 제목을 한 단으로 둔다 — 옆에 카드를 세우면 제목이 반쪽 폭으로 줄어
-   이 디자인에서 가장 중요한 큰 제목이 작아진다. 카드는 제목 아래에 놓는다. */
+.mock-plain { max-width: 30rem; margin-top: calc(var(--s-6) * -1); margin-left: auto; box-shadow: var(--shadow); }
+.mock-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); margin-bottom: var(--s-3); font-size: var(--t-caption); }
+.mock-meta .badge { background: rgba(255, 255, 255, .09); color: var(--high-on-dark); }
+.mock-line { color: var(--on-dark); font-size: var(--t-h3); line-height: var(--lead-snug); }
+.mock-actions { margin-top: var(--s-5); color: var(--muted-soft); font-size: var(--t-caption); }
+
+/* 넓은 화면에서는 제목을 한 단으로 두고 카드를 아래 오른쪽에 둔다 — 제목 옆에
+   카드를 세우면 제목이 반쪽 폭으로 줄어 이 디자인에서 가장 중요한 큰 글씨가
+   작아진다. 두 장을 살짝 어긋나게 겹쳐 층이 보이게 한다. */
 @media (min-width: 64em) {
-  .hero { padding: 112px 0 var(--s-section); }
-  .hero-lead { font-size: 19px; }
+  .hero { padding-top: 104px; }
+  /* 두 장이 실제로 겹치려면 띠 폭이 두 카드 폭의 합보다 좁아야 한다.
+     54rem < 34rem + 29rem 이라 가로로 약 170px이 포개지고, 음수 margin-top이
+     세로로 끌어올린다. 절대 위치를 쓰지 않는 이유는 카드 높이가 글자 크기에
+     따라 달라져 컨테이너 높이를 손으로 맞춰야 하기 때문이다. */
+  .hero-stack { max-width: 54rem; margin-left: auto; }
+  .mock-source { max-width: 34rem; transform: rotate(-1.2deg); transform-origin: left bottom; }
+  /* 세로로 많이 끌어올리지 않는다. 앞 카드가 뒤 카드의 **숫자 칸을 덮으면**
+     원문과 요약을 나란히 보여준다는 이 그림의 목적이 사라진다 — 숫자는
+     오른쪽 정렬이라 조금만 겹쳐도 가장 먼저 가려진다. 모서리만 포갠다. */
+  .mock-plain {
+    max-width: 29rem; margin-top: -32px; margin-right: var(--s-7);
+    transform: rotate(.8deg);
+  }
 }
 
-/* 쓰는 순서 — 검정 다음에 오는 연한 띠. 밝은 면과 검정 면이 번갈아 나오는 것이
-   이 페이지의 리듬이다. 내용이 실제로 순서이므로 번호를 쓰는 것이 맞다. */
-.steps { padding: var(--s-section) 0; background: var(--surface-soft); }
-.steps h2 { margin-bottom: var(--s-6); font-size: var(--t-h1); font-weight: 400; }
+/* 모바일에서는 겹치지 않고 한 장만 남긴다 — DESIGN.md의 collapsing strategy. */
+@media (max-width: 47.99em) {
+  .mock-source { display: none; }
+  .mock-plain { margin-top: 0; }
+}
+
+/* 쓰는 순서 — 검정 다음에 오는 흰 면. 내용이 실제로 순서이므로 번호를 쓴다. */
+.steps { padding: var(--s-section) 0; background: var(--canvas); }
+.steps h2 { margin-bottom: var(--s-7); font-size: var(--t-h1); font-weight: 400; letter-spacing: var(--track-display); }
 .steps ol { display: grid; gap: var(--s-6); margin: 0; padding: 0; list-style: none; counter-reset: step; }
 .steps li { position: relative; max-width: var(--measure); padding-left: 48px; counter-increment: step; }
 .steps li::before {
   content: counter(step);
-  position: absolute; left: 0; top: 0;
+  position: absolute; left: 0; top: -2px;
   display: inline-flex; align-items: center; justify-content: center;
   width: 32px; height: 32px;
   background: var(--surface-strong); border-radius: var(--r-full);
   color: var(--ink); font-size: var(--t-caption); font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
-.steps strong { display: block; color: var(--ink); }
+.steps strong { display: block; margin-bottom: var(--s-1); color: var(--ink); }
 
 @media (min-width: 48em) {
   .steps ol { grid-template-columns: repeat(3, 1fr); gap: var(--s-8); }
   .steps li { max-width: none; }
 }
 
-/* --- 닫는 CTA 띠 ---------------------------------------------------------
- * 푸터 바로 앞의 검정 띠. 제목과 단추를 가운데로 모은다 — 넓은 화면에서
- * 왼쪽에 붙여 두면 오른쪽 절반이 통째로 빈다. */
+/* --- 닫는 띠 -------------------------------------------------------------
+ * 푸터 바로 앞에서 페이지를 닫는다. 연회색인 이유는 이 파일 머리의 "띠 순서에
+ * 관한 판단"에 있다 — 검정은 히어로에서 한 번만 쓴다. */
 
-.cta-band { padding: var(--s-section) 0; background: var(--surface-dark); color: var(--on-dark); text-align: center; }
+.cta-band { padding: var(--s-section) 0; background: var(--surface-soft); text-align: center; }
 .cta-band h2 {
-  max-width: 18em; margin: 0 auto; color: var(--on-dark);
-  font-size: 30px; font-weight: 400;
+  max-width: 16em; margin: 0 auto; color: var(--ink);
+  font-size: var(--t-h1); font-weight: 400;
   line-height: var(--lead-display); letter-spacing: var(--track-display);
 }
 @media (min-width: 64em) { .cta-band h2 { font-size: 44px; } }
-.cta-band p { max-width: 34rem; margin: var(--s-5) auto 0; color: var(--on-dark-soft); font-size: var(--t-lead); word-break: keep-all; }
+.cta-band p { max-width: 32rem; margin: var(--s-5) auto 0; color: var(--body); font-size: var(--t-lead); }
 .cta-band .kakao-login-form { margin-top: var(--s-7); }
-.cta-band .empty { background: var(--surface-dark-up); color: var(--on-dark-soft); }
+.cta-band .empty { background: var(--canvas); }
 
-/* --- 개인정보처리방침 ---------------------------------------------------- */
+/* --- 글만 있는 화면(방침·탈퇴) ------------------------------------------- */
 
 .policy { max-width: var(--measure); }
-.policy h1 { margin-bottom: var(--s-4); }
+.policy h1 { margin-bottom: var(--s-5); }
 .policy h2 { margin: var(--s-8) 0 var(--s-3); font-size: var(--t-h3); }
 .policy p, .policy ul { margin-bottom: var(--s-4); }
 .policy li { margin-bottom: var(--s-2); }
