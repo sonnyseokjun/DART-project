@@ -46,15 +46,15 @@
     {% include 'disclosures/_feed_picker.html' %}
     {% include 'disclosures/_disclosure_feed.html' %}
   {% else %}
-    {% comment %} 빈 화면은 분위기가 아니라 방향을 준다 — 무엇을 하면 되는지 적고,
-       그 자리에서 바로 할 수 있게 단추를 둔다. {% endcomment %}
+    {% comment %} 빈 화면은 분위기가 아니라 방향을 준다. 단추를 따로 두지 않는 이유는
+       바로 위 검색창이 같은 일을 하기 때문이다 — 꽉 찬 검정이 한 화면에 둘이 되고,
+       누르면 지금 보고 있는 화면과 거의 같은 곳으로 간다. {% endcomment %}
     <div class="empty">
       <h2>아직 관심 기업이 없습니다</h2>
       <p>
-        상장사를 최대 {{ watch_limit }}곳까지 고를 수 있습니다.
+        위 검색창에서 상장사를 찾아 최대 {{ watch_limit }}곳까지 고를 수 있습니다.
         고르면 그 기업의 최근 30일 공시부터 여기에 모입니다.
       </p>
-      <a class="btn btn-primary" href="{% url 'disclosures:search' %}">기업 검색하기</a>
     </div>
   {% endif %}
 {% endblock %}

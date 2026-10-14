@@ -5,9 +5,9 @@
 버튼은 요청만 기록한다(views.summary_request) — AI는 파이프라인이 부른다.
 요약이 있는 공시(ready)에는 이 조각을 쓰지 않는다.
 
-`request_button_class` 로 요청 버튼의 모양을 넘긴다. 목록에서는 회색 알약, 상세에서는
-파랑 알약이다 — 이유는 _disclosure_row.html 의 머리 주석에 있다. 넘기지 않으면
-회색으로 떨어뜨린다(여러 개가 늘어서도 안전한 쪽이 기본값이어야 한다).
+`request_button_class` 로 요청 버튼의 모양을 넘긴다. 목록에서는 고스트, 상세에서는
+검정 알약이다 — 이유는 _disclosure_row.html 의 머리 주석에 있다. 넘기지 않으면
+고스트로 떨어뜨린다(여러 개가 늘어서도 안전한 쪽이 기본값이어야 한다).
 {% endcomment %}
 {% with state=disclosure.summary_state %}
   {% if state == 'queued' %}
@@ -32,7 +32,7 @@
         {% csrf_token %}
         <input type="hidden" name="rcept_no" value="{{ disclosure.rcept_no }}">
         <input type="hidden" name="next" value="{{ request.get_full_path }}">
-        <button type="submit" class="{{ request_button_class|default:'btn btn-secondary' }}">AI 요약 보기</button>
+        <button type="submit" class="{{ request_button_class|default:'btn btn-ghost' }}">AI 요약 보기</button>
       </form>
     {% endif %}
   {% elif state == 'failed' %}

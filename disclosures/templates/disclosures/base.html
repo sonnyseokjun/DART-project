@@ -41,7 +41,7 @@
           {# 로그아웃은 POST로만 한다(settings.ACCOUNT_LOGOUT_ON_GET). #}
           <form method="post" action="{% url 'account_logout' %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-secondary btn-sm">로그아웃</button>
+            <button type="submit" class="btn btn-ghost btn-sm">로그아웃</button>
           </form>
           <a class="header-quiet" href="{% url 'accounts:withdraw' %}">탈퇴</a>
         {% else %}

@@ -4,8 +4,8 @@
 여기서 숨기는 것은 누르기 전에 알려주려는 것뿐이다.
 
 `button_class` 로 모양을 넘긴다. 검색 결과처럼 같은 버튼이 여러 줄 늘어서는 곳에서는
-회색 알약, 기업 화면처럼 그 화면의 유일한 행동일 때는 파랑 알약이다
-(style.css 규칙 1 — 파랑은 한 화면에 한 번).
+고스트, 기업 화면처럼 그 화면의 유일한 행동일 때는 검정 알약이다
+(style.css 규칙 1 — 꽉 찬 검정은 한 화면에 하나).
 {% endcomment %}
 {% if watch_count >= watch_limit %}
   <p class="landing-note">관심 기업이 {{ watch_limit }}곳으로 가득 찼습니다. 다른 기업을 빼면 추가할 수 있습니다.</p>
@@ -14,6 +14,6 @@
     {% csrf_token %}
     <input type="hidden" name="corp_code" value="{{ corp.corp_code }}">
     <input type="hidden" name="next" value="{{ request.get_full_path }}">
-    <button type="submit" class="{{ button_class|default:'btn btn-secondary btn-sm' }}">관심 기업에 추가</button>
+    <button type="submit" class="{{ button_class|default:'btn btn-ghost btn-sm' }}">관심 기업에 추가</button>
   </form>
 {% endif %}

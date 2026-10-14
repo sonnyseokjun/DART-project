@@ -15,9 +15,9 @@
 `summary_state`가 가르고, 안내 문구와 "AI 요약 보기" 버튼은 `_summary_status.html`이 그린다(이슈 #44).
 노출 여부 자체는 views.published_disclosures()가 정하므로 여기서 다시 따지지 않는다.
 
-요청 버튼을 회색 알약으로 넘기는 이유: 요약 대기 공시가 다섯 줄이면 파랑 알약도
-다섯 개가 되어 "파랑은 한 화면에 한 번"이 깨진다(style.css 규칙 1). 상세 화면에서는
-그 공시 하나뿐이므로 거기서만 파랑을 쓴다.
+요청 버튼을 고스트로 넘기는 이유: 요약 대기 공시가 다섯 줄이면 꽉 찬 검정 알약도
+다섯 개가 되어 "1차 행동이 무엇인가"가 사라진다(style.css 규칙 1). 상세 화면에서는
+그 공시 하나뿐이므로 거기서만 검정을 쓴다.
 {% endcomment %}
 <article class="filing{% if disclosure.is_summary_pending %} filing-pending{% endif %}">
   <div class="filing-meta">
@@ -69,7 +69,7 @@
   </h3>
 
   {% if disclosure.is_summary_pending %}
-    {% include 'disclosures/_summary_status.html' with request_button_class='btn btn-secondary' %}
+    {% include 'disclosures/_summary_status.html' with request_button_class='btn btn-ghost' %}
   {% else %}
     <p class="filing-line">{{ disclosure.summary.one_line }}</p>
   {% endif %}

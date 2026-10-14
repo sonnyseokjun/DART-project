@@ -58,8 +58,8 @@
     {% if not summary %}
       {% comment %} 요약을 기다리는 화면. 목록에 줄이 보이는데 눌렀더니 404가 나면 사용자에게는
          고장으로 읽히므로, 상세도 같은 상태를 그대로 보여준다.
-         요청 버튼은 여기서만 파랑이다 — 이 화면에는 그 공시 하나뿐이라 파랑이 하나로
-         끝난다(style.css 규칙 1).
+         요청 버튼은 여기서만 꽉 찬 검정이다 — 이 화면에는 그 공시 하나뿐이라
+         1차 행동이 하나로 끝난다(style.css 규칙 1).
          원문 링크는 아래 "원문 확인" 절에 그대로 있다 — 요약이 없을수록 그 경로가
          더 필요하다(PLAN.md 5.3). {% endcomment %}
       <aside class="pending-note" role="status">
@@ -144,10 +144,10 @@
         아래 링크에서 금융감독원 전자공시시스템(DART)의 원문을 직접 확인할 수 있습니다.
         <strong>요약과 원문이 다를 경우 원문이 우선합니다.</strong>
       </p>
-      {% comment %} 요약이 있는 화면에서는 이것이 그 화면의 1차 행동이라 파랑 알약이다.
-         요약이 없는 화면에서는 위의 "AI 요약 보기"가 이미 파랑을 썼으므로 회색으로
-         내린다 — 파랑 알약 둘이 한 화면에 서지 않게 한다(style.css 규칙 1). {% endcomment %}
-      <a class="btn {% if summary %}btn-primary{% else %}btn-secondary{% endif %}"
+      {% comment %} 요약이 있는 화면에서는 이것이 그 화면의 1차 행동이라 검정 알약이다.
+         요약이 없는 화면에서는 위의 "AI 요약 보기"가 이미 1차를 썼으므로 고스트로
+         내린다 — 꽉 찬 검정 둘이 한 화면에 서지 않게 한다(style.css 규칙 1). {% endcomment %}
+      <a class="btn {% if summary %}btn-primary{% else %}btn-ghost{% endif %}"
          href="{{ disclosure.dart_url }}" target="_blank" rel="noopener noreferrer">
         DART 원문 보기 <span class="code">접수번호 {{ disclosure.rcept_no }}</span>
       </a>

@@ -5,13 +5,16 @@
 {% block body_class %}page-marketing{% endblock %}
 
 {% comment %} 머리말의 "시작하기" 알약을 비운다 — 히어로의 카카오 버튼이 바로 아래에
-   있어 같은 뜻의 단추가 둘이 되기 때문이다(base.html 의 header_cta 주석). {% endcomment %}
+   있어 같은 뜻의 단추가 둘이 된다(base.html 의 header_cta 주석). {% endcomment %}
 {% block header_cta %}{% endblock %}
 
-{% comment %} main 블록을 덮어쓰는 이유: 검정 히어로와 닫는 띠가 화면 끝까지 닿아야
-   하는데, base의 기본 블록은 내용을 .wrap 안에 가둔다. 여기서는 섹션마다 .wrap 을
+{% comment %} main 블록을 덮어쓰는 이유: 소개 화면은 섹션마다 세로 여백이 다르고
+   base의 기본 블록은 하나의 .wrap 에 내용을 가둔다. 여기서는 섹션마다 .wrap 을
    직접 둔다(base.html 의 main 블록 주석 참조). {% endcomment %}
 {% block main %}
+  {% comment %} hero-band-marketing — 원래는 전면 제품 사진 위에 흰 글자를 얹는 띠다.
+     이 서비스에는 사진이 없으므로(DESIGN.md 적용 규칙 3번) 흰 캔버스에 큰 제목과
+     2단 CTA(검정 알약 + 고스트)로 세운다. {% endcomment %}
   <section class="hero" id="start">
     <div class="wrap">
       <h1 class="hero-title">어려운 공시를, 읽을 수 있는 말로</h1>
@@ -21,43 +24,43 @@
       </p>
       <div class="hero-actions">
         {% include 'disclosures/_kakao_login_button.html' %}
-        <a class="btn btn-outline-dark btn-lg" href="#steps">어떻게 쓰나요</a>
+        <a class="btn btn-secondary" href="#steps">어떻게 쓰나요</a>
       </div>
       <p class="hero-note">
         카카오 계정의 <strong>닉네임만</strong> 받습니다. 이메일·전화번호는 받지 않습니다.
         <a href="{% url 'accounts:privacy' %}">개인정보처리방침</a>
       </p>
 
-      {% comment %} 히어로 위에 떠 있는 화면 카드 두 장. 제품 스크린샷 대신 **이 서비스가
-         실제로 하는 일** 자체를 그린다 — 뒤 카드는 DART가 주는 그대로의 공시(금액이
-         원 단위로 끝까지 적혀 있다), 앞 카드는 같은 공시를 쉬운 말과 한국식 수 단위로
-         옮긴 결과다. 겹쳐 놓으면 설명 문장 없이도 전후가 읽힌다.
+      {% comment %} card-feature-photo 의 자리. 문서는 "테두리도 그림자도 없이 내용
+         자체가 표면"이라고 규정하는데, 우리에게 그 내용은 사진이 아니라 **공시와 그
+         요약**이다. 왼쪽이 DART가 주는 그대로(금액이 원 단위로 끝까지 적혀 있다),
+         오른쪽이 같은 공시를 쉬운 말과 한국식 수 단위로 옮긴 결과다.
 
          기업명을 ○○전자로 둔 이유: 실제 기업명에 가짜 공시를 붙이면 공개 화면에서
          거짓 정보로 읽힐 수 있다. 예시임이 라벨로도 드러나게 한다.
          보고서명은 특정 기업의 것이 아니라 DART 서식 이름 그대로다. {% endcomment %}
-      <div class="hero-stack" aria-hidden="true">
-        <article class="mock mock-source">
-          <p class="mock-kicker">DART 원문 · 예시</p>
-          <p class="mock-form">단일판매ㆍ공급계약체결</p>
-          <dl class="mock-rows">
+      <div class="showcase" aria-hidden="true">
+        <article class="showcase-tile showcase-source">
+          <p class="showcase-label">DART 원문 · 예시</p>
+          <p class="showcase-form">단일판매ㆍ공급계약체결</p>
+          <dl class="showcase-rows">
             <div><dt>계약금액</dt><dd>2,030,000,000,000</dd></div>
             <div><dt>최근 매출액</dt><dd>29,870,000,000,000</dd></div>
             <div><dt>계약기간</dt><dd>2026-10-06 ~ 2028-12-31</dd></div>
           </dl>
         </article>
-        <article class="mock mock-plain">
-          <p class="mock-kicker">공시 쉽게 보기</p>
-          <div class="mock-meta">
-            <span class="badge">중요도 높음</span>
+        <article class="showcase-tile showcase-plain">
+          <p class="showcase-label">공시 쉽게 보기</p>
+          <div class="showcase-meta">
+            <span class="badge badge-high">중요도 높음</span>
             <span>○○전자</span>
             <span class="num">2026-10-06</span>
           </div>
-          <p class="mock-line">
+          <p class="showcase-line">
             2조 300억 원짜리 반도체 공급 계약을 맺었습니다.
             지난해 매출의 6.8%에 해당하고, 2028년까지 나눠 들어옵니다.
           </p>
-          <p class="mock-actions">쉬운 설명 보기 · DART 원문</p>
+          <p class="showcase-actions">쉬운 설명 보기 · DART 원문</p>
         </article>
       </div>
     </div>
@@ -75,13 +78,15 @@
     </div>
   </section>
 
-  {% comment %} 닫는 띠. 끝까지 읽은 사람에게 시작할 자리를 한 번 더 준다.
-     검정이 아니라 연회색인 이유는 style.css 머리의 "띠 순서에 관한 판단"에 있다. {% endcomment %}
+  {% comment %} card-promo-strip — 32px 둥근 먹 타일. 화면 끝까지 닿는 띠가 아니라
+     여백 안에 떠 있는 타일이라, 배경이 통째로 검어지지 않는다. {% endcomment %}
   <section class="cta-band">
     <div class="wrap">
-      <h2>관심 기업부터 골라 보세요</h2>
-      <p>카카오 계정으로 바로 시작합니다. 받는 정보는 닉네임뿐입니다.</p>
-      {% include 'disclosures/_kakao_login_button.html' %}
+      <div class="cta-card">
+        <h2>관심 기업부터 골라 보세요</h2>
+        <p>카카오 계정으로 바로 시작합니다. 받는 정보는 닉네임뿐입니다.</p>
+        {% include 'disclosures/_kakao_login_button.html' %}
+      </div>
     </div>
   </section>
 {% endblock %}
