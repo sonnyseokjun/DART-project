@@ -60,11 +60,16 @@
   </header>
 
   <main class="site-main">
+    {% comment %} 알림 띠를 .wrap 하나로 두지 않고 바깥을 한 겹 감싼다. 소개 화면에서는
+       이 띠가 검정 머리말과 검정 히어로 사이에 끼어 흰 줄을 만들기 때문에,
+       바탕을 칠할 수 있는 전폭 요소가 필요하다(style.css 의 .message-band). {% endcomment %}
     {% if messages %}
-      <div class="wrap">
-        <ul class="messages">
-          {% for message in messages %}<li>{{ message }}</li>{% endfor %}
-        </ul>
+      <div class="message-band">
+        <div class="wrap">
+          <ul class="messages">
+            {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+          </ul>
+        </div>
       </div>
     {% endif %}
 

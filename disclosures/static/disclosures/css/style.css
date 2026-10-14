@@ -439,6 +439,16 @@ a:hover { color: var(--primary-active); text-decoration: underline; }
 
 .live-note { margin-bottom: var(--s-5); padding: var(--s-3) var(--s-4); background: var(--surface-strong); border-radius: var(--r-md); color: var(--ink); font-size: var(--t-caption); }
 .messages { margin: 0 0 var(--s-6); padding: var(--s-3) var(--s-4); list-style: none; background: var(--surface-strong); border-radius: var(--r-md); font-size: var(--t-caption); }
+
+/* 소개 화면의 알림 띠. 로그아웃·탈퇴 직후가 비회원이 랜딩을 보는 가장 흔한
+   경로라 "로그아웃 되었습니다"가 자주 뜨는데, 흰 바탕 그대로 두면 검정 머리말과
+   검정 히어로 사이에 흰 줄이 생겨 맨 위부터 이어지던 검정이 끊긴다.
+   읽는 화면(page-app)에서는 .site-main 이 이미 위아래 여백을 주므로 손대지 않는다. */
+.page-marketing .message-band { padding-top: var(--s-6); background: var(--surface-dark); }
+.page-marketing .messages {
+  margin-bottom: 0;
+  background: var(--surface-dark-up); color: var(--on-dark);
+}
 .breadcrumb { margin-bottom: var(--s-5); color: var(--muted); font-size: var(--t-caption); }
 
 /* --- 화면 머리 ----------------------------------------------------------- */
