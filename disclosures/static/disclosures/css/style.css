@@ -186,11 +186,6 @@ textarea {
 /* ─────────────────────────────────────────────────────────────
    타이포 역할
    ───────────────────────────────────────────────────────────── */
-.display-xl {
-  font-size: 64px;
-  line-height: 1.05;
-}
-
 .display-lg {
   font-size: 48px;
   line-height: 1.1;
@@ -199,11 +194,6 @@ textarea {
 .display-md {
   font-size: 32px;
   line-height: 1.15;
-}
-
-.display-sm {
-  font-size: 24px;
-  line-height: 1.25;
 }
 
 .title-lg {
@@ -234,14 +224,6 @@ textarea {
   line-height: 1.4;
   letter-spacing: 0.5px;
   color: var(--muted);
-}
-
-/* {typography.label} — 이 언어의 연결 조직. 제원 이름·탭·문자 링크가 모두 이 역할이다. */
-.label {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.3;
-  letter-spacing: 1.5px;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -563,14 +545,7 @@ textarea {
   color: var(--on-dark);
 }
 
-.links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-xs) var(--s-lg);
-}
-
 /* 문장 안에 섞인 링크만 밑줄로 가른다(DESIGN.md 적용 규칙 4). */
-.prose a,
 .policy a,
 .hero-note a,
 .filing-note a,
@@ -1846,20 +1821,6 @@ a.filing-company:active {
   color: var(--ink);
 }
 
-.screen-head {
-  margin-bottom: var(--s-xl);
-}
-
-.screen-head h1 {
-  font-size: 32px;
-  line-height: 1.15;
-}
-
-.screen-head p {
-  margin-top: var(--s-xs);
-  color: var(--muted);
-}
-
 .policy,
 .intro {
   max-width: 44em;
@@ -2042,7 +2003,6 @@ a.filing-company:active {
     padding: 56px 0;
   }
 
-  .display-xl,
   .hero-title {
     font-size: 40px;
   }
@@ -2054,7 +2014,6 @@ a.filing-company:active {
   }
 
   .display-md,
-  .screen-head h1,
   .policy h1,
   .intro h1 {
     font-size: 26px;
