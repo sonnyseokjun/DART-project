@@ -2794,6 +2794,16 @@ class CompanyTabCountTest(WebViewTestBase):
                     {'company': company.stock_code}).context['total_count']
                 self.assertEqual(company.feed_count, listed)
 
+    def test_all_tab_count_is_the_sum_of_the_company_tabs(self):
+        """"전체"와 기업 탭의 기준이 갈리면 더한 값이 맞지 않아 바로 드러난다."""
+        response = self.client.get(reverse('disclosures:home'))
+
+        self.assertEqual(
+            response.context['all_count'],
+            sum(company.feed_count for company in response.context['companies']))
+        self.assertEqual(response.context['all_count'],
+                         response.context['total_count'])
+
     def test_count_does_not_include_hidden_summaries(self):
         summary = self.high.summary
         summary.is_published = False

@@ -296,6 +296,9 @@ def home(request):
         'companies': companies,
         'watch_limit': watchlist.MAX_WATCHES_PER_USER,
         'remaining_watches': watchlist.MAX_WATCHES_PER_USER - len(companies),
+        # 기업 탭의 "전체"에 적는 수. 각 기업 탭의 숫자와 같은 기준이어야 하므로
+        # 더해서 만든다 — 큐리셋을 따로 세면 조건이 갈릴 자리가 하나 더 생긴다.
+        'all_count': sum(company.feed_count for company in companies),
         'lead_disclosure': lead,
         'lead_scope': lead.company.name if selected_company and lead else '관심 기업',
         'page_obj': _paginate(request, disclosures),

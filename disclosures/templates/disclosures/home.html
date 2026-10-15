@@ -17,7 +17,7 @@
         <ul class="tabs" aria-label="기업별로 보기">
           <li>
             <a class="tab" {% if not selected_company %}aria-current="true"{% endif %}
-               href="{% querystring company=None page=None %}">전체</a>
+               href="{% querystring company=None page=None %}">전체<span class="n">{{ all_count }}</span></a>
           </li>
           {% for company in companies %}
             <li>

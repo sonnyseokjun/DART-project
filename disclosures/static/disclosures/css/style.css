@@ -536,12 +536,14 @@ textarea {
 }
 
 /* › 는 CSS 가 붙인다. 템플릿의 글자는 사람이 읽는 말 그대로 두고, 화살표는 이 역할의
-   생김새에 속한다 — 링크 문구를 고칠 때 화살표를 빼먹는 일이 없어진다. */
+   생김새에 속한다 — 링크 문구를 고칠 때 화살표를 빼먹는 일이 없어진다.
+   글자를 그대로 적는다. 16진수 이스케이프로 적으면 바로 뒤의 문자가 같은
+   escape 에 딸려 읽힐 수 있어, 실제로 화살표 뒤에 'A' 한 글자가 새어 나왔다. */
 .link-label::after,
 .link-detail::after,
 .link-dart::after,
 .link-button::after {
-  content: " \203A";
+  content: " ›";
 }
 
 .link-label:hover,
@@ -1370,13 +1372,10 @@ a.filing-company:active {
 /* ─────────────────────────────────────────────────────────────
    머리 공시 띠 — 지금 가장 봐야 할 공시 하나 (회원 홈)
    ───────────────────────────────────────────────────────────── */
-.lead-item > .wrap {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 520px);
-  gap: var(--s-xxl) 64px;
-  align-items: center;
-}
-
+/* 한 단이다. 원 디자인 언어의 이 자리는 왼쪽 글 + 오른쪽 제원 패널의 두 단인데,
+   머리 공시에는 오른쪽에 둘 것이 없다 — 요약의 수치는 구조화돼 있지 않고(DESIGN.md
+   적용 규칙 1), 원문 인용은 공시 상세의 히어로가 이미 맡는다. 빈 단을 남기면 검정 띠의
+   오른쪽 절반이 통째로 비어 고장으로 읽힌다. */
 .lead-why {
   margin-bottom: var(--s-md);
   font-size: 14px;
@@ -1387,6 +1386,7 @@ a.filing-company:active {
   font-size: 48px;
   line-height: 1.1;
   margin-bottom: var(--s-md);
+  max-width: 18em;
 }
 
 .lead-item .meta-row {
@@ -2010,7 +2010,6 @@ a.filing-company:active {
   }
 
   .hero > .wrap,
-  .lead-item > .wrap,
   .find > .wrap,
   .reading > .wrap,
   .band-head {
