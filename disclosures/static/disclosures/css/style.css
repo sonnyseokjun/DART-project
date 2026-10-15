@@ -523,8 +523,7 @@ textarea {
    escape 에 딸려 읽힐 수 있어, 실제로 화살표 뒤에 'A' 한 글자가 새어 나왔다. */
 .link-label::after,
 .link-detail::after,
-.link-dart::after,
-.link-button::after {
+.link-dart::after {
   content: " ›";
 }
 
@@ -1283,7 +1282,9 @@ textarea {
 }
 
 .filing-kind {
+  font-size: 12px;
   font-weight: 400;
+  letter-spacing: 0.5px;
   color: var(--muted);
 }
 
@@ -1445,13 +1446,14 @@ a.filing-company:active {
 .search-head {
   display: grid;
   gap: var(--s-sm);
-  max-width: 640px;
+  max-width: 720px;
   padding-bottom: var(--s-xl);
   border-bottom: 1px solid var(--hairline);
   margin-bottom: var(--s-xl);
 }
 
 .search-results {
+  max-width: 720px;
   list-style: none;
   border-top: 1px solid var(--hairline);
 }
