@@ -853,6 +853,17 @@ textarea {
   align-items: center;
 }
 
+/* 서비스 마크. 제목 바로 위에 서므로 제목의 왼쪽 선에 맞춰 둔다.
+   검정 띠의 기본 글자색은 --on-dark-soft(흐린 회색)라 마크만 흰색으로 올린다 —
+   마크는 읽는 글이 아니라 표식이어서 본문과 같은 밝기로 두면 묻힌다. */
+.hero-logo {
+  display: block;
+  width: 64px;
+  height: auto;
+  margin-bottom: var(--s-lg);
+  color: var(--on-dark);
+}
+
 .hero-title {
   font-size: 64px;
   line-height: 1.05;
@@ -2005,6 +2016,10 @@ a.filing-company:active {
 
   .hero-title {
     font-size: 40px;
+  }
+
+  .hero-logo {
+    width: 52px;
   }
 
   .display-lg,
