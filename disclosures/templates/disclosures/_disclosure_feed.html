@@ -9,17 +9,22 @@
 필터·페이지네이션 로직이 두 벌이 되어 한쪽만 고쳤을 때 조용히 어긋난다.
 서버가 같은 뷰·같은 템플릿으로 그리므로 그럴 일이 없다.
 
+건수를 필터 줄이 아니라 이 안에 두는 이유: 갱신되는 값이라 교체 지점 밖에 있으면
+새 공시가 들어와도 건수만 옛값으로 남는다. 그래서 필터 줄(`.filters`)에는 선을
+두지 않고, 이 조각의 머리 줄(`.feed-head`)이 둘 아래의 선 하나를 맡는다.
+
 필요한 컨텍스트: `page_obj`, `total_count` (+ `_pagination.html`이 쓰는 값들).
-`hide_company`는 줄로 그대로 전달된다.
+`hide_company`는 카드로 그대로 전달된다.
 {% endcomment %}
 <div data-live-feed>
-  {% comment %} 내용만 소리 없이 바뀌면 사용자가 알아채지 못한다. 갱신 직후 잠깐 뜬다.
-     role="status"는 화면 낭독기에도 조용히 알린다(방해하지 않는 알림). {% endcomment %}
-  <p class="live-note" data-live-note role="status" hidden>
-    새 공시가 반영되었습니다.
-  </p>
-
-  <p class="result-count">공시 {{ total_count }}건</p>
+  <div class="feed-head">
+    <p class="result-count">공시 {{ total_count }}건</p>
+    {% comment %} 내용만 소리 없이 바뀌면 사용자가 알아채지 못한다. 갱신 직후 잠깐 뜬다.
+       role="status"는 화면 낭독기에도 조용히 알린다(방해하지 않는 알림). {% endcomment %}
+    <p class="feed-note" data-live-note role="status" hidden>
+      새 공시가 반영되었습니다.
+    </p>
+  </div>
 
   {% if page_obj %}
     <div class="filings">
@@ -28,9 +33,9 @@
       {% endfor %}
     </div>
   {% else %}
-    <div class="empty">
+    <div class="empty" style="border-top: 0; padding-top: 0">
       <h2>조건에 맞는 공시가 없습니다</h2>
-      <p>중요도를 "전체"로 되돌리거나 단순 보고까지 켜면 더 많이 보입니다.</p>
+      <p>중요도나 상태를 "전체"로 되돌리거나 "단순 보고도 보기"를 켜면 더 많이 보입니다.</p>
     </div>
   {% endif %}
 

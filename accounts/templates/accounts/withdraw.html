@@ -20,7 +20,7 @@
     <form method="post" action="{% url 'accounts:withdraw' %}">
       {% csrf_token %}
       <button type="submit" class="btn btn-danger">탈퇴하기</button>
-      <a href="{% url 'disclosures:home' %}">취소</a>
+      <a class="link-label" href="{% url 'disclosures:home' %}">취소하고 돌아가기</a>
     </form>
   </section>
 {% endblock %}

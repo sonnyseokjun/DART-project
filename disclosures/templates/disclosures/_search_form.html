@@ -1,14 +1,17 @@
 {% comment %}
 기업 검색창. 저장된 상장사 명단만 찾는다 — DART를 부르지 않는다(views.search).
-`search-input-pill` — 테두리 상자가 아니라 연회색 알약이다(DESIGN.md).
-이름표를 따로 두지 않고 placeholder 대신 보이지 않는 label 로 붙인다. 검색창은
-생김새만으로 무엇인지 알 수 있어 이름표가 한 줄을 더 차지할 이유가 없다.
+
+테두리 한 줄의 각진 칸이고 검색 버튼이 바로 옆에 붙는다(DESIGN.md Components).
+초점은 바깥 테두리가 아니라 안쪽 선으로 그려 칸의 기하가 흔들리지 않게 한다.
+
+이름표를 따로 두지 않고 보이지 않는 label 로 붙인다. 검색창은 생김새만으로 무엇인지
+알 수 있어 이름표가 한 줄을 더 차지할 이유가 없다.
 {% endcomment %}
 <form class="search-form" method="get" action="{% url 'disclosures:search' %}" role="search">
   <label>
-    <span class="sr-only">기업 검색</span>
+    <span class="sr-only">기업 이름 또는 종목코드</span>
     <input class="search-input" type="search" name="q" value="{{ query|default:'' }}"
-           placeholder="기업명 또는 종목코드" required>
+           placeholder="기업 이름 또는 종목코드" autocomplete="off" required>
   </label>
   <button type="submit" class="btn btn-primary">검색</button>
 </form>

@@ -2,59 +2,113 @@
 {# 로그인한 회원의 첫 화면 — 내 관심 기업의 공시 모아보기(이슈 #44). #}
 
 {% block title %}내 관심 기업 · 공시 쉽게 보기{% endblock %}
+{% block nav_home %}aria-current="page"{% endblock %}
 
-{% block content %}
-  <header class="screen-head">
-    <h1>내 관심 기업</h1>
-  </header>
-
-  {% if budget_exhausted %}
-    <p class="live-note" role="status">
-      이번 달 AI 요약 한도에 도달했습니다. 새 요약은 다음 달 1일부터 만들어집니다.
-      이미 요청하신 공시도 그때 정리됩니다.
-    </p>
-  {% endif %}
-
-  {% include 'disclosures/_search_form.html' %}
-
-  {% if companies %}
-    {% comment %} 관심 기업 목록이 곧 기업 고르개다. 예전에는 같은 이름이 두 번 나왔다 —
-       본문에 링크로 한 번, 필터 드롭다운에 한 번. 둘을 하나로 합쳐 한 번만 적는다.
-       기업 페이지로 가는 길은 공시 줄의 기업명 링크가 맡는다. {% endcomment %}
-    <div class="picker-row">
-      <div class="picker">
-        <p class="picker-label" id="picker-company">
-          관심 기업 <span class="num">{{ companies|length }} / {{ watch_limit }}</span>곳
-        </p>
-        <ul class="chips" aria-labelledby="picker-company">
+{% comment %} main 을 덮어쓰는 이유: 이 화면은 띠 셋(보조 내비 · 머리 공시 · 목록)과
+   마지막 검정 띠로 이루어져 바탕이 띠마다 다르다(base.html 의 main 블록 주석). {% endcomment %}
+{% block main %}
+  {% comment %} 보조 내비게이션 띠. 관심 기업 목록이 곧 기업 고르개다 — 예전에는 같은
+     이름이 본문 링크와 필터 드롭다운에 두 번 나왔다. 탭 하나로 합친다.
+     기업 페이지로 가는 길은 공시 카드의 기업명 링크가 맡는다. {% endcomment %}
+  <div class="subnav">
+    <div class="wrap">
+      <h1 class="subnav-title">내 관심 기업</h1>
+      {% if companies %}
+        <ul class="tabs" aria-label="기업별로 보기">
           <li>
-            <a class="chip{% if not selected_company %} chip-on{% endif %}"
-               {% if not selected_company %}aria-current="true"{% endif %}
+            <a class="tab" {% if not selected_company %}aria-current="true"{% endif %}
                href="{% querystring company=None page=None %}">전체</a>
           </li>
           {% for company in companies %}
             <li>
-              <a class="chip{% if company.stock_code == selected_company %} chip-on{% endif %}"
+              <a class="tab"
                  {% if company.stock_code == selected_company %}aria-current="true"{% endif %}
-                 href="{% querystring company=company.stock_code page=None %}">{{ company.name }}</a>
+                 href="{% querystring company=company.stock_code page=None %}">{{ company.name }}<span class="n">{{ company.feed_count }}</span></a>
             </li>
           {% endfor %}
         </ul>
+      {% endif %}
+      <div class="subnav-side">
+        <span class="num">{{ companies|length }}곳 / 최대 {{ watch_limit }}곳</span>
+        <a class="link-label" href="#find">기업 추가</a>
       </div>
     </div>
+  </div>
 
-    {% include 'disclosures/_feed_picker.html' %}
-    {% include 'disclosures/_disclosure_feed.html' %}
-  {% else %}
-    {% comment %} 빈 화면은 분위기가 아니라 방향을 준다. 단추를 따로 두지 않는 이유는
-       바로 위 검색창이 같은 일을 하기 때문이다 — 꽉 찬 검정이 한 화면에 둘이 되고,
-       누르면 지금 보고 있는 화면과 거의 같은 곳으로 간다. {% endcomment %}
-    <div class="empty">
-      <h2>아직 관심 기업이 없습니다</h2>
-      <p>
-        위 검색창에서 상장사를 찾아 최대 {{ watch_limit }}곳까지 고를 수 있습니다.
-        고르면 그 기업의 최근 30일 공시부터 여기에 모입니다.
-      </p>
+  {% if budget_exhausted %}
+    <div class="band band-top" style="padding-bottom: 0">
+      <div class="wrap">
+        <p class="live-note" role="status">
+          이번 달 AI 요약 한도에 도달했습니다. 새 요약은 다음 달 1일부터 만들어집니다.
+          이미 요청하신 공시도 그때 정리됩니다.
+        </p>
+      </div>
     </div>
   {% endif %}
+
+  {% if lead_disclosure %}
+    {% comment %} 머리 공시 — 목록이 아니라 "지금 가장 봐야 할 공시 하나"라 히어로와 같은
+       역할이고, 그래서 이 화면의 네 번째 검정 띠다(DESIGN.md 적용 규칙 3).
+
+       아래 목록에서 **빼지 않는다.** 빼면 "공시 N건"이 실제 목록 줄 수와 어긋나고,
+       필터를 걸면 머리 공시만 남거나 사라져 건수가 더 이상해진다. {% endcomment %}
+    <section class="band band-dark lead-item on-dark" aria-labelledby="lead-title">
+      <div class="wrap">
+        <div>
+          <p class="lead-why">{{ lead_scope }} 공시 가운데 중요도가 가장 높고 가장 최근에 올라온 공시입니다.</p>
+          <h2 class="display-lg" id="lead-title">{{ lead_disclosure.report_name }}</h2>
+          <div class="meta-row">
+            <a class="lead-company"
+               href="{% url 'disclosures:company_detail' lead_disclosure.company.stock_code %}">{{ lead_disclosure.company.name }}</a>
+            <span class="caption" style="color: var(--on-dark-soft)">
+              <time datetime="{{ lead_disclosure.filed_at|date:'Y-m-d' }}">{{ lead_disclosure.filed_at|date:'Y년 n월 j일' }} 접수</time>
+            </span>
+            {% include 'disclosures/_summary_signals.html' with disclosure=lead_disclosure %}
+          </div>
+          <p class="lead">{{ lead_disclosure.summary.one_line }}</p>
+          <div class="btn-group">
+            <a class="btn btn-primary"
+               href="{% url 'disclosures:disclosure_detail' lead_disclosure.rcept_no %}">쉬운 설명 보기</a>
+            <a class="btn btn-on-dark" href="{{ lead_disclosure.dart_url }}"
+               target="_blank" rel="noopener noreferrer">DART 원문 보기</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
+  <section class="band{% if not lead_disclosure %} band-top{% endif %}">
+    <div class="wrap">
+      {% if companies %}
+        {% include 'disclosures/_feed_picker.html' %}
+        {% include 'disclosures/_disclosure_feed.html' %}
+      {% else %}
+        {% comment %} 빈 화면은 분위기가 아니라 방향을 준다. 단추를 따로 두지 않는 이유는
+           바로 아래 검정 띠의 검색창이 같은 일을 하기 때문이다 — 누르면 지금 보고 있는
+           화면과 거의 같은 곳으로 간다. {% endcomment %}
+        <div class="empty" style="border-top: 0; padding-top: 0">
+          <h2>아직 관심 기업이 없습니다</h2>
+          <p>
+            아래에서 상장사를 찾아 최대 {{ watch_limit }}곳까지 고를 수 있습니다.
+            고르면 그 기업의 최근 30일 공시부터 여기에 모입니다.
+          </p>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="band band-dark find on-dark" id="find">
+    <div class="wrap">
+      <div>
+        {% if remaining_watches %}
+          <h2 class="display-md">관심 기업을 <span class="num">{{ remaining_watches }}</span>곳 더 고를 수 있습니다</h2>
+          <p>상장사 이름이나 종목코드로 찾으세요. 추가하면 그 기업의 최근 30일 공시를 함께 불러옵니다.</p>
+        {% else %}
+          <h2 class="display-md">관심 기업이 가득 찼습니다</h2>
+          <p>{{ watch_limit }}곳을 모두 쓰고 있습니다. 기업 화면에서 하나를 빼면 다른 기업을 추가할 수 있습니다.</p>
+        {% endif %}
+      </div>
+      {% include 'disclosures/_search_form.html' %}
+    </div>
+  </section>
 {% endblock %}
