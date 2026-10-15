@@ -2663,6 +2663,227 @@ class FilterAndPaginationTest(WebViewTestBase):
         self.assertContains(response, 'page=2')
 
 
+class StatusFilterTest(WebViewTestBase):
+    """검수 상태 거르개 (9단계 화면 작업).
+
+    화면의 표시(`_summary_signals.html`)와 **같은 기준**을 써야 거른 결과와 카드에 붙은
+    표시가 어긋나지 않는다. 둘 다 `is_reviewed` 를 본다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 요약은 있으나 검수 전(self.high·self.medium은 is_reviewed=False)
+        self.reviewed = self._disclosure(
+            self.samsung, '20260706000001', '검토된공시',
+            importance=DisclosureSummary.Importance.LOW, is_reviewed=True)
+        # 요약을 기다리는 공시 — 상태 'pending'
+        self.pending = Disclosure.objects.create(
+            company=self.samsung, rcept_no='20260707000001',
+            report_name='요약전공시', disclosure_type='주요사항보고',
+            filed_at=date(2026, 7, 7), dart_url=dart_viewer_url('20260707000001'),
+            selection_state=SelectionState.TARGET, raw_fetched=True, raw_content='원문',
+        )
+
+    def _names(self, **params):
+        # partial=1 은 목록 조각만 돌려준다. 머리 공시 띠는 거르개를 따르지 않으므로
+        # (views.home 주석) 화면 전체를 보면 거른 결과에 섞여 보인다.
+        body = self.client.get(
+            reverse('disclosures:home'), {'partial': '1', **params},
+        ).content.decode()
+        return {
+            disclosure.report_name
+            for disclosure in (self.high, self.medium, self.reviewed, self.pending)
+            if disclosure.report_name in body
+        }
+
+    def test_done_shows_only_reviewed(self):
+        self.assertEqual(self._names(status='done'), {'검토된공시'})
+
+    def test_ai_shows_summarized_but_unreviewed(self):
+        self.assertEqual(
+            self._names(status='ai'),
+            {self.high.report_name, self.medium.report_name})
+
+    def test_pending_shows_only_disclosures_without_a_summary(self):
+        self.assertEqual(self._names(status='pending'), {'요약전공시'})
+
+    def test_unknown_value_is_ignored(self):
+        """잘못된 쿼리스트링으로 500이 나거나 결과가 비면 안 된다."""
+        self.assertEqual(self._names(status='없는값'), self._names())
+
+    def test_filter_survives_pagination_links(self):
+        """2페이지로 넘어갈 때 상태가 풀리면 거른 화면이 조용히 달라진다."""
+        for index in range(views.PAGE_SIZE):
+            self._disclosure(
+                self.samsung, f'202607080{index:05d}', f'채우기{index}',
+                importance=DisclosureSummary.Importance.LOW, is_reviewed=True)
+
+        response = self.client.get(reverse('disclosures:home'), {'status': 'done'})
+
+        self.assertContains(response, 'status=done')
+        self.assertContains(response, 'page=2')
+
+
+class LeadDisclosureTest(WebViewTestBase):
+    """회원 홈 맨 위의 머리 공시 — 검정 띠 하나(DESIGN.md 적용 규칙 3)."""
+
+    def test_lead_is_the_most_important_not_the_most_recent(self):
+        """중요도가 문자열이라 그대로 정렬하면 알파벳순(high < low < medium)이 된다."""
+        latest_low = self._disclosure(
+            self.samsung, '20260710000001', '최근이지만낮음',
+            importance=DisclosureSummary.Importance.LOW,
+            filed_at=date(2026, 7, 10))
+
+        lead = views._lead_disclosure(views.published_disclosures())
+
+        self.assertEqual(lead, self.high)
+        self.assertNotEqual(lead, latest_low)
+
+    def test_lead_is_the_newer_of_two_at_the_same_level(self):
+        newer_high = self._disclosure(
+            self.hynix, '20260711000001', '더최근높음',
+            importance=DisclosureSummary.Importance.HIGH,
+            filed_at=date(2026, 7, 11))
+
+        self.assertEqual(
+            views._lead_disclosure(views.published_disclosures()), newer_high)
+
+    def test_lead_never_picks_a_disclosure_without_a_summary(self):
+        """중요도는 요약이 매기는 값이라 아직 없다. 머리 자리가 빈칸이 되면 안 된다."""
+        DisclosureSummary.objects.all().delete()
+
+        self.assertIsNone(views._lead_disclosure(views.published_disclosures()))
+
+    def test_lead_stays_in_the_list_below(self):
+        """머리 공시를 목록에서 빼면 "공시 N건"이 실제 카드 수와 어긋난다."""
+        response = self.client.get(reverse('disclosures:home'))
+
+        self.assertEqual(response.context['lead_disclosure'], self.high)
+        self.assertIn(self.high, list(response.context['page_obj']))
+
+    def test_lead_follows_the_company_tab(self):
+        response = self.client.get(reverse('disclosures:home'), {'company': '000660'})
+
+        self.assertEqual(response.context['lead_disclosure'], self.medium)
+        self.assertEqual(response.context['lead_scope'], 'SK하이닉스')
+
+    def test_lead_ignores_the_filters(self):
+        """거르개를 움직일 때마다 화면 맨 위의 큰 띠가 바뀌면 읽던 자리를 잃는다."""
+        response = self.client.get(reverse('disclosures:home'), {'importance': 'low'})
+
+        self.assertEqual(response.context['lead_disclosure'], self.high)
+
+
+class CompanyTabCountTest(WebViewTestBase):
+    """기업 탭에 적는 건수. 목록과 같은 기준이어야 하고, 쿼리가 늘지 않아야 한다."""
+
+    def _counts(self):
+        return {
+            company.name: company.feed_count
+            for company in self.client.get(
+                reverse('disclosures:home')).context['companies']
+        }
+
+    def test_count_matches_the_feed_length(self):
+        """탭 숫자와 목록 길이가 다르면 사용자는 어느 쪽을 믿어야 할지 알 수 없다."""
+        for company in self.client.get(
+                reverse('disclosures:home')).context['companies']:
+            with self.subTest(company=company.name):
+                listed = self.client.get(
+                    reverse('disclosures:home'),
+                    {'company': company.stock_code}).context['total_count']
+                self.assertEqual(company.feed_count, listed)
+
+    def test_count_does_not_include_hidden_summaries(self):
+        summary = self.high.summary
+        summary.is_published = False
+        summary.save(update_fields=['is_published'])
+
+        self.assertEqual(self._counts()['삼성전자'], 0)
+
+    def test_count_grows_when_routine_reports_are_shown(self):
+        """"단순 보고도 보기"를 켜면 목록이 늘어나므로 탭 숫자도 함께 늘어야 한다."""
+        before = self._counts()['삼성전자']
+        wider = {
+            company.name: company.feed_count
+            for company in self.client.get(
+                reverse('disclosures:home'), {'all': '1'}).context['companies']
+        }
+
+        self.assertEqual(wider['삼성전자'], before + 1)   # self.unsummarized
+
+    def test_counting_does_not_add_a_query_per_company(self):
+        """기업마다 따로 세면 관심 기업 10곳에서 쿼리가 10번 늘어난다(N+1)."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def count_queries():
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(reverse('disclosures:home'))
+            return len(ctx)
+
+        baseline = count_queries()
+        for index in range(5):
+            company = Company.objects.create(
+                sector=self.sector, corp_code=f'9000000{index}',
+                stock_code=f'90000{index}', name=f'추가기업{index}')
+            Watch.objects.create(user=self.member, company=company)
+
+        self.assertEqual(count_queries(), baseline)
+
+
+class HeroEvidenceTest(WebViewTestBase):
+    """공시 상세의 검정 히어로 패널 — 제원 자리에 원문 인용을 넣는다(DESIGN.md 규칙 1)."""
+
+    def _detail(self):
+        return self.client.get(
+            reverse('disclosures:disclosure_detail', args=['20260701000001']))
+
+    def test_panel_carries_at_most_two_quotes(self):
+        """다 넣으면 히어로가 표가 되어 한 줄 요약이 묻힌다."""
+        summary = self.high.summary
+        summary.evidence = [
+            {'field': 'one_line', 'claim': f'주장 {index}',
+             'quote': f'원문 구절 {index}', 'quote_found': True}
+            for index in range(5)
+        ]
+        summary.save(update_fields=['evidence'])
+
+        response = self._detail()
+
+        self.assertEqual(len(response.context['hero_evidence']),
+                         views.HERO_EVIDENCE_COUNT)
+        self.assertContains(response, '근거 5건 전부 보기')
+
+    def test_panel_only_carries_verified_quotes(self):
+        """원문에서 확인되지 않은 인용을 히어로에 올리면 가장 눈에 띄는 자리가 거짓이 된다."""
+        summary = self.high.summary
+        summary.evidence = [
+            {'field': 'one_line', 'claim': '미검증 주장',
+             'quote': '원문에서 찾지 못한 구절', 'quote_found': False},
+            {'field': 'one_line', 'claim': '검증된 주장',
+             'quote': '원문에 있는 구절', 'quote_found': True},
+        ]
+        summary.save(update_fields=['evidence'])
+
+        response = self._detail()
+
+        self.assertEqual(
+            [item['quote'] for item in response.context['hero_evidence']],
+            ['원문에 있는 구절'])
+
+    def test_evidence_section_stays_when_there_is_none(self):
+        """요약이 있는데 "원문 근거" 절이 사라지면 PLAN.md 7장의 절 순서가 깨진다."""
+        summary = self.high.summary
+        summary.evidence = []
+        summary.save(update_fields=['evidence'])
+
+        content = self._detail().content.decode()
+
+        self.assertIn('원문 근거', content)
+        self.assertLess(content.index('원문 근거'), content.index('원문 확인'))
+
+
 class QueryEfficiencyTest(WebViewTestBase):
     """N+1 방지 — 목록 쿼리 수가 공시 건수에 비례해 늘면 안 된다."""
 
@@ -2922,10 +3143,14 @@ class HumanEditedBadgeTest(ReviewWorkflowTestBase):
             'disclosures:disclosure_detail', args=[self.summary.disclosure.rcept_no])
         self.feed_url = reverse('disclosures:home')
 
+    #: 미검수 표시의 **전체 문구**. '미검수'만 보면 목록 화면의 상태 거르개 칩에도
+    #: 같은 낱말이 있어(_feed_picker.html) 표시가 걷혔는지 알 수 없다.
+    UNREVIEWED_BADGE = 'AI 생성 · 미검수'
+
     def test_unreviewed_summary_shows_badge_and_banner(self):
         for url in (self.detail_url, self.feed_url):
             with self.subTest(url=url):
-                self.assertContains(self.client.get(url), '미검수')
+                self.assertContains(self.client.get(url), self.UNREVIEWED_BADGE)
         self.assertContains(self.client.get(self.detail_url), '원문과 대조되지 않았습니다')
         self.assertContains(self.client.get(self.feed_url), '수치 확인 필요')
 
@@ -2935,7 +3160,7 @@ class HumanEditedBadgeTest(ReviewWorkflowTestBase):
         for url in (self.detail_url, self.feed_url):
             with self.subTest(url=url):
                 response = self.client.get(url)
-                self.assertNotContains(response, '미검수')
+                self.assertNotContains(response, self.UNREVIEWED_BADGE)
                 self.assertNotContains(response, '수치 확인 필요')
         self.assertNotContains(
             self.client.get(self.detail_url), '원문과 대조되지 않았습니다')
