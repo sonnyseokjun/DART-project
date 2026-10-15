@@ -1,520 +1,2178 @@
-/* 공시 쉽게 보기 — 화면 스타일 (9단계, PLAN.md 9.5)
+/*
+ * 공시 쉽게 보기 — 화면 전체 스타일.
  *
- * 외형의 단일 출처는 저장소 루트의 **DESIGN.md**다. 색·타이포·모양·간격·컴포넌트는
- * 그 문서의 토큰을 옮긴 것이고, 주석의 {...} 표기가 원 토큰 이름이다.
- * 외형을 바꿀 일이 생기면 이 파일이 아니라 DESIGN.md를 먼저 고친다.
+ * **외형의 단일 출처는 저장소 루트의 DESIGN.md다.** 이 파일은 그 문서의 토큰과
+ * "적용 규칙" 절을 코드로 옮긴 것이고, 주석의 {...} 가 원 토큰 이름이다.
+ * 색·크기를 바꿀 일이 생기면 여기가 아니라 DESIGN.md 를 먼저 고친다.
  *
- * 이 디자인 언어의 성격 — 조용한 기관형 금융 브랜드다.
- *   · 강조색은 파랑(#0052ff) 하나뿐이고 아껴 쓴다. 두 번째 브랜드 색을 만들지 않는다.
- *   · 제목은 굵게 쓰지 않는다(weight 400). 이 브랜드의 가장 특징적인 선택이고,
- *     굵게 하는 순간 거래 플랫폼의 조급함으로 목소리가 바뀐다.
- *   · 밝은 흰 면 → 연회색 띠 → 짙은 검정 띠가 번갈아 나오는 것이 페이지의 리듬이고,
- *     검정 히어로 위에 떠 있는 화면 카드가 가장 강한 서명이다.
- *   · 96px 섹션 간격, 그림자는 한 단계뿐.
+ * 이 언어의 성격을 한 줄로: **모서리가 없고, 그림자가 없고, 면 대신 선으로 나눈다.**
+ * 중요도는 색이 아니라 게이지의 칸 수이고(DESIGN.md 적용 규칙 2), 파랑은 세 곳에만
+ * 선다(규칙 4). 둘 다 지키지 않으면 신호가 섞인다.
  *
- * 빌드 단계·외부 CDN·CSS 프레임워크를 쓰지 않는다(PLAN.md 9.5). 재배포가 1GB 서버에서
- * docker compose up -d --build 로 돌기 때문이다.
- *
- * 한글에 맞춘 조정 넷 — DESIGN.md와 다른 곳이므로 근거를 남긴다.
- *   1. 웹폰트를 받지 않는다. 대체 서체로 지정된 Inter에는 한글 글리프가 없어서
- *      우리 화면(거의 전부 한글)에는 숫자·영문만 바뀐다. 글꼴 스택 앞에 두어
- *      설치된 사용자만 쓰게 하고, 파일은 추가하지 않는다.
- *   2. 자간은 -0.01em까지만 쓴다. DESIGN.md는 display에 -1.5%를 지정하지만
- *      한글은 자간을 좁히면 글자가 뭉쳐 읽기가 나빠진다.
- *   3. display 행간을 1.0이 아니라 1.15로 둔다. 한글은 글자틀이 꽉 차서 1.0이면
- *      두 줄짜리 제목의 위아래가 서로 붙는다.
- *   4. 제목에 word-break: keep-all 을 준다. 기본값은 어절 중간에서도 자른다.
+ * 빌드 체인이 없다 — 이 파일이 그대로 배포된다(PLAN.md 9.5). 전처리기 문법을 쓰지 말 것.
  */
 
+/* ─────────────────────────────────────────────────────────────
+   토큰
+   ───────────────────────────────────────────────────────────── */
 :root {
-  /* --- 색: 브랜드 ---------------------------------------------------------
-   * 파랑은 이 시스템의 유일한 강조색이다. 1차 CTA 알약·워드마크·본문 링크에만
-   * 쓰고, 한 띠에 한두 번을 넘기지 않는다. */
-  --primary: #0052ff;
-  --primary-active: #003ecc;
-
-  /* --- 색: 면 ------------------------------------------------------------ */
+  /* {colors.*} */
   --canvas: #ffffff;
-  --surface-soft: #f7f7f7;     /* 번갈아 나오는 연한 띠 */
-  --surface-strong: #eef0f3;   /* 2차 버튼·검색 알약·배지 면 */
-  --surface-dark: #0a0b0d;     /* 화면 끝까지 닿는 검정 히어로·CTA 띠 */
-  --surface-dark-up: #16181c;  /* 검정 위에 떠 있는 화면 카드 */
-
-  /* --- 색: 선 ------------------------------------------------------------ */
-  --hairline: #dee1e6;
-  --hairline-soft: #eef0f3;
-
-  /* --- 색: 글자 ---------------------------------------------------------- */
-  --ink: #0a0b0d;              /* 제목·강조 */
-  --body: #5b616e;             /* 본문 */
-  --muted: #666c76;            /* 보조 글자. DESIGN.md의 #7c828a는 흰 바탕에서도
-                                * 3.9:1이라 읽는 글자에 쓸 수 없다. 같은 회색 계열에서
-                                * 가장 밝으면서 **가장 어두운 면(#eef0f3 배지)에서도**
-                                * 4.5:1을 넘기는 값으로 잡았다(4.63:1). */
-  --muted-soft: #a8acb3;       /* 비활성 — 읽어야 하는 글자에 쓰지 않는다 */
-  --on-primary: #ffffff;
+  --surface-soft: #f7f7f7;
+  --surface-card: #fafafa;
+  --surface-strong: #ebebeb;
+  --surface-dark: #1a2129;
+  --surface-dark-elevated: #262e38;
+  --hairline: #e6e6e6;
+  --hairline-strong: #cccccc;
+  --hairline-on-dark: #3a434e;
+  --ink: #262626;
+  --body: #3c3c3c;
+  --body-strong: #1a1a1a;
+  --muted: #6b6b6b;
   --on-dark: #ffffff;
-  --on-dark-soft: #a8acb3;     /* 검정 위의 보조 글자 */
+  --on-dark-soft: #bbbbbb;
+  --primary: #1c69d4;
+  --primary-active: #0653b6;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #dc2626;
+  /* 카카오 브랜드 색. 로그인 버튼의 바탕은 카카오가 정한 값이라 팔레트에 섞지 않고
+     여기 따로 둔다 — 다른 요소에 쓰지 말 것. */
+  --kakao: #fee500;
+  --kakao-ink: #191600;
 
-  /* --- 색: 의미 ----------------------------------------------------------
-   * 이 시스템은 의미 색을 둘만 둔다(상승 초록·하락 빨강). 그리고 글자색으로만
-   * 쓰고 면을 칠하지 않는다. 우리 서비스는 중요도 3단계와 검수 상태까지 다섯을
-   * 구분해야 하므로(PLAN.md 9.5), 면은 모두 같은 연회색으로 두고 글자색만
-   * 가른다 — 빨강 / 먹 / 회색 / 초록 / 파랑. 이 규칙 덕에 색을 더 만들지 않고도
-   * 다섯이 구분된다.
-   * 연회색 면 위에서 4.5:1을 넘기려고 원값을 한 단 어둡게 잡았다. */
-  --down: #cf202f;             /* 하락 빨강 원값 — 선·강조용 */
-  --up: #05b169;               /* 상승 초록 원값 */
+  --font: "Pretendard", system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  --high-ink: #c01d2b;   /* 중요도 높음 */
-  --mid-ink:  #0a0b0d;   /* 중요도 보통 — 먹. 세 번째 색을 만들지 않는다 */
-  --low-ink:  #666c76;   /* 중요도 낮음 */
-  --ok-ink:   #04734a;   /* 사람이 검토·수정함 */
-  --wait-ink: #0047d6;   /* 요약 대기 — 오류가 아니라 진행이다 */
-
-  /* --- 간격: 4px 기준 ---------------------------------------------------- */
-  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
-  --s-5: 20px; --s-6: 24px; --s-7: 32px; --s-8: 48px;
-  --s-section: 56px;           /* 1024px 위에서 96px — 편집물다운 호흡 */
-
-  /* --- 모양 -------------------------------------------------------------- */
-  --r-xs: 4px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-xl: 24px;
-  --r-pill: 100px;             /* 모든 CTA·검색창·배지 */
-  --r-full: 9999px;            /* 동그란 번호판 */
-
-  /* --- 깊이 -------------------------------------------------------------- */
-  --shadow: 0 4px 12px rgba(0, 0, 0, .04);   /* 그림자는 이 한 단계뿐이다 */
-
-  /* --- 글꼴 -------------------------------------------------------------- */
-  --font: Inter, "Apple SD Gothic Neo", Pretendard, "Noto Sans KR",
-          "Malgun Gothic", -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
-
-  /* --- 타이포 — 모바일 기준, 아래에서 단계적으로 커진다.
-   * 직전 단계보다 1~1.5px씩 줄였다. 12px(배지)만 그대로 두는데, 한글은 11px부터
-   * 획이 뭉개져 읽기가 눈에 띄게 나빠진다. */
-  --t-display: 42px;
-  --t-h1: 27px;
-  --t-h2: 21px;
-  --t-h3: 17px;
-  --t-lead: 17px;
-  --t-body: 15px;
-  --t-caption: 13px;
-  --t-micro: 12px;
-  --t-btn: 15px;
-  --t-nav: 14px;              /* {nav-link} 원값. 머리말 글자는 이 단계를 쓴다 */
-
-  --lead-display: 1.15;        /* DESIGN.md는 1.0이지만 한글은 두 줄이 붙는다 */
-  --lead-snug: 1.33;
-  --lead-body: 1.5;
-  --track-display: -0.01em;    /* 한글 상한 */
-
-  /* --- 폭 --------------------------------------------------------------- */
-  --wrap-app: 960px;
-  --wrap-wide: 1200px;
-  --measure: 36rem;            /* 본문 한 줄 — 한글 약 40자 */
-  --gutter: 20px;
+  /* {spacing.*} */
+  --s-xxs: 4px;
+  --s-xs: 8px;
+  --s-sm: 12px;
+  --s-md: 16px;
+  --s-lg: 24px;
+  --s-xl: 32px;
+  --s-xxl: 48px;
+  --section: 80px;
+  --gutter: 48px;
+  --header-h: 64px;
 }
 
-@media (min-width: 48em) {
-  :root {
-    --t-display: 54px; --t-h1: 31px; --t-h2: 23px; --t-h3: 21px;
-    --gutter: 32px; --s-section: 72px;
+@font-face {
+  font-family: "Pretendard";
+  /* 가변 폰트 하나로 300·400·700을 모두 낸다. 이 언어는 300과 700의 간격이
+     성격이므로(DESIGN.md Typography) 중간 가중치를 추가로 받지 않는다. */
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("../fonts/PretendardVariable.woff2") format("woff2-variations");
+}
+
+/* ─────────────────────────────────────────────────────────────
+   기본
+   ───────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
   }
 }
-@media (min-width: 64em) {
-  :root { --t-display: 80px; --s-section: 96px; }
-}
-
-/* --- 바탕 ---------------------------------------------------------------- */
-
-*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
   background: var(--canvas);
   color: var(--body);
   font-family: var(--font);
-  font-size: var(--t-body);
-  line-height: var(--lead-body);
-  -webkit-text-size-adjust: 100%;
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.55;
+  /* 한글은 어절 중간에서 잘린다(DESIGN.md 적용 규칙 6). */
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
-/* 제목은 굵게 쓰지 않는다 — 이 브랜드의 가장 특징적인 선택이다.
-   부품 제목(카드 제목 등)만 600으로 올린다. */
-h1, h2, h3 { margin: 0; color: var(--ink); word-break: keep-all; }
-h1 { font-size: var(--t-h1); font-weight: 400; line-height: var(--lead-display); letter-spacing: var(--track-display); }
-h2 { font-size: var(--t-h2); font-weight: 600; line-height: var(--lead-snug); }
-h3 { font-size: var(--t-h3); font-weight: 600; line-height: var(--lead-snug); }
-p { margin: 0; }
-ul, ol { margin: 0; padding-left: 1.25em; }
-img { max-width: 100%; height: auto; }
-strong { color: var(--ink); font-weight: 600; }
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0;
+}
 
-a { color: var(--primary); text-decoration: none; }
-a:hover { color: var(--primary-active); text-decoration: underline; }
+p {
+  margin: 0;
+}
 
-:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--r-xs); }
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+}
 
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    transition-duration: .01ms !important;
-    animation-duration: .01ms !important;
+a {
+  color: inherit;
+}
+
+img {
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.on-dark :focus-visible {
+  outline-color: var(--on-dark);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.wrap {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}
+
+/* 글만 있는 화면(개인정보처리방침·탈퇴·allauth)은 1440px 안에서 글줄이 너무 길어진다.
+   DESIGN.md Layout 의 읽기 열 폭(720px)에 좌우 여백을 더한 값으로 좁힌다. */
+.page-read .wrap {
+  max-width: 816px;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 접수번호처럼 **값이 아니라 식별자**인 것에만 모노를 쓴다(DESIGN.md 적용 규칙 6). */
+.code {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   타이포 역할
+   ───────────────────────────────────────────────────────────── */
+.display-lg {
+  font-size: 48px;
+  line-height: 1.1;
+}
+
+.display-md {
+  font-size: 32px;
+  line-height: 1.15;
+}
+
+.title-lg {
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.title-md {
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+.lead {
+  font-size: 18px;
+  font-weight: 300;
+  line-height: 1.55;
+  color: var(--body-strong);
+}
+
+.body-sm {
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.caption {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   머리말
+   ───────────────────────────────────────────────────────────── */
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--canvas);
+}
+
+/* 머리말은 **어느 화면에서나 흰색**이다(DESIGN.md 적용 규칙 3). 검정 변형을 만들면
+   소개 화면에서 검정 머리말과 검정 히어로가 붙어 경계가 사라진다. */
+.site-header > .wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--s-xl);
+  min-height: var(--header-h);
+}
+
+.brand {
+  font-size: 18px;
+  font-weight: 300;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* 300 과 700 의 간격이 이 언어의 성격이다. 낱말 하나를 **색으로** 강조하는 처리와는
+   다르다 — 색은 그대로 두고 굵기만 가른다. */
+.brand strong {
+  font-weight: 700;
+}
+
+.site-nav {
+  display: flex;
+  gap: var(--s-lg);
+  margin-right: auto;
+  list-style: none;
+}
+
+.site-nav a {
+  display: block;
+  padding: 21px 0;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0.3px;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* 파랑이 서는 둘째 자리 — 글자와 2px 밑줄이 같은 말을 함께 한다(DESIGN.md 적용 규칙 4). */
+.site-nav a[aria-current="page"] {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-md);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.header-actions form {
+  margin: 0;
+}
+
+.header-quiet {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.header-quiet:hover,
+.header-quiet:active {
+  color: var(--primary-active);
+}
+
+/* 이 언어에서 유일하게 모서리가 둥근 것 — 44px 원형 햄버거다(DESIGN.md Shapes). */
+.nav-toggle {
+  display: none;
+  width: 44px;
+  height: 44px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 50%;
+  background: var(--canvas);
+  cursor: pointer;
+}
+
+.nav-toggle span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  margin: 4px auto;
+  background: var(--ink);
+}
+
+.nav-sheet {
+  display: none;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   띠
+   ───────────────────────────────────────────────────────────── */
+.band {
+  padding: var(--section) 0;
+}
+
+/* 머리말 바로 아래에 붙는 띠는 위 여백을 줄인다 — 64px 머리말이 이미 숨을 만든다. */
+.band-top {
+  padding-top: var(--s-xxl);
+}
+
+.band-dark {
+  background: var(--surface-dark);
+  color: var(--on-dark-soft);
+}
+
+.band-dark h1,
+.band-dark h2,
+.band-dark h3 {
+  color: var(--on-dark);
+}
+
+.band-rule {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.band-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 560px);
+  gap: var(--s-lg) var(--s-xxl);
+  align-items: end;
+  margin-bottom: var(--s-xxl);
+}
+
+.band-head p {
+  color: var(--body);
+}
+
+.band-dark .band-head p {
+  color: var(--on-dark-soft);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   버튼
+   ───────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-xs);
+  min-height: 48px;
+  padding: 14px var(--s-xl);
+  border: 1px solid transparent;
+  border-radius: 0;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* 파랑이 서는 첫째 자리 — 채움 1차 버튼(DESIGN.md 적용 규칙 4). */
+.btn-primary {
+  background: var(--primary);
+  color: var(--on-dark);
+}
+
+/* hover 를 새로 만들지 않는다. 문서가 규정한 눌림 값을 그대로 쓴다(적용 규칙 5). */
+.btn-primary:hover,
+.btn-primary:active {
+  background: var(--primary-active);
+}
+
+.btn-secondary,
+.btn-ghost {
+  background: var(--canvas);
+  border-color: var(--hairline-strong);
+  color: var(--ink);
+}
+
+.btn-secondary:hover,
+.btn-secondary:active,
+.btn-ghost:hover,
+.btn-ghost:active {
+  background: var(--surface-soft);
+}
+
+.btn-on-dark {
+  background: transparent;
+  border-color: var(--on-dark);
+  color: var(--on-dark);
+}
+
+.btn-on-dark:hover,
+.btn-on-dark:active {
+  background: var(--surface-dark-elevated);
+}
+
+.btn-danger {
+  background: var(--canvas);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.btn-danger:hover,
+.btn-danger:active {
+  background: var(--error);
+  color: var(--on-dark);
+}
+
+.btn-sm {
+  min-height: 36px;
+  padding: 10px var(--s-md);
+  font-size: 13px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-sm);
+}
+
+/* 카카오 버튼. 바탕색이 카카오 규정이므로 이 언어의 버튼 중 유일하게 색을 빌려 온다.
+   모서리만은 0으로 맞춰 다른 버튼과 같은 기하에 둔다. */
+.kakao-login {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 14px var(--s-xl);
+  border: 1px solid var(--kakao);
+  border-radius: 0;
+  background: var(--kakao);
+  color: var(--kakao-ink);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+}
+
+.kakao-login:hover,
+.kakao-login:active {
+  background: #f2da00;
+}
+
+.kakao-login-form {
+  margin: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   문자 링크 — 13px/700, 자간을 넓히고 › 로 끝난다
+   ───────────────────────────────────────────────────────────── */
+.link-label,
+.link-detail,
+.link-dart,
+.link-button {
+  display: inline-block;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 1.5px;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* › 는 CSS 가 붙인다. 템플릿의 글자는 사람이 읽는 말 그대로 두고, 화살표는 이 역할의
+   생김새에 속한다 — 링크 문구를 고칠 때 화살표를 빼먹는 일이 없어진다.
+   글자를 그대로 적는다. 16진수 이스케이프로 적으면 바로 뒤의 문자가 같은
+   escape 에 딸려 읽힐 수 있어, 실제로 화살표 뒤에 'A' 한 글자가 새어 나왔다. */
+.link-label::after,
+.link-detail::after,
+.link-dart::after {
+  content: " ›";
+}
+
+.link-label:hover,
+.link-label:active,
+.link-detail:hover,
+.link-detail:active,
+.link-dart:hover,
+.link-dart:active,
+.link-button:hover,
+.link-button:active {
+  color: var(--primary-active);
+}
+
+.on-dark .link-label,
+.on-dark .link-detail,
+.on-dark .link-dart {
+  color: var(--on-dark);
+}
+
+/* 문장 안에 섞인 링크만 밑줄로 가른다(DESIGN.md 적용 규칙 4). */
+.policy a,
+.hero-note a,
+.filing-note a,
+.legal-band a,
+.site-footer p a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   중요도 게이지 — 색을 늘리지 않고 칸 수로 3단계를 가른다
+   ───────────────────────────────────────────────────────────── */
+.grade {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-xs);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.grade .bar {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.grade .bar i {
+  width: 12px;
+  height: 4px;
+  background: var(--hairline-strong);
+}
+
+.grade[data-level="high"] .bar i,
+.grade[data-level="medium"] .bar i:nth-child(-n + 2),
+.grade[data-level="low"] .bar i:first-child {
+  background: var(--ink);
+}
+
+.on-dark .grade {
+  color: var(--on-dark);
+}
+
+.on-dark .grade .bar i {
+  background: var(--hairline-on-dark);
+}
+
+.on-dark .grade[data-level="high"] .bar i,
+.on-dark .grade[data-level="medium"] .bar i:nth-child(-n + 2),
+.on-dark .grade[data-level="low"] .bar i:first-child {
+  background: var(--on-dark);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   검수 상태 — 의미 색은 8px 표시에만 쓰고 글자는 잉크로 둔다
+   ───────────────────────────────────────────────────────────── */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-xs);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.status::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+}
+
+.status-done::before {
+  background: var(--success);
+}
+
+.status-warn::before {
+  background: var(--warning);
+}
+
+/* 미검수와 요약 대기만 안이 비어 있다 — 둘 다 *없음*의 신호다(DESIGN.md 적용 규칙 2). */
+.status-ai {
+  color: var(--muted);
+}
+
+.status-ai::before {
+  border: 1px solid var(--muted);
+}
+
+.status-wait {
+  color: var(--muted);
+}
+
+.status-wait::before {
+  border: 1px dashed var(--muted);
+}
+
+.on-dark .status {
+  color: var(--on-dark);
+}
+
+.on-dark .status-ai,
+.on-dark .status-wait {
+  color: var(--on-dark-soft);
+}
+
+.on-dark .status-ai::before,
+.on-dark .status-wait::before {
+  border-color: var(--on-dark-soft);
+}
+
+.meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-xs) var(--s-lg);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   제원 칸 — 이 서비스에서는 **원문에서 확인된 구절**이 들어간다
+   (DESIGN.md 적용 규칙 1: 이름이 위, 값이 아래로 뒤집혀 있다)
+   ───────────────────────────────────────────────────────────── */
+.specs {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+}
+
+.spec {
+  padding: var(--s-md) var(--s-lg) var(--s-md) 0;
+  margin-right: var(--s-lg);
+  border-right: 1px solid var(--hairline);
+}
+
+.spec:last-child {
+  margin-right: 0;
+  border-right: 0;
+}
+
+.spec-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+}
+
+.spec-value {
+  display: block;
+  margin-top: var(--s-xxs);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.on-dark .spec {
+  border-color: var(--hairline-on-dark);
+}
+
+.on-dark .spec-label {
+  color: var(--on-dark-soft);
+}
+
+.on-dark .spec-value {
+  color: var(--on-dark);
+}
+
+/* 한 단으로 쌓는 변형. 칸 사이를 세로선이 아니라 가로선으로 가른다.
+   원문 구절과 금액은 길어서 어느 폭에서도 가로로 나란히 두면 읽을 수 없다 —
+   그래서 이 변형만은 넓은 화면에서도 쌓은 채로 둔다. */
+.specs-stack {
+  --cols: 1;
+}
+
+.specs-stack .spec {
+  padding-right: 0;
+  margin-right: 0;
+  border-right: 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.specs-stack .spec:last-child {
+  border-bottom: 0;
+}
+
+.on-dark .specs-stack .spec {
+  border-bottom-color: var(--hairline-on-dark);
+}
+
+/* 검정 띠 안의 패널 — 바탕이 있는 상자. */
+.spec-panel {
+  background: var(--surface-dark-elevated);
+  padding: var(--s-lg) var(--s-xl);
+}
+
+/* 공시 상세 히어로의 원문 인용 패널.
+   제원 칸(.spec-*)을 쓰지 않는 이유: DART 원문의 인용은 짧은 수치가 아니라
+   **표의 한 행 전체**다(예: "구분 | 당해실적 | 전기실적 | … | 54,879 | 52,280 | 5.0").
+   18px/700 로 크게 세우면 읽히지 않는 글자 덩어리가 화면에서 가장 큰 것이 된다.
+   여기서 인용은 "이 요약이 원문에 묶여 있다"를 보이는 **근거 표시**이지 머리 수치가
+   아니므로, 작고 조용한 글자로 두고 두 줄에서 자른다. 전문은 아래 "원문 근거" 표에 있다. */
+.quote-item + .quote-item {
+  margin-top: var(--s-md);
+  padding-top: var(--s-md);
+  border-top: 1px solid var(--hairline-on-dark);
+}
+
+.quote-claim {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 1.5px;
+  color: var(--on-dark-soft);
+}
+
+.quote-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: var(--s-xs) 0 0;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--on-dark);
+  font-variant-numeric: tabular-nums;
+}
+
+.spec-panel .src {
+  margin-top: var(--s-sm);
+  padding-top: var(--s-sm);
+  border-top: 1px solid var(--hairline-on-dark);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--on-dark-soft);
+}
+
+.spec-panel .src a {
+  color: var(--on-dark);
+}
+
+/* 요약을 기다리는 공시의 패널. 내용이 아직 오지 않은 자리는 점선으로 알린다
+   (DESIGN.md Elevation & Depth). */
+.spec-panel-wait {
+  display: grid;
+  gap: var(--s-md);
+  justify-items: start;
+  background: transparent;
+  border: 1px dashed var(--hairline-on-dark);
+}
+
+.spec-panel-wait p {
+  color: var(--on-dark-soft);
+}
+
+.spec-panel-wait .filing-note {
+  color: var(--on-dark-soft);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   알림 띠 · 안내
+   ───────────────────────────────────────────────────────────── */
+.message-band {
+  background: var(--surface-strong);
+}
+
+/* 소개 화면에서는 이 띠가 흰 머리말과 검정 히어로 사이에 끼어 흰 줄을 만든다.
+   검정으로 칠해 히어로가 머리말 아래에서 바로 시작하게 한다(DESIGN.md 적용 규칙 3). */
+.page-marketing .message-band {
+  background: var(--surface-dark);
+}
+
+.messages {
+  list-style: none;
+  padding: var(--s-sm) 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.page-marketing .messages {
+  color: var(--on-dark-soft);
+}
+
+.live-note {
+  padding: var(--s-sm) 0;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: var(--s-md);
+  font-size: 14px;
+  color: var(--body-strong);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   소개 화면
+   ───────────────────────────────────────────────────────────── */
+.hero > .wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 560px);
+  gap: var(--s-xxl) 64px;
+  align-items: center;
+}
+
+/* 서비스 마크. 제목 바로 위에 서므로 제목의 왼쪽 선에 맞춰 둔다.
+   검정 띠의 기본 글자색은 --on-dark-soft(흐린 회색)라 마크만 흰색으로 올린다 —
+   마크는 읽는 글이 아니라 표식이어서 본문과 같은 밝기로 두면 묻힌다. */
+.hero-logo {
+  display: block;
+  width: 64px;
+  height: auto;
+  margin-bottom: var(--s-lg);
+  color: var(--on-dark);
+}
+
+.hero-title {
+  font-size: 64px;
+  line-height: 1.05;
+  margin-bottom: var(--s-lg);
+}
+
+.hero-lead {
+  font-size: 18px;
+  font-weight: 300;
+  line-height: 1.55;
+  max-width: 34em;
+  margin-bottom: var(--s-xl);
+  color: var(--on-dark-soft);
+}
+
+.hero-note {
+  margin-top: var(--s-lg);
+  font-size: 14px;
+  color: var(--on-dark-soft);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-sm);
+}
+
+/* 사진 자리에 놓는 것 — 이 서비스의 실물인 공시 요약 한 장(DESIGN.md 적용 규칙 1). */
+.showcase {
+  background: var(--surface-dark-elevated);
+  padding: var(--s-xl);
+}
+
+.showcase-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-md);
+  margin-bottom: var(--s-lg);
+}
+
+.showcase-tag {
+  padding: 2px var(--s-xs);
+  background: var(--on-dark-soft);
+  color: var(--surface-dark);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+}
+
+.showcase-who {
+  margin-bottom: var(--s-xxs);
+  font-size: 14px;
+  color: var(--on-dark-soft);
+}
+
+.showcase-form {
+  font-size: 20px;
+  line-height: 1.3;
+  margin-bottom: var(--s-sm);
+  color: var(--on-dark);
+}
+
+.showcase-line {
+  margin-bottom: var(--s-lg);
+  color: var(--on-dark-soft);
+}
+
+.showcase .specs {
+  border-top: 1px solid var(--hairline-on-dark);
+  margin-bottom: var(--s-lg);
+}
+
+/* 서식명 → 쉬운 말 카드 */
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s-lg);
+  list-style: none;
+}
+
+.model-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.model-plate {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--s-sm);
+  aspect-ratio: 16 / 10;
+  padding: var(--s-lg);
+  background: var(--surface-card);
+}
+
+.model-plate .raw {
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1.35;
+  color: var(--ink);
+}
+
+.model-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--s-xs);
+  padding-top: var(--s-lg);
+}
+
+/* 쓰는 순서 — 실제로 순서가 있는 내용이라 번호를 붙인다. */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--hairline);
+  list-style: none;
+}
+
+.step {
+  padding: var(--s-lg) var(--s-lg) var(--s-lg) 0;
+  margin-right: var(--s-lg);
+  border-right: 1px solid var(--hairline);
+}
+
+.step:last-child {
+  margin-right: 0;
+  border-right: 0;
+}
+
+.step-no {
+  display: block;
+  margin-bottom: var(--s-sm);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.step h3 {
+  margin-bottom: var(--s-xs);
+}
+
+/* 표시 읽는 법 */
+.signs {
+  margin-top: 64px;
+}
+
+.signs h3 {
+  margin-bottom: var(--s-md);
+}
+
+.sign-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sign-table th,
+.sign-table td {
+  padding: var(--s-md) var(--s-lg) var(--s-md) 0;
+  border-top: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+
+.sign-table th {
+  width: 260px;
+  font-weight: 400;
+}
+
+.sign-table td {
+  font-size: 15px;
+}
+
+.sign-stack {
+  display: grid;
+  gap: var(--s-xs);
+  justify-items: start;
+}
+
+.cta {
+  text-align: center;
+}
+
+.cta p {
+  max-width: 34em;
+  margin: var(--s-md) auto var(--s-xl);
+}
+
+.cta .hero-actions,
+.cta .btn-group {
+  justify-content: center;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   보조 내비게이션 띠 (회원 홈 · 기업 화면)
+   ───────────────────────────────────────────────────────────── */
+.subnav {
+  background: var(--surface-soft);
+}
+
+.subnav > .wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-lg) var(--s-xxl);
+  padding-top: var(--s-lg);
+}
+
+.subnav-title {
+  width: 100%;
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.subnav-title .num {
+  font-weight: 300;
+  color: var(--muted);
+}
+
+.subnav-side {
+  display: flex;
+  align-items: center;
+  gap: var(--s-lg);
+  margin-left: auto;
+  padding: var(--s-sm) 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* 기업별 탭. 폼이 아니라 링크다 — 고른 값이 곧 주소다(_feed_picker.html 머리 주석). */
+.tabs {
+  display: flex;
+  gap: var(--s-lg);
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: block;
+  padding: var(--s-sm) 0;
+  border-bottom: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.tab[aria-current="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+.tab .n {
+  margin-left: 6px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   필터 — 칩. 켜진 칩은 파랑이 아니라 먹 채움이다(DESIGN.md 적용 규칙 4)
+   ───────────────────────────────────────────────────────────── */
+/* 선을 두지 않는다 — 바로 아래 .feed-head 가 둘을 함께 받치는 선 하나를 맡는다.
+   둘 다 선을 가지면 가로줄이 두 겹으로 겹친다(_disclosure_feed.html 머리 주석). */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-md) var(--s-xl);
+  padding-bottom: var(--s-md);
+}
+
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-xs);
+}
+
+.picker-label {
+  margin-right: var(--s-xs);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-xs);
+  list-style: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: 0.5px;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--surface-soft);
+}
+
+.chip-on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-dark);
+}
+
+.chip-on:hover {
+  background: var(--body-strong);
+}
+
+/* 켜고 끄는 스위치. 켜진 상태는 먹 테두리로 알리고, 켜진 칩(먹 채움)과는 구별한다 —
+   하나는 "고른 조건", 하나는 "넓힌 범위"로 뜻이 다르다. */
+.chip-toggle-on {
+  border-color: var(--ink);
+  border-width: 2px;
+  font-weight: 700;
+}
+
+/* 건수와 갱신 알림이 한 줄에 서고, 이 줄이 필터와 목록 사이의 선을 맡는다. */
+.feed-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-xs) var(--s-lg);
+  padding-bottom: var(--s-lg);
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: var(--s-xl);
+}
+
+.result-count {
+  font-size: 14px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.feed-note {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--ink);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   공시 카드
+   ───────────────────────────────────────────────────────────── */
+.filings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-xl) var(--s-lg);
+}
+
+.filing {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 윗판. 메타가 위에 붙고 공시명이 margin-top:auto 로 아래로 밀린다(DESIGN.md Shapes). */
+.filing-plate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-sm);
+  min-height: 172px;
+  padding: var(--s-lg);
+  background: var(--surface-card);
+}
+
+/* 요약이 아직 없는 공시. 면을 비우고 점선으로 두어 "아직 오지 않음"을 알린다. */
+.filing-pending .filing-plate {
+  background: var(--canvas);
+  border: 1px dashed var(--hairline-strong);
+}
+
+.filing-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-sm);
+}
+
+/* 윗판 왼쪽 위 — 보통은 기업명이고, 기업 화면에서는 그 자리에 공시 유형이 들어간다
+   (기업명이 자명한 화면에서 같은 이름을 스무 번 적지 않는다). */
+.filing-company,
+.filing-kind {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.filing-kind {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+a.filing-company:hover,
+a.filing-company:active {
+  color: var(--primary-active);
+}
+
+/* 날짜는 오른쪽 끝에 선다. 카드가 격자로 놓이면 날짜가 한 열로 서서 시간순을 훑기 쉽다. */
+.filing-date {
+  flex: none;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.filing-signals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-xs) var(--s-md);
+}
+
+.filing-title {
+  margin-top: auto;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.filing-title a {
+  text-decoration: none;
+}
+
+.filing-title a:hover,
+.filing-title a:active {
+  color: var(--primary-active);
+}
+
+.filing-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--s-sm);
+  padding-top: var(--s-md);
+}
+
+.filing-line {
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.filing-note {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.filing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-xs) var(--s-lg);
+  margin-top: auto;
+  padding-top: var(--s-xs);
+}
+
+.summary-request {
+  margin: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   머리 공시 띠 — 지금 가장 봐야 할 공시 하나 (회원 홈)
+   ───────────────────────────────────────────────────────────── */
+/* 한 단이다. 원 디자인 언어의 이 자리는 왼쪽 글 + 오른쪽 제원 패널의 두 단인데,
+   머리 공시에는 오른쪽에 둘 것이 없다 — 요약의 수치는 구조화돼 있지 않고(DESIGN.md
+   적용 규칙 1), 원문 인용은 공시 상세의 히어로가 이미 맡는다. 빈 단을 남기면 검정 띠의
+   오른쪽 절반이 통째로 비어 고장으로 읽힌다. */
+.lead-why {
+  margin-bottom: var(--s-md);
+  font-size: 14px;
+  color: var(--on-dark-soft);
+}
+
+.lead-item h2 {
+  font-size: 48px;
+  line-height: 1.1;
+  margin-bottom: var(--s-md);
+  max-width: 18em;
+}
+
+.lead-item .meta-row {
+  margin-bottom: var(--s-lg);
+}
+
+.lead-item .lead {
+  max-width: 36em;
+  margin-bottom: var(--s-xl);
+  color: var(--on-dark-soft);
+}
+
+.lead-company {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--on-dark);
+  text-decoration: none;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   기업 찾기 띠 · 검색
+   ───────────────────────────────────────────────────────────── */
+.find > .wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 560px);
+  gap: var(--s-xl) 64px;
+  align-items: end;
+}
+
+.find h2 {
+  margin-bottom: var(--s-sm);
+}
+
+.search-form {
+  display: flex;
+}
+
+.search-form label {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 48px;
+  padding: 14px var(--s-md);
+  border: 1px solid var(--hairline);
+  border-radius: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 300;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* 초점을 바깥 테두리가 아니라 안쪽 선으로 그린다 — 칸의 기하가 흔들리지 않는다. */
+.search-input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.search-input::placeholder {
+  color: var(--muted);
+}
+
+/* 검색 화면의 머리 — 검색창과 안내가 한 덩어리로 서고 아래 결과와 선으로 갈린다. */
+.search-head {
+  display: grid;
+  gap: var(--s-sm);
+  max-width: 720px;
+  padding-bottom: var(--s-xl);
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: var(--s-xl);
+}
+
+.search-results {
+  max-width: 720px;
+  list-style: none;
+  border-top: 1px solid var(--hairline);
+}
+
+.search-results li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-sm) var(--s-lg);
+  padding: var(--s-md) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.search-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.search-name:hover,
+.search-name:active {
+  color: var(--primary-active);
+}
+
+.search-results form {
+  margin: 0 0 0 auto;
+}
+
+.search-results .landing-note {
+  margin: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   빈 화면 — 분위기가 아니라 방향을 준다
+   ───────────────────────────────────────────────────────────── */
+.empty {
+  padding: var(--s-xxl) 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.empty h2 {
+  margin-bottom: var(--s-sm);
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.empty p {
+  max-width: 44em;
+  margin-bottom: var(--s-lg);
+}
+
+.landing-note {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   페이지 넘김
+   ───────────────────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--s-lg);
+  margin-top: var(--s-xl);
+  padding-top: var(--s-lg);
+  border-top: 1px solid var(--hairline);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
+
+.pagination a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.pagination a:hover,
+.pagination a:active {
+  color: var(--primary-active);
+}
+
+.pagination .disabled {
+  color: var(--hairline-strong);
+}
+
+.pagination .page-status {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   공시 상세
+   ───────────────────────────────────────────────────────────── */
+.breadcrumb {
+  padding: var(--s-sm) 0;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+
+.breadcrumb a {
+  text-decoration: none;
+}
+
+.breadcrumb a:hover,
+.breadcrumb a:active {
+  color: var(--primary-active);
+}
+
+.breadcrumb .sep {
+  margin: 0 6px;
+}
+
+.detail-who {
+  margin-bottom: var(--s-md);
+  font-size: 14px;
+  color: var(--on-dark-soft);
+}
+
+.detail-who a {
+  color: var(--on-dark);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.detail-title {
+  font-size: 48px;
+  line-height: 1.1;
+  margin-bottom: var(--s-lg);
+}
+
+.detail-hero .meta-row {
+  margin-bottom: var(--s-lg);
+}
+
+.detail-oneline {
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1.5;
+  max-width: 32em;
+  margin-bottom: var(--s-xl);
+  color: var(--on-dark-soft);
+}
+
+/* 절 탭 — 머리말 아래에 붙어 따라온다. */
+.section-tabs {
+  position: sticky;
+  top: var(--header-h);
+  z-index: 10;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.section-tabs ul {
+  display: flex;
+  gap: var(--s-xl);
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: none;
+}
+
+.section-tabs ul::-webkit-scrollbar {
+  display: none;
+}
+
+.section-tabs a {
+  display: block;
+  padding: var(--s-md) 0 14px;
+  border-bottom: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.section-tabs a[aria-current="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+
+/* 본문 2단 — 읽는 열 + 따라오는 쪽칸 */
+.reading > .wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 720px) minmax(0, 360px);
+  justify-content: space-between;
+  gap: 64px;
+}
+
+/* 이 화면은 카드가 아니라 문서다. 바깥 테두리를 두르지 않고 절 사이를 선으로만 나눈다. */
+.block {
+  padding-bottom: var(--s-xxl);
+  scroll-margin-top: 130px;
+}
+
+.block + .block {
+  padding-top: var(--s-xxl);
+  border-top: 1px solid var(--hairline);
+}
+
+.block h2 {
+  margin-bottom: var(--s-md);
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.block p + p {
+  margin-top: var(--s-md);
+}
+
+.block-oneline p {
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1.5;
+  color: var(--body-strong);
+}
+
+.section-sub {
+  margin-bottom: var(--s-lg);
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* 원문 근거 — 요약의 주장과 원문 구절을 나란히 놓고 대조 결과를 붙인다. */
+.evidence {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+.evidence th,
+.evidence td {
+  padding: var(--s-md) var(--s-md) var(--s-md) 0;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+
+.evidence thead th {
+  padding-top: 0;
+  border-bottom-color: var(--hairline-strong);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+}
+
+.evidence tbody th {
+  width: 34%;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.evidence .quote {
+  color: var(--body-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.evidence .check {
+  width: 120px;
+  padding-right: 0;
+}
+
+.source-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-md) var(--s-lg);
+  margin-top: var(--s-lg);
+  padding: var(--s-lg);
+  background: var(--surface-card);
+}
+
+.source-box p {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.source-box .code {
+  display: block;
+  margin-top: var(--s-xxs);
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* 쪽칸 — 이 요약에 대해 */
+.about {
+  position: sticky;
+  top: 140px;
+  align-self: start;
+}
+
+.about h2 {
+  margin-bottom: var(--s-md);
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.about dl {
+  margin: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.about dl > div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: var(--s-md);
+  padding: var(--s-sm) 0;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 14px;
+}
+
+.about dt {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.about dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.about .note {
+  margin: var(--s-lg) 0;
+  font-size: 14px;
+}
+
+/* 정확성 경고 배너. 요약보다 먼저 읽혀야 하므로 본문 위에 두고, 이 언어에서 유일하게
+   왼쪽에 굵은 선을 둔다 — 색 면으로 칠하면 8px 표시의 뜻과 부딪힌다. */
+.accuracy-alert {
+  padding: var(--s-lg);
+  border-left: 4px solid var(--warning);
+  background: var(--surface-soft);
+  margin-bottom: var(--s-xxl);
+}
+
+.accuracy-alert h2 {
+  margin-bottom: var(--s-sm);
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.unsupported-numbers {
+  margin-top: var(--s-sm);
+  padding-left: var(--s-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   기업 화면 · 글 화면
+   ───────────────────────────────────────────────────────────── */
+.company-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-lg);
+  margin: var(--s-sm) 0 0;
+}
+
+.company-meta > div {
+  display: flex;
+  gap: var(--s-xs);
+  font-size: 14px;
+}
+
+.company-meta dt {
+  color: var(--muted);
+}
+
+.company-meta dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.policy,
+.intro {
+  max-width: 44em;
+}
+
+.policy h1,
+.intro h1 {
+  margin-bottom: var(--s-lg);
+  font-size: 32px;
+  line-height: 1.15;
+}
+
+.policy h2 {
+  margin: var(--s-xxl) 0 var(--s-sm);
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.policy p + p,
+.intro p + p {
+  margin-top: var(--s-md);
+}
+
+.policy ul,
+.intro ul {
+  margin: var(--s-sm) 0;
+  padding-left: var(--s-lg);
+  display: grid;
+  gap: var(--s-xs);
+}
+
+.policy table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.policy th,
+.policy td {
+  padding: var(--s-sm) var(--s-md) var(--s-sm) 0;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+
+.policy thead th {
+  border-bottom-color: var(--hairline-strong);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--muted);
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.intro form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-md);
+  margin-top: var(--s-xl);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   바닥글
+   ───────────────────────────────────────────────────────────── */
+.site-footer {
+  background: var(--surface-soft);
+  padding: 64px 0 var(--s-xxl);
+  color: var(--body);
+}
+
+.footer-cols {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s-xl);
+}
+
+.footer-brand,
+.footer-head {
+  margin-bottom: var(--s-sm);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.site-footer p,
+.site-footer li {
+  font-size: 14px;
+}
+
+.footer-cols ul {
+  display: grid;
+  gap: var(--s-xs);
+  list-style: none;
+}
+
+.footer-cols ul a {
+  text-decoration: none;
+}
+
+.footer-cols ul a:hover,
+.footer-cols ul a:active {
+  color: var(--primary-active);
+}
+
+/* 면책 고지. 전 페이지 상시 노출이 요구사항이다(PLAN.md 1.4·5.3) — 조건부로 감추지 말 것. */
+.legal-band {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-sm) var(--s-lg);
+  max-width: 1100px;
+  margin-top: var(--s-xxl);
+  padding-top: var(--s-lg);
+  border-top: 1px solid var(--hairline);
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.legal-text {
+  max-width: 900px;
+}
+
+.legal-band strong {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.legal-spacer {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   1024px 이하
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  :root {
+    --gutter: 32px;
+  }
+
+  .hero > .wrap,
+  .find > .wrap,
+  .reading > .wrap,
+  .band-head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .filings,
+  .model-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .footer-cols {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .about {
+    position: static;
   }
 }
 
-/* 숫자는 고정폭으로 — 날짜·접수번호가 줄마다 흔들리지 않는다. */
-.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* ─────────────────────────────────────────────────────────────
+   767px 이하
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  :root {
+    --gutter: 16px;
+  }
 
-/* --- 폭·여백 ------------------------------------------------------------ */
+  .band {
+    padding: 56px 0;
+  }
 
-.wrap { width: 100%; max-width: var(--wrap-app); margin: 0 auto; padding: 0 var(--gutter); }
-.page-marketing .wrap { max-width: var(--wrap-wide); }
-.site-main { padding: var(--s-section) 0; }
-.page-marketing .site-main { padding: 0; }
-.measure { max-width: var(--measure); }
+  .hero-title {
+    font-size: 40px;
+  }
 
-/* 머리말·푸터는 어느 화면에서나 넓은 폭을 쓴다 — 내용은 좁게 읽히더라도
-   틀은 화면 폭을 따라가는 편이 자연스럽다. */
-.site-header .wrap, .site-footer .wrap { max-width: var(--wrap-wide); }
+  .hero-logo {
+    width: 52px;
+  }
 
-/* --- 머리말 -------------------------------------------------------------- */
+  .display-lg,
+  .lead-item h2,
+  .detail-title {
+    font-size: 32px;
+  }
 
-.site-header { background: var(--canvas); border-bottom: 1px solid var(--hairline); }
-.site-header .wrap {
-  display: flex; flex-wrap: wrap; align-items: center;
-  gap: var(--s-3) var(--s-6);
-  min-height: 64px; padding-top: var(--s-3); padding-bottom: var(--s-3);
+  .display-md,
+  .policy h1,
+  .intro h1 {
+    font-size: 26px;
+  }
+
+  .site-nav,
+  .header-actions {
+    display: none;
+  }
+
+  .nav-toggle {
+    display: block;
+  }
+
+  .nav-sheet[data-open="true"] {
+    position: fixed;
+    inset: var(--header-h) 0 0 0;
+    z-index: 19;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-lg);
+    padding: var(--s-xl) var(--gutter);
+    background: var(--canvas);
+    overflow-y: auto;
+  }
+
+  .nav-sheet a {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--ink);
+    text-decoration: none;
+  }
+
+  .nav-sheet form {
+    margin: 0;
+  }
+
+  .filings,
+  .model-grid,
+  .steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .footer-cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-lg);
+  }
+
+  .model-plate {
+    aspect-ratio: auto;
+    min-height: 140px;
+  }
+
+  .filing-plate {
+    min-height: 0;
+  }
+
+  .step {
+    padding-right: 0;
+    margin-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .specs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .spec {
+    padding-right: 0;
+    margin-right: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .spec:last-child {
+    border-bottom: 0;
+  }
+
+  .spec-panel {
+    padding: var(--s-md) var(--s-lg);
+  }
+
+  .showcase {
+    padding: var(--s-lg);
+  }
+
+  .subnav-side {
+    margin-left: 0;
+    padding-top: 0;
+  }
+
+  .result-count {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .section-tabs ul {
+    gap: var(--s-lg);
+  }
+
+  .block-oneline p,
+  .detail-oneline {
+    font-size: 18px;
+  }
+
+  .sign-table th,
+  .sign-table td {
+    display: block;
+    width: auto;
+  }
+
+  .sign-table td {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  /* 표가 좁은 화면에서 가로로 눌리면 원문 구절이 한 글자씩 끊긴다. 줄로 쌓는다. */
+  .evidence thead {
+    display: none;
+  }
+
+  .evidence tr {
+    display: block;
+    padding: var(--s-md) 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .evidence th,
+  .evidence td {
+    display: block;
+    width: auto;
+    padding: 0 0 var(--s-xxs);
+    border: 0;
+  }
+
+  .evidence tbody th,
+  .evidence .check {
+    width: auto;
+  }
+
+  .search-results form {
+    margin-left: 0;
+  }
 }
-.brand {
-  display: flex; align-items: baseline; gap: .3em;
-  color: var(--ink); font-size: var(--t-h2); font-weight: 600;
-  letter-spacing: var(--track-display);
-}
-.brand:hover { color: var(--ink); text-decoration: none; }
-.brand strong { color: var(--primary); font-weight: 600; }
-.brand-sub { flex: 1 1 100%; order: 3; color: var(--muted); font-size: var(--t-nav); }
-.site-nav { display: flex; flex-wrap: wrap; gap: var(--s-5); font-size: var(--t-nav); font-weight: 500; }
-.site-nav a { color: var(--ink); }
-.header-actions {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3);
-  margin-left: auto; font-size: var(--t-nav); color: var(--muted);
-}
-.header-actions form { margin: 0; }
-.header-name { color: var(--ink); font-weight: 500; }
-.header-quiet { color: var(--muted); }
-
-@media (min-width: 48em) { .brand-sub { flex: 0 1 auto; order: 0; } }
-
-/* --- 푸터 ---------------------------------------------------------------
- * 흰 면에 여러 칸으로 벌려 놓는다. 한 칸에 몰아 놓으면 넓은 화면에서 글이 왼쪽으로
- * 치우쳐 오른쪽이 통째로 빈다. 맨 아래 가는 띠에 방침 링크와 고지를 둔다. */
-
-.site-footer { background: var(--canvas); border-top: 1px solid var(--hairline); color: var(--body); font-size: var(--t-caption); }
-.site-footer .wrap { padding-top: var(--s-8); padding-bottom: var(--s-6); }
-.footer-cols { display: grid; gap: var(--s-7); }
-.footer-brand { color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
-.footer-head { margin-bottom: var(--s-2); color: var(--ink); font-size: var(--t-caption); font-weight: 600; }
-.footer-cols p + p { margin-top: var(--s-2); }
-/* 면책 고지가 이 띠에 들어온다(base.html). 글이 길어 한 줄에 다 들어가지 않으므로
-   방침 링크는 넓은 화면에서만 오른쪽 끝으로 가고, 좁은 화면에서는 아래로 내려온다. */
-.legal-band {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-3) var(--s-6);
-  margin-top: var(--s-7); padding-top: var(--s-5);
-  border-top: 1px solid var(--hairline-soft);
-  color: var(--muted); font-size: var(--t-micro); line-height: 1.6;
-}
-.legal-text { flex: 1 1 28rem; max-width: 72ch; }
-.legal-band a { color: var(--muted); text-decoration: underline; }
-.legal-spacer { margin-left: auto; }
-
-@media (min-width: 48em) {
-  .footer-cols { grid-template-columns: 1.1fr 1fr 1.2fr; gap: var(--s-8); }
-}
-
-/* --- 버튼 ---------------------------------------------------------------
- * 모든 CTA는 100px 알약이다. 각진 버튼을 쓰지 않는다. */
-
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2);
-  min-height: 44px; padding: 12px 20px;
-  border: 0; border-radius: var(--r-pill);
-  font-family: inherit; font-size: var(--t-btn); font-weight: 600; line-height: 1.15;
-  text-align: center; text-decoration: none; cursor: pointer;
-  transition: background-color .12s ease;
-}
-.btn:hover { text-decoration: none; }
-.btn-primary { background: var(--primary); color: var(--on-primary); }
-.btn-primary:hover { background: var(--primary-active); color: var(--on-primary); }
-.btn-secondary { background: var(--surface-strong); color: var(--ink); }
-.btn-secondary:hover { background: #e3e6ea; color: var(--ink); }
-.btn-outline-dark { background: transparent; color: var(--on-dark); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .55); }
-.btn-outline-dark:hover { background: rgba(255, 255, 255, .08); color: var(--on-dark); }
-.btn-danger { background: var(--down); color: #fff; }
-.btn-danger:hover { background: #ad1a26; color: #fff; }
-.btn-lg { min-height: 56px; padding: 16px 32px; }
-.btn-sm { min-height: 40px; padding: 10px 18px; font-size: var(--t-nav); }
-
-/* 링크처럼 보이는 버튼. 알약 규칙은 버튼에 대한 것이고 이것은 글자 링크의
-   역할이라 예외로 둔다 — 뜻이 링크면 모양도 링크여야 한다. */
-.link-button {
-  margin: 0; padding: 0; border: 0; background: none;
-  color: var(--primary); font: inherit; text-decoration: underline; cursor: pointer;
-}
-.link-button:hover { color: var(--primary-active); }
-
-/* 카카오 버튼은 카카오 디자인 가이드의 노란 바탕·검은 글자를 따라야 한다.
-   이 시스템의 파랑 CTA로 바꿀 수 없는 유일한 버튼이다. 모양만 알약으로 맞춘다. */
-.kakao-login {
-  min-height: 56px; padding: 16px 32px;
-  border: 0; border-radius: var(--r-pill);
-  background: #fee500; color: rgba(0, 0, 0, .85);
-  font-family: inherit; font-size: var(--t-btn); font-weight: 600; cursor: pointer;
-}
-.kakao-login:hover { background: #f5dc00; }
-.kakao-login-form { margin: 0; }
-
-/* --- 배지 ---------------------------------------------------------------
- * 면은 모두 같은 연회색이고 글자색만 다르다. 의미 색을 면에 칠하지 않는 것이
- * 이 시스템의 규칙이고, 덕분에 색을 더 만들지 않고도 다섯 상태가 구분된다. */
-
-.badge {
-  display: inline-flex; align-items: center;
-  padding: var(--s-1) var(--s-3);
-  border-radius: var(--r-pill);
-  background: var(--surface-strong);
-  font-size: var(--t-micro); font-weight: 600; line-height: 1.5;
-  white-space: nowrap;
-}
-.badge-high { color: var(--high-ink); }
-.badge-medium { color: var(--mid-ink); }
-.badge-low { color: var(--low-ink); }
-.badge-type { color: var(--body); }
-.badge-human { color: var(--ok-ink); }
-.badge-accuracy { color: var(--high-ink); box-shadow: inset 0 0 0 1px var(--down); }
-.badge-pending { color: var(--wait-ink); }
-
-/* 미검수만 면이 없다 — 사람이 안 봤다는 것은 없음의 신호라, 면을 주면 상태가
-   있는 것처럼 읽힌다. */
-.badge-unreviewed { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--hairline); }
-
-/* --- 공시 카드 ----------------------------------------------------------- */
-
-.card-list { display: grid; gap: var(--s-6); }
-.card { padding: var(--s-6); background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--r-xl); }
-.card-head {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2);
-  margin-bottom: var(--s-3); color: var(--muted); font-size: var(--t-caption);
-}
-.card-company { min-width: 0; color: var(--ink); font-weight: 600; }
-.card-title { margin: 0 0 var(--s-2); font-size: var(--t-h3); }
-.card-title a { color: var(--ink); overflow-wrap: anywhere; }
-.card-title a:hover { color: var(--primary); }
-.card-oneline { margin: 0 0 var(--s-5); max-width: var(--measure); }
-.card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-6); }
-.link-dart { color: var(--primary); }
-
-/* 요약을 기다리는 카드. 연회색 면으로 아직 비어 있다는 것을 알린다 — 테두리 색만
-   바꾸면 목록에서 알아채지 못한다. */
-.card-pending { background: var(--surface-soft); border-color: var(--hairline-soft); }
-
-@media (min-width: 48em) { .card { padding: var(--s-7); } }
-
-/* --- 목록 보조 ----------------------------------------------------------- */
-
-.result-count { margin-bottom: var(--s-3); color: var(--muted); font-size: var(--t-caption); }
-.lead { margin-bottom: var(--s-5); max-width: var(--measure); color: var(--body); }
-.section-sub { margin-bottom: var(--s-3); max-width: var(--measure); color: var(--muted); font-size: var(--t-caption); }
-.landing-note { color: var(--muted); font-size: var(--t-caption); }
-.dot { color: var(--hairline); }
-.empty { padding: var(--s-8) var(--s-6); background: var(--surface-soft); border-radius: var(--r-xl); color: var(--body); text-align: center; }
-.live-note { margin-bottom: var(--s-5); padding: var(--s-3) var(--s-4); background: var(--surface-strong); border-radius: var(--r-md); color: var(--ink); font-size: var(--t-caption); }
-.messages { margin: 0 0 var(--s-6); padding: var(--s-3) var(--s-4); list-style: none; background: var(--surface-strong); border-radius: var(--r-md); font-size: var(--t-caption); }
-.breadcrumb { margin-bottom: var(--s-5); color: var(--muted); font-size: var(--t-caption); }
-
-/* --- 필터·검색 ----------------------------------------------------------- */
-
-.filters {
-  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s-3) var(--s-4);
-  margin-bottom: var(--s-6); padding: var(--s-5);
-  background: var(--surface-soft); border-radius: var(--r-xl);
-}
-.filters label { display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; color: var(--muted); font-size: var(--t-caption); }
-.filters select,
-.filters input[type="search"] {
-  min-height: 48px; padding: 14px 16px;
-  background: var(--canvas); color: var(--ink);
-  border: 1px solid var(--hairline); border-radius: var(--r-md);
-  font-family: inherit; font-size: var(--t-body);
-}
-.filters input[type="search"] { min-width: 0; width: 100%; }
-.filters select:focus, .filters input[type="search"]:focus { border: 2px solid var(--primary); outline: none; }
-.search-form label { flex: 1 1 15rem; }
-/* .filters label 이 (0,1,1)이라 .filter-check (0,1,0)보다 세다 — 같은 자리에서
-   방향을 되돌리려면 특정성을 맞춰야 한다. 안 맞추면 체크박스가 글자 위로 올라간다. */
-.filters label.filter-check { flex-direction: row; align-items: center; gap: var(--s-2); color: var(--ink); }
-.filter-reset { align-self: center; font-size: var(--t-caption); }
-
-.search-results { margin: 0; padding: 0; list-style: none; }
-.search-results li {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3);
-  padding: var(--s-4) 0; border-bottom: 1px solid var(--hairline-soft);
-}
-.search-results li > a:first-child { color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
-.search-results form { margin-left: auto; }
-
-/* --- 페이지네이션 -------------------------------------------------------- */
-
-.pagination { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); margin-top: var(--s-6); font-size: var(--t-caption); }
-.pagination .disabled { color: var(--muted-soft); }
-.page-status { color: var(--muted); }
-
-/* --- 공시 상세 ----------------------------------------------------------- */
-
-.detail { padding: var(--s-6); background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--r-xl); }
-.detail-badges { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-bottom: var(--s-4); }
-.detail-head h1 { overflow-wrap: anywhere; }
-.detail-meta { margin-top: var(--s-3); color: var(--muted); font-size: var(--t-caption); }
-.detail-meta a { font-weight: 600; }
-
-.block { margin-top: var(--s-7); padding-top: var(--s-7); border-top: 1px solid var(--hairline-soft); }
-.block h2 { margin-bottom: var(--s-3); }
-.block p { max-width: var(--measure); }
-.block-oneline { margin-top: var(--s-6); padding-top: 0; border-top: 0; }
-.oneline { max-width: var(--measure); color: var(--ink); font-size: var(--t-h2); font-weight: 400; line-height: var(--lead-snug); }
-
-.evidence-list { display: grid; gap: var(--s-5); margin: 0; padding: 0; list-style: none; }
-.evidence-claim { margin-bottom: var(--s-2); color: var(--ink); font-weight: 600; }
-.evidence-list blockquote {
-  margin: 0; padding: var(--s-4) var(--s-5);
-  background: var(--surface-soft); border-radius: var(--r-lg);
-  color: var(--body); font-size: var(--t-caption);
-  white-space: pre-wrap; overflow-wrap: anywhere;
-}
-
-.detail-foot { margin-top: var(--s-7); padding-top: var(--s-5); border-top: 1px solid var(--hairline-soft); color: var(--muted); font-size: var(--t-caption); }
-.human-edited-note { margin-top: var(--s-2); color: var(--ok-ink); font-weight: 600; }
-.pending-note { margin: var(--s-6) 0 0; padding: var(--s-5); background: var(--surface-soft); border-radius: var(--r-xl); }
-.pending-note p { margin-top: var(--s-3); max-width: var(--measure); }
-
-/* 정확성 경고. 의미 색으로 면을 칠하지 않는 규칙을 지키되, 요약보다 먼저 읽혀야 하므로
-   왼쪽에 굵은 선을 둔다. */
-.accuracy-alert {
-  margin-top: var(--s-6); padding: var(--s-5);
-  background: var(--surface-soft);
-  border-left: 3px solid var(--down); border-radius: var(--r-lg);
-}
-.accuracy-alert h2 { margin-bottom: var(--s-2); color: var(--high-ink); font-size: var(--t-h3); }
-.accuracy-alert p { max-width: var(--measure); font-size: var(--t-caption); }
-.unsupported-numbers { display: flex; flex-wrap: wrap; gap: var(--s-2); margin: var(--s-3) 0 0; padding: 0; list-style: none; }
-.unsupported-numbers li {
-  padding: var(--s-1) var(--s-3);
-  background: var(--canvas); border-radius: var(--r-pill);
-  color: var(--high-ink); font-size: var(--t-caption); font-weight: 600;
-  font-family: var(--font-mono);
-}
-.summary-request { margin: 0; }
-
-@media (min-width: 48em) { .detail { padding: var(--s-7); } }
-
-/* --- 기업 개황 ----------------------------------------------------------- */
-
-.company-head { margin-bottom: var(--s-6); }
-.company-meta { display: flex; flex-wrap: wrap; gap: var(--s-4) var(--s-8); margin: var(--s-3) 0; }
-.company-meta div { display: flex; flex-direction: column; }
-.company-meta dt { color: var(--muted); font-size: var(--t-micro); }
-.company-meta dd { margin: 0; color: var(--ink); font-weight: 600; }
-
-.intro { max-width: var(--measure); }
-.intro h1 { margin-bottom: var(--s-3); }
-.intro p, .intro ul { margin-bottom: var(--s-4); }
-
-/* --- 검정 히어로 ---------------------------------------------------------
- * 이 디자인 언어의 가장 강한 서명이다. 화면 끝까지 닿는 검정 면 위에 떠 있는
- * 화면 카드를 함께 둔다 — DESIGN.md는 검정 히어로를 반드시 카드와 짝지으라고 한다. */
-
-.hero { padding: var(--s-section) 0; background: var(--canvas); color: var(--body); }
-.hero .wrap { display: grid; gap: var(--s-8); }
-.hero-title {
-  max-width: 14em; color: var(--ink);
-  font-size: var(--t-display); font-weight: 400;
-  line-height: var(--lead-display); letter-spacing: var(--track-display);
-}
-.hero-lead { max-width: 44rem; margin-top: var(--s-8); color: var(--body); font-size: var(--t-lead); word-break: keep-all; }
-.hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3); margin-top: var(--s-8); }
-.hero-note { max-width: var(--measure); margin-top: var(--s-6); color: var(--muted); font-size: var(--t-caption); }
-
-/* 떠 있는 화면 카드 — 제품 스크린샷이 없으므로 이 서비스에서 가장 특징적인 물건인
-   공시 카드를 그려 올린다. */
-.hero-mock {
-  max-width: 40rem; padding: var(--s-7);
-  background: var(--canvas); border: 1px solid var(--hairline); border-radius: var(--r-xl);
-  box-shadow: var(--shadow);
-}
-.hero-mock-label {
-  display: inline-flex; margin-bottom: var(--s-3);
-  padding: var(--s-1) var(--s-3);
-  background: var(--surface-strong); border-radius: var(--r-pill);
-  color: var(--muted); font-size: var(--t-micro); font-weight: 600;
-}
-.hero-mock-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); color: var(--muted); font-size: var(--t-caption); }
-.hero-mock-title { margin-bottom: var(--s-2); color: var(--ink); font-size: var(--t-h3); font-weight: 600; }
-.hero-mock-line { color: var(--body); }
-.hero-mock-foot { margin-top: var(--s-5); color: var(--primary); font-size: var(--t-caption); font-weight: 600; }
-
-/* 제목을 한 단으로 둔다 — 옆에 카드를 세우면 제목이 반쪽 폭으로 줄어
-   이 디자인에서 가장 중요한 큰 제목이 작아진다. 카드는 제목 아래에 놓는다. */
-@media (min-width: 64em) {
-  .hero { padding: 112px 0 var(--s-section); }
-  .hero-lead { font-size: 19px; }
-}
-
-/* 쓰는 순서 — 검정 다음에 오는 연한 띠. 밝은 면과 검정 면이 번갈아 나오는 것이
-   이 페이지의 리듬이다. 내용이 실제로 순서이므로 번호를 쓰는 것이 맞다. */
-.steps { padding: var(--s-section) 0; background: var(--surface-soft); }
-.steps h2 { margin-bottom: var(--s-6); font-size: var(--t-h1); font-weight: 400; }
-.steps ol { display: grid; gap: var(--s-6); margin: 0; padding: 0; list-style: none; counter-reset: step; }
-.steps li { position: relative; max-width: var(--measure); padding-left: 48px; counter-increment: step; }
-.steps li::before {
-  content: counter(step);
-  position: absolute; left: 0; top: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px;
-  background: var(--surface-strong); border-radius: var(--r-full);
-  color: var(--ink); font-size: var(--t-caption); font-weight: 600;
-}
-.steps strong { display: block; color: var(--ink); }
-
-@media (min-width: 48em) {
-  .steps ol { grid-template-columns: repeat(3, 1fr); gap: var(--s-8); }
-  .steps li { max-width: none; }
-}
-
-/* --- 닫는 CTA 띠 ---------------------------------------------------------
- * 푸터 바로 앞의 검정 띠. 제목과 단추를 가운데로 모은다 — 넓은 화면에서
- * 왼쪽에 붙여 두면 오른쪽 절반이 통째로 빈다. */
-
-.cta-band { padding: var(--s-section) 0; background: var(--surface-dark); color: var(--on-dark); text-align: center; }
-.cta-band h2 {
-  max-width: 18em; margin: 0 auto; color: var(--on-dark);
-  font-size: 30px; font-weight: 400;
-  line-height: var(--lead-display); letter-spacing: var(--track-display);
-}
-@media (min-width: 64em) { .cta-band h2 { font-size: 44px; } }
-.cta-band p { max-width: 34rem; margin: var(--s-5) auto 0; color: var(--on-dark-soft); font-size: var(--t-lead); word-break: keep-all; }
-.cta-band .kakao-login-form { margin-top: var(--s-7); }
-.cta-band .empty { background: var(--surface-dark-up); color: var(--on-dark-soft); }
-
-/* --- 개인정보처리방침 ---------------------------------------------------- */
-
-.policy { max-width: var(--measure); }
-.policy h1 { margin-bottom: var(--s-4); }
-.policy h2 { margin: var(--s-8) 0 var(--s-3); font-size: var(--t-h3); }
-.policy p, .policy ul { margin-bottom: var(--s-4); }
-.policy li { margin-bottom: var(--s-2); }
-
-/* 375px에서 표가 화면을 밀어내지 않도록 감싼다. */
-.table-scroll { margin-bottom: var(--s-4); overflow-x: auto; }
-.policy table { width: 100%; min-width: 30rem; border-collapse: collapse; font-size: var(--t-caption); }
-.policy th, .policy td { padding: var(--s-3); border: 1px solid var(--hairline); text-align: left; vertical-align: top; }
-.policy th { background: var(--surface-soft); color: var(--ink); font-weight: 600; }

@@ -15,7 +15,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.db.models import Count, Max, Q
+from django.db.models import Case, Count, IntegerField, Max, Q, Value, When
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -28,6 +28,9 @@ from .selection import SelectionState
 
 #: 목록 화면의 페이지당 공시 수.
 PAGE_SIZE = 20
+
+#: 공시 상세의 검정 히어로 패널에 싣는 원문 인용 수(DESIGN.md 적용 규칙 1).
+HERO_EVIDENCE_COUNT = 2
 
 def published_disclosures(show_all=False):
     """화면에 노출할 공시 큐리셋 — **노출 정책의 단일 출처**.
@@ -73,11 +76,71 @@ def _filter_by_importance(queryset, importance):
     return queryset
 
 
+#: 검수 상태 필터의 값 → 큐리셋 조건.
+#:
+#: 사용자가 "사람이 확인한 것만 보기"를 할 수 있어야 요약을 얼마나 믿을지 스스로
+#: 정할 수 있다(PLAN.md 1.4·5.3). 화면의 표시(`_summary_signals.html`)와 **같은 기준**을
+#: 써야 거른 결과와 카드에 붙은 표시가 어긋나지 않는다 — 그쪽도 `is_reviewed` 를 본다.
+STATUS_FILTERS = {
+    'done': Q(summary__is_reviewed=True),
+    'ai': Q(summary__isnull=False, summary__is_reviewed=False),
+    'pending': Q(summary__isnull=True),
+}
+
+#: 중요도 라벨. 필터 칩과 상태 칩이 같은 순서로 서야 눈이 헷갈리지 않는다.
+STATUS_LABELS = {'done': '검토 완료', 'ai': '미검수', 'pending': '요약 전'}
+
+#: 중요도를 크기로 바꾼다. `importance` 는 'high'/'medium'/'low' 문자열이라 그대로
+#: 정렬하면 알파벳순(high < low < medium)이 되어 "가장 중요한 공시"가 엉뚱해진다.
+IMPORTANCE_RANK = Case(
+    When(summary__importance=DisclosureSummary.Importance.HIGH, then=Value(3)),
+    When(summary__importance=DisclosureSummary.Importance.MEDIUM, then=Value(2)),
+    When(summary__importance=DisclosureSummary.Importance.LOW, then=Value(1)),
+    default=Value(0),
+    output_field=IntegerField(),
+)
+
+
+def _filter_by_status(queryset, status):
+    """검수 상태 필터. 유효하지 않은 값은 무시한다(중요도 필터와 같은 이유)."""
+    condition = STATUS_FILTERS.get(status)
+    if condition is None:
+        return queryset
+    return queryset.filter(condition)
+
+
+def _status_options():
+    """템플릿 필터 UI용 (값, 라벨) 목록. 값의 단일 출처는 STATUS_FILTERS 다."""
+    return [
+        {'value': value, 'label': STATUS_LABELS[value]}
+        for value in STATUS_FILTERS
+    ]
+
+
 def _filter_by_company(queryset, stock_code):
     """기업 필터. 존재하지 않는 종목코드면 빈 결과가 되는 게 자연스럽다."""
     if stock_code:
         return queryset.filter(company__stock_code=stock_code)
     return queryset
+
+
+def _lead_disclosure(queryset):
+    """머리 공시 — 요약이 있는 공시 중 중요도가 가장 높고 가장 최근인 것 하나.
+
+    회원 홈 맨 위의 검정 띠에 들어간다(DESIGN.md 적용 규칙 3). 목록이 아니라 "지금 가장
+    봐야 할 공시 하나"라 히어로와 같은 역할이다.
+
+    요약이 없는 공시는 뽑지 않는다 — 중요도는 요약이 매기는 값이라 아직 없고, 머리
+    자리에 "요약 전"만 적힌 큰 띠가 서면 화면의 첫 인상이 빈칸이 된다.
+
+    **아래 목록에서 빼지 않는다.** 빼면 "공시 N건"이 실제 카드 수와 어긋나고, 필터를
+    걸면 머리 공시만 남거나 사라져 건수가 더 이상해진다.
+
+    쿼리는 1회 늘어난다(목록 건수와 무관한 고정 비용이다).
+    """
+    return queryset.filter(summary__isnull=False).annotate(
+        importance_rank=IMPORTANCE_RANK,
+    ).order_by('-importance_rank', '-filed_at', '-rcept_no').first()
 
 
 def _paginate(request, queryset):
@@ -166,9 +229,39 @@ def _importance_options():
     ]
 
 
-def _my_companies(user):
-    """이 사용자가 고른 관심 기업. 목록 화면은 **이것의 공시만** 보여준다(이슈 #44)."""
-    return Company.objects.filter(watches__user=user).order_by('name')
+def _visible_disclosures_of_company(show_all):
+    """기업 쪽에서 본 "화면에 뜨는 공시" 조건 — 기업별 건수를 세는 데 쓴다.
+
+    `published_disclosures()` 와 **같은 기준이어야 한다.** 탭에 적힌 숫자와 실제 목록
+    길이가 다르면 사용자는 어느 쪽을 믿어야 할지 알 수 없다. 저쪽은
+    `exclude(summary__is_published=False)` 로 적는데, 그 뜻은 "요약이 없거나, 있고
+    게시 중"이라 아래 첫 줄과 같다.
+
+    집계를 annotate 한 번으로 끝내는 이유: 기업마다 따로 세면 관심 기업 10곳에서
+    쿼리가 10번 늘어난다(N+1).
+    """
+    visible = (Q(disclosures__summary__is_published=True)
+               | Q(disclosures__summary__isnull=True))
+    if not show_all:
+        visible &= (Q(disclosures__summary__isnull=False)
+                    | Q(disclosures__selection_state=SelectionState.TARGET))
+    return visible
+
+
+def _my_companies(user, show_all=False):
+    """이 사용자가 고른 관심 기업. 목록 화면은 **이것의 공시만** 보여준다(이슈 #44).
+
+    `feed_count` 는 기업 탭에 적는 공시 건수다. 중요도·상태 필터는 반영하지 않는다 —
+    탭은 "이 기업에 공시가 몇 건 있는가"를 알리는 길 안내이고, 필터를 걸 때마다 탭의
+    숫자가 모두 바뀌면 어디로 갈지 가늠할 수 없게 된다.
+    """
+    return Company.objects.filter(watches__user=user).annotate(
+        feed_count=Count(
+            'disclosures',
+            filter=_visible_disclosures_of_company(show_all),
+            distinct=True,
+        ),
+    ).order_by('name')
 
 
 def home(request):
@@ -182,23 +275,39 @@ def home(request):
             'kakao_login_enabled': settings.KAKAO_LOGIN_ENABLED,
         })
 
-    companies = list(_my_companies(request.user))
     options = _feed_options(request)
+    companies = list(_my_companies(request.user, options['show_all']))
     disclosures = published_disclosures(options['show_all']).filter(company__in=companies)
     selected_company = request.GET.get('company', '')
     selected_importance = request.GET.get('importance', '')
-    disclosures = _filter_by_company(disclosures, selected_company)
-    disclosures = _filter_by_importance(disclosures, selected_importance)
+    selected_status = request.GET.get('status', '')
+
+    # 머리 공시는 **기업 선택까지만** 따르고 중요도·상태 필터는 보지 않는다. 기업 탭은
+    # 어디를 보는지 고르는 길 안내라 머리도 따라가야 하지만, 거르개를 움직일 때마다
+    # 화면 맨 위의 큰 띠가 바뀌면 읽던 자리를 잃는다.
+    in_scope = _filter_by_company(disclosures, selected_company)
+    lead = _lead_disclosure(in_scope)
+
+    disclosures = _filter_by_importance(in_scope, selected_importance)
+    disclosures = _filter_by_status(disclosures, selected_status)
 
     return _render_feed(request, 'disclosures/home.html', {
         **options,
         'companies': companies,
         'watch_limit': watchlist.MAX_WATCHES_PER_USER,
+        'remaining_watches': watchlist.MAX_WATCHES_PER_USER - len(companies),
+        # 기업 탭의 "전체"에 적는 수. 각 기업 탭의 숫자와 같은 기준이어야 하므로
+        # 더해서 만든다 — 큐리셋을 따로 세면 조건이 갈릴 자리가 하나 더 생긴다.
+        'all_count': sum(company.feed_count for company in companies),
+        'lead_disclosure': lead,
+        'lead_scope': lead.company.name if selected_company and lead else '관심 기업',
         'page_obj': _paginate(request, disclosures),
         'total_count': disclosures.count(),
         'selected_company': selected_company,
         'selected_importance': selected_importance,
+        'selected_status': selected_status,
         'importance_options': _importance_options(),
+        'status_options': _status_options(),
     })
 
 
@@ -227,7 +336,9 @@ def company_detail(request, stock_code):
     options = _feed_options(request)
     disclosures = published_disclosures(options['show_all']).filter(company=company)
     selected_importance = request.GET.get('importance', '')
+    selected_status = request.GET.get('status', '')
     disclosures = _filter_by_importance(disclosures, selected_importance)
+    disclosures = _filter_by_status(disclosures, selected_status)
 
     return _render_feed(request, 'disclosures/company_detail.html', {
         **options,
@@ -239,7 +350,9 @@ def company_detail(request, stock_code):
         'page_obj': _paginate(request, disclosures),
         'total_count': disclosures.count(),
         'selected_importance': selected_importance,
+        'selected_status': selected_status,
         'importance_options': _importance_options(),
+        'status_options': _status_options(),
     })
 
 
@@ -326,6 +439,11 @@ def disclosure_detail(request, rcept_no):
         'disclosure': disclosure,
         'summary': summary,
         'evidence': evidence,
+        # 검정 히어로 오른쪽 패널에 들어갈 몫. 원 디자인 언어의 제원 패널 자리인데
+        # 우리 요약에는 제원처럼 구조화된 수치가 없어 원문 인용을 넣는다
+        # (DESIGN.md 적용 규칙 1). 둘까지만 보여 주고 전수 대조는 본문의 "원문 근거"가
+        # 맡는다 — 다 넣으면 히어로가 표가 되어 한 줄 요약이 묻힌다.
+        'hero_evidence': evidence[:HERO_EVIDENCE_COUNT],
         'budget_exhausted': ai_budget.is_exhausted(),
     })
 

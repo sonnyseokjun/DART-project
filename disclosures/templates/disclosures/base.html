@@ -4,14 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}공시 쉽게 보기{% endblock %}</title>
+  {% comment %} 본문 글꼴을 미리 받아 둔다. CSS를 다 해석한 뒤에야 글꼴 요청이
+     시작되면 글자가 시스템 글꼴로 한 번 그려졌다가 바뀌는 시간이 길어진다.
+     crossorigin 이 없으면 preload 와 실제 요청이 서로 다른 것으로 취급돼
+     같은 파일을 두 번 받는다.
+
+     외부 CDN 을 쓰지 않는다 — Pretendard 는 자체 호스팅이다(PLAN.md 9.5). {% endcomment %}
+  <link rel="preload" as="font" type="font/woff2" crossorigin
+        href="{% static 'disclosures/fonts/PretendardVariable.woff2' %}">
   <link rel="stylesheet" href="{% static 'disclosures/css/style.css' %}">
 </head>
 {% comment %} data-live-endpoint 가 있으면 목록 화면이 스스로 갱신한다(live-updates.js).
    주소를 여기 한 곳에만 두어, 스크립트가 URL 구조를 알지 않게 한다.
 
-   body_class 는 컨테이너 폭과 세로 여백을 가른다 — 읽는 화면은 page-app(880px),
-   랜딩 같은 소개 화면은 page-marketing(1240px)이다. 기본값이 page-app이라
-   새 화면을 추가해도 읽기 좋은 폭으로 시작한다. {% endcomment %}
+   body_class 는 글줄 폭과 알림 띠의 바탕을 가른다. 머리말은 어느 화면에서나
+   흰색이다 — 이 디자인 언어에는 검정 머리말 변형이 없다(DESIGN.md 적용 규칙 3).
+     · page-app       공시를 읽는 화면 — 1440px 띠 구조 (기본값)
+     · page-marketing 소개 화면 — 알림 띠까지 검정으로 칠해 히어로가 끊기지 않게 한다
+     · page-read      글만 있는 화면(방침·탈퇴·allauth) — 816px 읽기 열
+   기본값이 page-app 이라 새 화면을 추가해도 띠 구조로 시작한다. {% endcomment %}
 <body class="{% block body_class %}page-app{% endblock %}"
       data-live-endpoint="{% url 'disclosures:latest_status' %}">
   <header class="site-header">
@@ -19,50 +30,85 @@
       <a class="brand" href="{% url 'disclosures:home' %}">
         공시 <strong>쉽게 보기</strong>
       </a>
-      <p class="brand-sub">DART 전자공시를 AI가 일반인 눈높이로 요약합니다</p>
-      <nav class="site-nav">
+      <ul class="site-nav">
         {% if user.is_authenticated %}
-          <a href="{% url 'disclosures:search' %}">기업 검색</a>
+          <li><a href="{% url 'disclosures:home' %}" {% block nav_home %}{% endblock %}>내 관심 기업</a></li>
+          <li><a href="{% url 'disclosures:search' %}" {% block nav_search %}{% endblock %}>기업 검색</a></li>
         {% else %}
-          <a href="{% url 'disclosures:home' %}#steps">이렇게 씁니다</a>
+          <li><a href="{% url 'disclosures:home' %}#types">공시 읽는 법</a></li>
+          <li><a href="{% url 'disclosures:home' %}#steps">이렇게 씁니다</a></li>
         {% endif %}
-      </nav>
+      </ul>
       <div class="header-actions">
         {% if user.is_authenticated %}
           <span class="header-name">{{ user.first_name|default:"회원" }}님</span>
           {# 로그아웃은 POST로만 한다(settings.ACCOUNT_LOGOUT_ON_GET). #}
           <form method="post" action="{% url 'account_logout' %}">
             {% csrf_token %}
-            <button type="submit" class="btn btn-secondary btn-cap">로그아웃</button>
+            <button type="submit" class="btn btn-secondary btn-sm">로그아웃</button>
           </form>
           <a class="header-quiet" href="{% url 'accounts:withdraw' %}">탈퇴</a>
         {% else %}
-          {% comment %} 머리말 오른쪽 끝의 알약 CTA. 카카오 버튼을 여기 또 두지 않는 이유는
-             카카오 로그인 버튼이 노란 바탕을 요구해 브랜드 색과 부딪히기 때문이다.
-             대신 랜딩의 시작 지점으로 보낸다. {% endcomment %}
-          <a class="btn btn-primary btn-cap" href="{% url 'disclosures:home' %}#start">시작하기</a>
+          {% comment %} 머리말 오른쪽 끝의 CTA. 카카오 버튼을 여기 또 두지 않는 이유는
+             카카오 버튼이 노란 바탕을 요구해 머리말의 흰 면과 부딪히기 때문이다.
+             대신 랜딩의 시작 지점으로 보낸다.
+
+             랜딩 자신은 이 블록을 비운다 — 히어로의 "카카오로 시작하기"가 바로 아래
+             200px 안에 있는데 같은 뜻의 단추를 하나 더 두면 둘 다 흐려진다. {% endcomment %}
+          {% block header_cta %}
+            <a class="btn btn-primary btn-sm" href="{% url 'disclosures:home' %}#start">시작하기</a>
+          {% endblock %}
         {% endif %}
       </div>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-sheet">
+        <span></span><span></span><span></span>
+        <span class="sr-only">메뉴 열기</span>
+      </button>
     </div>
+    {% comment %} 좁은 화면용 메뉴. 머리말의 메뉴·행동을 그대로 옮겨 적는다 —
+       스크립트로 옮겨 심지 않는 이유는 자바스크립트가 막힌 환경에서 메뉴가
+       아예 사라지기 때문이다. 여는 일만 ui.js 가 한다. {% endcomment %}
+    <nav class="nav-sheet" id="nav-sheet" aria-label="메뉴">
+      {% if user.is_authenticated %}
+        <a href="{% url 'disclosures:home' %}">내 관심 기업</a>
+        <a href="{% url 'disclosures:search' %}">기업 검색</a>
+        <form method="post" action="{% url 'account_logout' %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-secondary">로그아웃</button>
+        </form>
+        <a class="header-quiet" href="{% url 'accounts:withdraw' %}">탈퇴</a>
+      {% else %}
+        <a href="{% url 'disclosures:home' %}#types">공시 읽는 법</a>
+        <a href="{% url 'disclosures:home' %}#steps">이렇게 씁니다</a>
+        <a class="btn btn-primary" href="{% url 'disclosures:home' %}#start">시작하기</a>
+      {% endif %}
+    </nav>
   </header>
 
   <main class="site-main">
+    {% comment %} 알림 띠를 .wrap 하나로 두지 않고 바깥을 한 겹 감싼다. 소개 화면에서는
+       이 띠가 흰 머리말과 검정 히어로 사이에 끼어 흰 줄을 만들기 때문에,
+       바탕을 칠할 수 있는 전폭 요소가 필요하다(style.css 의 .message-band). {% endcomment %}
     {% if messages %}
-      <div class="wrap">
-        <ul class="messages">
-          {% for message in messages %}<li>{{ message }}</li>{% endfor %}
-        </ul>
+      <div class="message-band">
+        <div class="wrap">
+          <ul class="messages">
+            {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+          </ul>
+        </div>
       </div>
     {% endif %}
 
-    {% comment %} 읽는 화면은 이 기본 블록을 그대로 쓴다. 랜딩처럼 화면 끝까지 닿는 띠
-       (파스텔 메시 그라데이션·라벤더 섹션)가 필요한 화면만 main 블록을 덮어쓰고
-       자기 안에서 .wrap 을 직접 둔다. 이렇게 두면 그라데이션이 컨테이너에 갇히지
-       않으면서도 다른 화면의 구조는 손대지 않는다. {% endcomment %}
+    {% comment %} 글만 있는 화면(검색·방침·탈퇴·allauth)은 이 기본 블록을 그대로 쓴다.
+       띠마다 바탕이 다른 화면(소개·회원 홈·기업·공시 상세)만 main 블록을 덮어쓰고
+       자기 안에서 .band 와 .wrap 을 직접 둔다. 이렇게 두면 다른 화면의 구조를
+       손대지 않고도 띠가 있는 화면만 따로 짤 수 있다. {% endcomment %}
     {% block main %}
-      <div class="wrap">
-        {% block breadcrumb %}{% endblock %}
-        {% block content %}{% endblock %}
+      <div class="band band-top">
+        <div class="wrap">
+          {% block breadcrumb %}{% endblock %}
+          {% block content %}{% endblock %}
+        </div>
       </div>
     {% endblock %}
   </main>
@@ -74,11 +120,21 @@
   <footer class="site-footer">
     <div class="wrap">
       {% comment %} 고지를 한 칸에 몰아 놓으면 넓은 화면에서 글이 왼쪽으로 치우쳐
-         오른쪽이 통째로 빈다. 세 칸으로 벌리고, 맨 아래 가는 띠에 방침 링크를 둔다. {% endcomment %}
+         오른쪽이 통째로 빈다. 네 칸으로 벌리고, 맨 아래 가는 띠에 방침 링크를 둔다. {% endcomment %}
       <div class="footer-cols">
         <div>
           <p class="footer-brand">공시 쉽게 보기</p>
           <p>DART 전자공시를 AI가 일반인 눈높이로 요약합니다.</p>
+        </div>
+        <div>
+          <p class="footer-head">둘러보기</p>
+          <ul>
+            <li><a href="{% url 'disclosures:home' %}">{% if user.is_authenticated %}내 관심 기업{% else %}처음 화면{% endif %}</a></li>
+            {% if user.is_authenticated %}
+              <li><a href="{% url 'disclosures:search' %}">기업 검색</a></li>
+            {% endif %}
+            <li><a href="{% url 'accounts:privacy' %}">개인정보처리방침</a></li>
+          </ul>
         </div>
         <div>
           <p class="footer-head">데이터 출처</p>
@@ -98,8 +154,8 @@
       </div>
       {% comment %} 면책 고지. 전 페이지 상시 노출이 요구사항이라(PLAN.md 1.4·5.3)
          머리말 아래 띠에서 이 자리로 옮겼고, 푸터가 base에 있으므로 노출 자체는 유지된다.
-         다만 눈에 띄는 정도는 낮아졌다 — 이 문구를 다른 템플릿으로 옮기거나 조건부로
-         감추지 말 것. disclosures/tests.py 가 전 화면에서 이 문구를 확인한다. {% endcomment %}
+         이 문구를 다른 템플릿으로 옮기거나 조건부로 감추지 말 것.
+         disclosures/tests.py 가 전 화면에서 이 문구를 확인한다. {% endcomment %}
       <p class="legal-band" role="note">
         <span class="legal-text">
           <strong>면책 고지</strong> 본 서비스가 제공하는 요약과 해설은 <strong>투자 자문이 아니며</strong>,
@@ -110,8 +166,9 @@
       </p>
     </div>
   </footer>
-  {% comment %} defer: 문서를 다 읽은 뒤 실행한다. 목록이 없는 화면에서는 스스로 아무것도
-     하지 않으므로 모든 페이지에 함께 실어도 무해하다. {% endcomment %}
+  {% comment %} defer: 문서를 다 읽은 뒤 실행한다. 둘 다 해당 요소가 없는 화면에서는
+     스스로 아무것도 하지 않으므로 모든 페이지에 함께 실어도 무해하다. {% endcomment %}
+  <script src="{% static 'disclosures/js/ui.js' %}" defer></script>
   <script src="{% static 'disclosures/js/live-updates.js' %}" defer></script>
 </body>
 </html>

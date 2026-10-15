@@ -423,8 +423,9 @@ class WatchViewsTest(TestCase):
             response = self.client.get(reverse('disclosures:search'), {'q': '테스트기업'})
         dart_get.assert_not_called()
         self.assertContains(response, '테스트기업2')
-        # 이미 고른 기업에는 추가 버튼 대신 표시가 붙는다.
-        self.assertContains(response, '· 관심 기업')
+        # 이미 고른 기업에는 추가 버튼 대신 조용한 글자가 붙는다.
+        # 닫는 태그까지 함께 보는 이유: '관심 기업'은 머리말·길 안내·바닥글에도 있다.
+        self.assertContains(response, '>관심 기업</span>')
 
     def test_add_and_remove(self):
         listed = _listed(4)

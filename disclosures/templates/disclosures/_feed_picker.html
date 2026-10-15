@@ -1,0 +1,75 @@
+{% comment %}
+공시 거르개 — 중요도 · 검수 상태 · "단순 보고도 보기". 내 관심 기업 화면과 기업 상세가
+함께 쓴다.
+
+**폼이 아니라 링크다.** 고른 값이 곧 주소이므로 "적용" 버튼과 그것을 담던 회색 상자가
+통째로 없어진다. 값이 주소에 남으므로 거른 화면을 그대로 공유할 수 있고, 페이지네이션과
+어긋나지 않는다 — 시안처럼 자바스크립트가 카드를 숨기면 "N건"이 현재 페이지 기준이
+되어 실제 건수와 달라진다.
+
+querystring 태그(Django 5.1+)가 지금 쿼리스트링을 유지한 채 해당 값만 바꾼다.
+page=None 을 함께 넘기는 이유: 5페이지를 보다가 조건을 바꾸면 결과가 한 페이지로
+줄어드는데 page=5가 남아 빈 화면이 된다. 조건을 바꾸면 첫 페이지로 돌아가야 한다.
+
+스위치에 aria-pressed 를 쓰지 않는 이유: 그 속성은 button 역할에만 유효하고 link에는
+무시된다. 켜진 상태는 화면에서는 2px 먹 테두리로, 낭독기에서는 숨은 글자로 알린다.
+켜진 칩(먹 채움)과 켜진 스위치(먹 테두리)를 다르게 둔 것은 뜻이 다르기 때문이다 —
+하나는 "고른 조건", 하나는 "넓힌 범위"다.
+
+필요한 컨텍스트: importance_options, selected_importance, status_options,
+selected_status, show_all.
+{% endcomment %}
+<div class="filters" role="group" aria-label="공시 거르기">
+  <div class="picker">
+    <p class="picker-label" id="picker-importance">중요도</p>
+    <ul class="chips" aria-labelledby="picker-importance">
+      <li>
+        <a class="chip{% if not selected_importance %} chip-on{% endif %}"
+           {% if not selected_importance %}aria-current="true"{% endif %}
+           href="{% querystring importance=None page=None %}">전체</a>
+      </li>
+      {% for option in importance_options %}
+        <li>
+          <a class="chip{% if option.value == selected_importance %} chip-on{% endif %}"
+             {% if option.value == selected_importance %}aria-current="true"{% endif %}
+             href="{% querystring importance=option.value page=None %}">{{ option.label }}</a>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  {% comment %} 검수 상태 거르개. 사용자가 "사람이 확인한 것만 보기"를 할 수 있어야
+     요약을 얼마나 믿을지 스스로 정할 수 있다(PLAN.md 1.4·5.3). "요약 전"은 중요도가
+     없는 공시들이라 중요도를 함께 고르면 결과가 비는 것이 정상이다. {% endcomment %}
+  <div class="picker">
+    <p class="picker-label" id="picker-status">상태</p>
+    <ul class="chips" aria-labelledby="picker-status">
+      <li>
+        <a class="chip{% if not selected_status %} chip-on{% endif %}"
+           {% if not selected_status %}aria-current="true"{% endif %}
+           href="{% querystring status=None page=None %}">전체</a>
+      </li>
+      {% for option in status_options %}
+        <li>
+          <a class="chip{% if option.value == selected_status %} chip-on{% endif %}"
+             {% if option.value == selected_status %}aria-current="true"{% endif %}
+             href="{% querystring status=option.value page=None %}">{{ option.label }}</a>
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <ul class="chips">
+    <li>
+      {% if show_all %}
+        <a class="chip chip-toggle chip-toggle-on" href="{% querystring all=None page=None %}">
+          단순 보고도 보기<span class="sr-only"> (켜짐, 누르면 끕니다)</span>
+        </a>
+      {% else %}
+        <a class="chip chip-toggle" href="{% querystring all='1' page=None %}">
+          단순 보고도 보기<span class="sr-only"> (꺼짐, 누르면 켭니다)</span>
+        </a>
+      {% endif %}
+    </li>
+  </ul>
+</div>

@@ -1,0 +1,41 @@
+{% comment %}
+서비스 마크 — 안경 쓴 공시 문서.
+
+**PNG 이 아니라 SVG 인 이유가 둘이다.**
+
+1. 원본 PNG 는 216×211 인데 **실제 그림은 가운데 82×110px** 이고 나머지는 흰 여백이다.
+   히어로에서 64px 로 줄여 쓰면 괜찮지만 조금만 키워도 선이 뭉갠다.
+2. 원본은 **흰 바탕에 검은 선**이다. 히어로는 검정 띠라 그대로 얹으면 보이지 않고,
+   흰 바탕을 지우고 선을 희게 바꾸면 그 파일은 밝은 화면에서 못 쓴다.
+   `currentColor` 를 쓰면 한 벌로 검정 띠와 흰 바탕 양쪽에 선다.
+
+좌표는 눈대중이 아니라 **원본 PNG 의 픽셀을 재서 넣었다** — 선 굵기 5, 테두리 왼쪽 x=2 ·
+오른쪽 x=79 · 위 y=2 · 아래 y=106, 접힌 귀퉁이 (54,2)-(54,27)-(79,27), 렌즈 반지름 12 ·
+중심 (25.5, 52.5) 와 (58.5, 52.5), 안경다리와 코다리 y=49.
+
+동공이 렌즈 중심보다 조금 오른쪽 아래에 있는 것은 **실수가 아니라 원본 그대로**다.
+이 치우침이 이 마크의 표정을 만든다 — 가운데로 옮기지 말 것.
+
+머리말의 글자 로고(`.brand`)와 함께 쓰므로 이 그림에는 이름을 붙이지 않는다 —
+낭독기가 "공시 쉽게 보기"를 두 번 읽게 된다.
+{% endcomment %}
+<svg class="{{ logo_class|default:'logo' }}" viewBox="-3 -3 88 114"
+     aria-hidden="true" focusable="false"
+     fill="none" stroke="currentColor" stroke-width="5"
+     stroke-linecap="round" stroke-linejoin="round">
+  {% comment %} 문서 테두리. 오른쪽 위가 접혀 있어 V27 에서 시작점으로 닫히며 사선이 된다. {% endcomment %}
+  <path d="M54 2 H6 a4 4 0 0 0 -4 4 V102 a4 4 0 0 0 4 4 H75 a4 4 0 0 0 4 -4 V27 Z"/>
+  {% comment %} 접힌 귀퉁이의 안쪽 두 선. {% endcomment %}
+  <path d="M54 2 V27 H79"/>
+  <path d="M17.5 18 H36.5"/>
+  <path d="M17.5 28.5 H30.5"/>
+  {% comment %} 안경 — 렌즈 둘, 코다리, 양쪽 다리가 문서 테두리까지 닿는다. {% endcomment %}
+  <circle cx="25.5" cy="52.5" r="12"/>
+  <circle cx="58.5" cy="52.5" r="12"/>
+  <path d="M37 49 H47"/>
+  <path d="M2 49 H14"/>
+  <path d="M70 49 H79"/>
+  <circle cx="27.75" cy="53.5" r="3" fill="currentColor" stroke="none"/>
+  <circle cx="59.5" cy="53.5" r="3" fill="currentColor" stroke="none"/>
+  <path d="M34.5 79.5 Q42 85 49.5 79.5"/>
+</svg>

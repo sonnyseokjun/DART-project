@@ -2,6 +2,10 @@
 관심 기업 추가 버튼. 필요한 값: corp(ListedCorp), watch_count, watch_limit.
 한도에 닿았으면 버튼 대신 안내를 보여준다. 막는 것은 서버다(watchlist.follow) —
 여기서 숨기는 것은 누르기 전에 알려주려는 것뿐이다.
+
+`button_class` 로 모양을 넘긴다. 검색 결과처럼 같은 버튼이 여러 줄 늘어서는 곳에서는
+테두리 버튼, 기업 화면처럼 그 화면의 유일한 행동일 때는 채움 파랑이다
+(채움 파랑은 한 화면에 하나 — DESIGN.md 적용 규칙 4).
 {% endcomment %}
 {% if watch_count >= watch_limit %}
   <p class="landing-note">관심 기업이 {{ watch_limit }}곳으로 가득 찼습니다. 다른 기업을 빼면 추가할 수 있습니다.</p>
@@ -10,6 +14,6 @@
     {% csrf_token %}
     <input type="hidden" name="corp_code" value="{{ corp.corp_code }}">
     <input type="hidden" name="next" value="{{ request.get_full_path }}">
-    <button type="submit" class="btn btn-secondary btn-cap">관심 기업에 추가</button>
+    <button type="submit" class="{{ button_class|default:'btn btn-secondary btn-sm' }}">관심 기업에 추가</button>
   </form>
 {% endif %}
