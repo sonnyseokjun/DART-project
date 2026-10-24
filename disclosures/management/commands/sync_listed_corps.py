@@ -13,7 +13,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from disclosures.dart import download_corp_codes
-from disclosures.models import ListedCorp
+from disclosures.models import JobStatus, ListedCorp, record_job_safely
 
 #: 받은 명단이 이보다 적으면 갱신하지 않는다. DART가 잘린 파일을 주거나 형식이 바뀌어
 #: 몇 곳만 읽혔을 때 기존 명단을 통째로 지우지 않기 위한 안전장치다. 상장사는 약 4천 곳.
@@ -54,6 +54,8 @@ class Command(BaseCommand):
             ListedCorp.objects.bulk_update(changed, ['name', 'stock_code'])
             ListedCorp.objects.bulk_create(created)
 
-        self.stdout.write(self.style.SUCCESS(
-            f'상장사 명단 갱신: 전체 {len(incoming):,}곳 · 신규 {len(created)} · '
-            f'변경 {len(changed)} · 제외 {len(removed)}'))
+        summary = (f'전체 {len(incoming):,}곳 · 신규 {len(created)} · '
+                   f'변경 {len(changed)} · 제외 {len(removed)}')
+        # 성공만 적는다. 실패는 "마지막 성공이 오래됨"으로 드러난다(health.py 첫 주석).
+        record_job_safely(JobStatus.Kind.SYNC_LISTED, message=summary, stderr=self.stderr)
+        self.stdout.write(self.style.SUCCESS(f'상장사 명단 갱신: {summary}'))

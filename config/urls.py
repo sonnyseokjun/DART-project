@@ -17,7 +17,13 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 
+from disclosures import monitoring
+
 urlpatterns = [
+    # admin.site.urls보다 먼저 둔다. 뒤에 두면 admin의 앱 경로(<app_label>/)가 먼저 잡아
+    # 404가 난다. admin_view로 감싸 staff 확인을 admin과 똑같이 받는다(이슈 #56).
+    path('admin/monitoring/', admin.site.admin_view(monitoring.dashboard),
+         name='admin_monitoring'),
     path('admin/', admin.site.urls),
     # 우리 회원 경로(탈퇴·웹훅)를 allauth보다 먼저 둔다. 둘 다 accounts/ 아래라
     # 순서가 바뀌면 allauth가 먼저 잡아 404가 날 수 있다.

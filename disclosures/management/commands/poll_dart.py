@@ -42,7 +42,7 @@ from disclosures.dart import (
     latest_disclosures,
     split_date_range,
 )
-from disclosures.models import Company, Disclosure
+from disclosures.models import Company, Disclosure, JobStatus, record_job_safely
 
 # --days, --bgn/--end 모두 없을 때의 기본 조회 범위
 DEFAULT_DAYS = 3
@@ -103,6 +103,34 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        """본 작업(`_poll`)을 돌리고 결과를 JobStatus에 남긴다 (10단계, 이슈 #56).
+
+        `--detect`는 '공시 감지', 구간 옵션 없는 실행은 '전체 폴링'으로 적는다. 백필
+        (`--bgn/--end`)은 정기 작업이 아니라 적지 않는다.
+
+        **"신규 없음"(종료 9)도 성공이다.** 감지가 제대로 돌았고 새 공시가 없었을 뿐이다.
+        이걸 성공으로 적지 않으면 공시가 뜸한 시간마다 "감지가 멈췄다"는 오보가 난다.
+        """
+        kind = None
+        if options.get('detect'):
+            kind = JobStatus.Kind.DETECT
+        elif not (options.get('bgn') or options.get('end')):
+            kind = JobStatus.Kind.FULL_POLL
+        try:
+            self._poll(options)
+        except SystemExit as exc:
+            if kind and exc.code == NOTHING_NEW_EXIT_CODE:
+                record_job_safely(kind, message='신규 없음', stderr=self.stderr)
+            raise
+        except Exception as exc:
+            if kind:
+                record_job_safely(kind, ok=False, message=f'{type(exc).__name__}: {exc}',
+                                  stderr=self.stderr)
+            raise
+        if kind:
+            record_job_safely(kind, message='수집 완료', stderr=self.stderr)
+
+    def _poll(self, options):
         bgn, end = self._resolve_range(options)
 
         companies = {

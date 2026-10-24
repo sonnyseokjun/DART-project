@@ -170,13 +170,14 @@ class Command(BaseCommand):
         cleaned = preprocess_document(raw, disclosure_type=disclosure.disclosure_type)
         disclosure.raw_content = cleaned
         disclosure.raw_fetched = True
+        disclosure.raw_fetched_at = timezone.now()
         # 성공했으니 실패 기록을 지운다. 남겨두면 --stuck 목록에 계속 나타나고,
         # --refetch로 다시 받을 때 지난 실패 횟수가 이어져 조기에 멈춘다.
         disclosure.raw_fetch_attempts = 0
         disclosure.raw_fetch_attempted_at = None
         disclosure.raw_fetch_error = ''
         disclosure.save(update_fields=[
-            'raw_content', 'raw_fetched',
+            'raw_content', 'raw_fetched', 'raw_fetched_at',
             'raw_fetch_attempts', 'raw_fetch_attempted_at', 'raw_fetch_error',
         ])
         return len(raw), len(cleaned), count_tokens(cleaned)

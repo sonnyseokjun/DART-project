@@ -5,12 +5,16 @@ from django.utils.html import format_html
 
 from . import ai_budget
 from .models import (
-    AiUsage, Company, Disclosure, DisclosureSummary, ListedCorp, Sector, SummaryRequest,
-    Watch,
+    AiUsage, AlertState, Company, Disclosure, DisclosureSummary, JobStatus, ListedCorp,
+    PipelineRun, Sector, SummaryRequest, Watch,
 )
 
 #: 일괄 숨김 액션이 남기는 기본 사유. 개별 사유는 변경 화면에서 덧쓴다.
 DEFAULT_HIDDEN_REASON = '검수자 일괄 숨김 처리'
+
+# admin 첫 화면에 운영 모니터링 링크를 얹는다(이슈 #56). 템플릿 이름이 admin/index.html이
+# 아닌 이유는 그 파일 머리 주석에 있다.
+admin.site.index_template = 'admin/dart_index.html'
 
 
 @admin.register(Sector)
@@ -400,3 +404,37 @@ class DisclosureSummaryAdmin(admin.ModelAdmin):
         """
         updated = queryset.update(is_published=True, hidden_reason='', hidden_by='')
         self.message_user(request, f'{updated}건의 노출을 복구했습니다.')
+
+
+# --- 운영 모니터링 (10단계, 이슈 #56) -----------------------------------------
+
+
+class ReadOnlyAdmin(admin.ModelAdmin):
+    """기록은 파이프라인·점검 명령만 쓴다. 손으로 고치면 판정의 근거가 거짓이 된다.
+
+    삭제는 막지 않는다 — 시험 삼아 만든 행이나 잘못된 알림 상태를 지울 길은 남긴다.
+    """
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(JobStatus)
+class JobStatusAdmin(ReadOnlyAdmin):
+    list_display = ('kind', 'last_success_at', 'last_failure_at', 'last_message', 'updated_at')
+
+
+@admin.register(PipelineRun)
+class PipelineRunAdmin(ReadOnlyAdmin):
+    list_display = ('started_at', 'mode', 'ok', 'exit_code', 'new_disclosures', 'fetched',
+                    'summarized', 'mem_min_mb', 'finished_at')
+    list_filter = ('mode', 'ok')
+    date_hierarchy = 'started_at'
+
+
+@admin.register(AlertState)
+class AlertStateAdmin(ReadOnlyAdmin):
+    list_display = ('key', 'level', 'since', 'last_sent_at', 'detail')

@@ -45,3 +45,18 @@ echo "[backup] 로컬 임시 파일 정리"
 unlink "${TMP_ON_HOST}.gz"
 
 echo "[backup] 완료: s3://${S3_BACKUP_BUCKET}/db/db_${STAMP}.sqlite3.gz"
+
+# 성공을 DB에 남긴다(10단계, 이슈 #56). 운영 점검은 "마지막 백업 성공이 26시간을 넘었나"로
+# 백업이 멈춘 것을 알아챈다 — 이 줄이 없으면 백업이 며칠 멈춰도 아무도 모른다.
+#
+# 맨 끝에 두는 이유: 위 단계 중 하나라도 실패하면 set -e로 여기까지 오지 않는다. 실패를
+# 따로 적지 않아도 성공 시각이 멈추므로 판정에 걸린다(disclosures/health.py 첫 주석).
+#
+# 파이프라인과 같은 잠금을 잡는다. DB에 쓰는 프로세스를 하나로 유지하는 것이 SQLite를 쓰는
+# 근거다(PLAN.md 9.3). 위의 스냅샷은 읽기라 잠금 없이 돈다.
+# 기록이 실패해도 백업은 끝났다 — 종료 코드를 바꾸지 않고 로그만 남긴다.
+if ! flock -w 600 /tmp/dart-pipeline.lock \
+        docker compose exec -T web python manage.py record_job backup \
+        --message "s3://${S3_BACKUP_BUCKET}/db/db_${STAMP}.sqlite3.gz"; then
+    echo "[backup] 경고: 백업 성공 기록 실패 — 백업 자체는 완료됐습니다"
+fi

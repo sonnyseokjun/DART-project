@@ -74,6 +74,50 @@ dart() {
     docker compose exec -T web python manage.py "$@"
 }
 
+# --- 실행 기록 (10단계, 이슈 #56) ----------------------------------------
+# **일이 있었던 실행만** DB에 남긴다(record_run → PipelineRun). 헛도는 실행(신규 없음 ·
+# 대기 없음)은 아무것도 쓰지 않는다 — 밤·주말 --requests가 매분 도는데 다 쌓으면 하루
+# 1,440행이다(PLAN.md 9.6). 그래서 RUN_MODE는 "할 일이 있다"가 확정되는 지점에서만 채운다.
+#
+# 기록은 EXIT trap 한 곳에서 한다. 성공·실패 어느 경로로 끝나든 같은 곳을 지나야, 실패한
+# 실행이 기록에서 빠져 "마지막 실행은 성공"처럼 보이는 일이 없다.
+#
+# 시작 시각(RUN_STARTED)은 잠금을 잡은 **직후**에 찍는다(아래 "수집" 앞). 건수는 record_run이
+# 이 시각 이후의 DB 변화로 세는데, 잠금 전에 찍으면 --wait/--full이 최대 600초 기다리는 동안
+# 앞 실행이 만든 공시·요약까지 이 실행 몫으로 두 번 세고, 소요 시간에도 대기가 들어간다.
+# 잠금 전에 끝나는 경로는 RUN_MODE가 비어 있어 기록하지 않는다.
+RUN_STARTED=""
+RUN_MODE=""
+MEM_SAMPLER=""
+MEM_SAMPLES=""
+
+on_exit() {
+    # 맨 먼저 종료 코드를 잡는다. 아래 명령 하나만 지나도 $?가 바뀐다.
+    local rc=$?
+    # trap 안에서 set -e가 살아 있으면 뒤처리 명령 하나가 실패하는 순간 그 값이 스크립트의
+    # 종료 코드가 된다. **기록 실패가 파이프라인 실패가 되면 안 된다** — 끝에서 rc로 끝낸다.
+    set +e
+    if [ -n "$MEM_SAMPLER" ]; then
+        kill "$MEM_SAMPLER" 2>/dev/null
+    fi
+    if [ -n "$RUN_MODE" ]; then
+        # 본 경로는 아래 "최저 가용만 뽑는다"에서 이미 셌다(mem_min). 실패 경로는 거기를
+        # 지나지 못했으므로 여기서 다시 센다. set -u라 아직 없는 변수는 :-로 읽는다.
+        local mem="${mem_min:-}"
+        if [ -z "$mem" ] && [ -n "$MEM_SAMPLES" ] && [ -f "$MEM_SAMPLES" ]; then
+            mem="$(awk 'NR==1 || $1 < m {m=$1} END {if (NR) print m}' "$MEM_SAMPLES")"
+        fi
+        dart record_run --mode "$RUN_MODE" --started-at "$RUN_STARTED" \
+            --exit-code "$rc" ${mem:+--mem-min-mb "$mem"} \
+            || log "실행 기록 실패 — 파이프라인 결과(종료 코드 $rc)는 그대로입니다"
+    fi
+    if [ -n "$MEM_SAMPLES" ]; then
+        rm -f "$MEM_SAMPLES"
+    fi
+    exit "$rc"
+}
+trap on_exit EXIT
+
 # --- 중복 실행 방지 ------------------------------------------------------
 # 잠금을 crontab이 아니라 스크립트 안에서 잡는다. 사람이 손으로 실행하는 경우까지
 # 함께 막기 위해서다 — cron이 도는 중에 수동 실행이 겹치면 같은 문제가 생긴다.
@@ -110,6 +154,9 @@ elif [ "$lock_rc" -ne 0 ]; then
     exit "$lock_rc"
 fi
 
+# 잠금을 잡았다 — 여기서부터가 이 실행이다(시작 시각을 여기서 찍는 이유는 위 "실행 기록").
+RUN_STARTED="$(date -Is)"
+
 # --- 수집 ---------------------------------------------------------------
 if [ "$REQUESTS" -eq 1 ]; then
     # 수집하지 않는다. 요청받은 공시의 원문·요약만 본다 — DB 확인은 DART·LLM 미호출.
@@ -127,7 +174,10 @@ if [ "$REQUESTS" -eq 1 ]; then
         exit "$pending_rc"
     fi
     RESUME=1
+    RUN_MODE=requests
 elif [ "$FULL" -eq 1 ]; then
+    # 전체 폴링은 하루 1회라 언제나 "일이 있는 실행"이다. 수집이 실패해도 기록이 남는다.
+    RUN_MODE=full
     log "전체 폴링 시작 (유형 라벨 보정 · 누락 보강)"
     dart poll_dart --days "$POLL_DAYS"
 else
@@ -159,9 +209,15 @@ else
             exit "$pending_rc"
         fi
         RESUME=1
+        RUN_MODE=resume
     elif [ "$rc" -ne 0 ]; then
+        # 감지 실패는 실행 기록으로 남기지 않는다. 장애 중에는 매분 실패하므로 그대로 쌓으면
+        # 헛도는 실행과 같은 문제가 된다. poll_dart가 '공시 감지'의 마지막 실패를 이미
+        # 적었고, 판정은 마지막 성공이 오래됐는지로 한다(disclosures/health.py).
         log "수집 실패 (종료 코드 $rc) — 뒷단계를 진행하지 않습니다"
         exit "$rc"
+    else
+        RUN_MODE=detect
     fi
 fi
 
@@ -181,10 +237,10 @@ MEM_SAMPLES="$(mktemp)"
 for _ in $(seq 300); do free -m | awk 'NR==2 {print $7}'; sleep 2; done \
     >> "$MEM_SAMPLES" &
 MEM_SAMPLER=$!
-# `|| true`가 없으면 안 된다. set -e 아래에서는 trap 안의 kill이 실패하는 순간
-# 뒤처리(rm)가 끊기고, 무엇보다 **성공한 실행이 종료 코드 1로 끝난다.** 아래에서
-# 이미 죽인 뒤라 여기서 kill이 실패하는 것이 오히려 정상 경로다.
-trap 'kill "$MEM_SAMPLER" 2>/dev/null || true; rm -f "$MEM_SAMPLES"' EXIT
+# 표본기 정리(kill · rm)는 위 on_exit이 한다. 예전에는 여기서 trap을 따로 걸었는데, trap은
+# 신호마다 하나뿐이라 여기서 다시 걸면 실행 기록 trap을 지워 버린다. on_exit은 set +e로
+# 돌므로, 아래에서 이미 죽인 표본기를 다시 kill하다 실패해도 **성공한 실행이 종료 코드 1로
+# 끝나지 않는다** — 예전 trap에 `|| true`를 붙였던 이유와 같은 함정이다.
 
 # --- 선별 → 원문 → 요약 --------------------------------------------------
 # 재개 실행은 apply_selection을 건너뛴다. 새로 수집한 공시가 없으니 선별 상태가
