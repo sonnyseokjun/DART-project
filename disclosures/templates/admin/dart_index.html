@@ -1,0 +1,28 @@
+{% extends "admin/index.html" %}
+{% comment %}
+admin 첫 화면 — 기본 화면 위에 운영 모니터링으로 가는 링크 한 줄을 얹는다(이슈 #56).
+
+이름이 admin/index.html이 아닌 이유: INSTALLED_APPS에서 disclosures가 django.contrib.admin 뒤에 있어
+같은 이름으로는 admin 기본 템플릿이 이긴다. admin.py에서 `admin.site.index_template`로 이 파일을 지정한다.
+{% endcomment %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .mon-entry {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px;
+    margin: 0 0 24px; padding: 12px 0;
+    border-top: 2px solid var(--body-fg, #262626); border-bottom: 1px solid var(--hairline-color, #e6e6e6);
+  }
+  .mon-entry a { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-decoration: none; color: var(--body-fg, #262626); }
+  .mon-entry a:hover, .mon-entry a:focus { color: var(--link-hover-color, #0653b6); }
+  .mon-entry span { font-size: 12px; color: var(--body-quiet-color, #6b6b6b); }
+</style>
+{% endblock %}
+
+{% block content %}
+<p class="mon-entry">
+  <a href="{% url 'admin_monitoring' %}">운영 모니터링 ›</a>
+  <span>파이프라인·백업·요청 처리·AI 비용·서버 상태를 한 장으로 본다</span>
+</p>
+{{ block.super }}
+{% endblock %}
