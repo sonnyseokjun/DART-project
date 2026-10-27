@@ -1,0 +1,299 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+운영 모니터링 대시보드 — /admin/monitoring/ (이슈 #56, PLAN.md 9.6).
+
+컨텍스트는 `_workspace/00_input.md`의 "대시보드 — 뷰와 템플릿 사이 계약"만 쓴다:
+checked_at · overall · checks · sections · daily_cost · recent_runs · jobs.
+판정은 뷰(health.py)가 끝낸 상태로 오고, 이 템플릿은 그리기만 한다 — 임계값을 여기서 다시 비교하지 않는다.
+
+상태 표시는 DESIGN.md "Gauge and status"를 따른다. 색은 8px 네모에만 두고 글자는 먹색이며,
+네모 옆에 반드시 "정상·주의·이상·판정 불가" 글자를 붙인다. 색만으로 구분하지 않는다(9.5).
+판정 불가는 요약 대기와 같은 점선 빈 네모다 — "없음"의 신호라 면을 칠하지 않는다.
+
+스타일은 이 화면 하나에만 쓰여 템플릿 안에 둔다. 모든 클래스에 `mon-` 접두어를 붙여 admin과 겹치지 않게 하고,
+admin 다크 모드에서도 읽히도록 글자·면·선은 admin CSS 변수를 우선 쓴다.
+JS·외부 CDN 없음. 일별 비용 막대는 ratio로 높이를 잡는 CSS만으로 그린다.
+{% endcomment %}
+{% load i18n %}
+
+{% block title %}운영 모니터링 | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .mon {
+    --mon-ok: #22c55e;
+    --mon-warn: #f59e0b;
+    --mon-bad: #dc2626;
+    --mon-ink: var(--body-fg, #262626);
+    --mon-muted: var(--body-quiet-color, #6b6b6b);
+    --mon-line: var(--hairline-color, #e6e6e6);
+    --mon-line-strong: var(--border-color, #cccccc);
+    --mon-soft: var(--darkened-bg, #f7f7f7);
+    color: var(--mon-ink);
+    font-size: 14px;
+    line-height: 1.55;
+    word-break: keep-all;
+    max-width: 1440px;
+  }
+  .mon *, .mon *::before { box-sizing: border-box; }
+  .mon h2 {
+    margin: 0 0 12px; padding: 0; background: none; color: var(--mon-ink);
+    font-size: 13px; font-weight: 700; letter-spacing: .5px; text-transform: none;
+  }
+  .mon-num { font-variant-numeric: tabular-nums; }
+  .mon-muted { color: var(--mon-muted); }
+
+  /* 상태 표시 — 8px 네모 + 글자. 네모만 색을 가진다. */
+  .mon-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; font-weight: 700; letter-spacing: .5px; }
+  .mon-status::before { content: ""; flex: none; width: 8px; height: 8px; border: 1px solid transparent; }
+  .mon-status[data-level="ok"]::before { background: var(--mon-ok); }
+  .mon-status[data-level="warn"]::before { background: var(--mon-warn); }
+  .mon-status[data-level="bad"]::before { background: var(--mon-bad); }
+  .mon-status[data-level="unknown"] { color: var(--mon-muted); font-weight: 400; }
+  .mon-status[data-level="unknown"]::before { border: 1px dashed var(--mon-line-strong); }
+
+  /* 전체 상태 — 화면 맨 위 한 줄. 이상이면 위아래 2px 먹 선으로 한 번 더 말한다(색이 아니라 선 굵기). */
+  .mon-overall {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px;
+    padding: 16px 0; margin: 0 0 32px;
+    border-top: 1px solid var(--mon-line); border-bottom: 1px solid var(--mon-line);
+  }
+  .mon-overall[data-level="bad"] { border-top: 2px solid var(--mon-ink); border-bottom: 2px solid var(--mon-ink); }
+  .mon-overall-state { display: inline-flex; align-items: center; gap: 10px; font-size: 24px; font-weight: 700; line-height: 1.25; }
+  .mon-overall-state::before { content: ""; width: 12px; height: 12px; flex: none; }
+  .mon-overall[data-level="ok"] .mon-overall-state::before { background: var(--mon-ok); }
+  .mon-overall[data-level="warn"] .mon-overall-state::before { background: var(--mon-warn); }
+  .mon-overall[data-level="bad"] .mon-overall-state::before { background: var(--mon-bad); }
+  .mon-overall-list { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0; font-size: 14px; }
+  .mon-overall-item { white-space: nowrap; }
+  .mon-overall-time { margin: 0 0 0 auto; font-size: 12px; color: var(--mon-muted); }
+
+  .mon-block { margin: 0 0 40px; }
+
+  /* 점검 항목 — 표가 아니라 줄. 좁은 화면에서는 상태·제목 아래로 설명이 내려간다. */
+  .mon-checks { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--mon-line); }
+  .mon-check {
+    display: grid; grid-template-columns: 96px minmax(120px, 180px) minmax(0, 1fr);
+    gap: 4px 16px; align-items: baseline;
+    margin: 0; padding: 12px 0; border-bottom: 1px solid var(--mon-line); list-style: none;
+  }
+  .mon-check-title { font-weight: 700; }
+  .mon-check-summary { margin: 0; }
+  .mon-check-detail { margin: 2px 0 0; font-size: 12px; color: var(--mon-muted); white-space: pre-line; }
+  .mon-check[data-level="bad"] .mon-check-summary { font-weight: 700; }
+
+  /* 숫자 패널 다섯 개 */
+  .mon-sections { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 32px; }
+  .mon-section { margin: 0 0 24px; padding-top: 12px; border-top: 2px solid var(--mon-ink); min-width: 0; }
+  .mon-items { margin: 0; }
+  .mon-item { padding: 8px 0; border-bottom: 1px solid var(--mon-line); }
+  .mon-item dt { margin: 0; font-size: 12px; color: var(--mon-muted); letter-spacing: .5px; }
+  .mon-item dd { margin: 2px 0 0; }
+  .mon-item-value { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .mon-item-hint { display: block; margin-top: 2px; font-size: 12px; color: var(--mon-muted); }
+
+  /* 일별 AI 비용 — ratio(0~1)로 높이를 잡는 막대 */
+  .mon-cost-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin: 0 0 8px; font-size: 12px; color: var(--mon-muted); }
+  .mon-bars {
+    display: flex; align-items: flex-end; gap: 2px;
+    height: 120px; margin: 0; padding: 0; list-style: none;
+    border-bottom: 1px solid var(--mon-ink);
+  }
+  .mon-bar { flex: 1 1 0; min-width: 0; height: 100%; margin: 0; padding: 0; list-style: none; display: flex; align-items: flex-end; }
+  .mon-bar span { display: block; width: 100%; min-height: 2px; background: var(--mon-ink); }
+  .mon-bar-zero span { height: 1px !important; background: var(--mon-line-strong); }
+  .mon-bars-axis { display: flex; justify-content: space-between; margin: 4px 0 0; font-size: 12px; color: var(--mon-muted); font-variant-numeric: tabular-nums; }
+  .mon-details { margin-top: 12px; font-size: 13px; }
+  .mon-details summary { cursor: pointer; font-weight: 700; letter-spacing: .5px; }
+
+  /* 표 — 좁은 화면에서는 표 안에서만 가로로 움직이고 페이지는 넘치지 않는다 */
+  .mon-scroll { overflow-x: auto; max-width: 100%; }
+  .mon table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .mon th, .mon td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--mon-line); text-align: left; vertical-align: top; background: none; }
+  .mon thead th { font-size: 12px; font-weight: 700; letter-spacing: .5px; color: var(--mon-muted); border-bottom: 1px solid var(--mon-ink); white-space: nowrap; }
+  .mon td.mon-r, .mon th.mon-r { text-align: right; font-variant-numeric: tabular-nums; }
+  .mon td.mon-nowrap { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .mon td.mon-msg { min-width: 200px; color: var(--mon-muted); overflow-wrap: anywhere; }
+  .mon-empty { margin: 0; padding: 12px 0; color: var(--mon-muted); border-top: 1px solid var(--mon-line); border-bottom: 1px solid var(--mon-line); }
+
+  @media (max-width: 767px) {
+    .mon-check { grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; }
+    .mon-check > div { grid-column: 1 / -1; }
+    .mon-overall-time { margin-left: 0; flex-basis: 100%; }
+    .mon-overall-state { font-size: 20px; }
+  }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; 운영 모니터링
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main" class="mon">
+
+  {% comment %} 맨 위 한 줄 — 무엇이 이상·주의인지 이름까지 적는다. 아래 목록을 훑지 않아도 알게. {% endcomment %}
+  <section class="mon-overall" data-level="{{ overall }}" aria-label="전체 상태">
+    <p class="mon-overall-state" style="margin:0">
+      {% if overall == 'bad' %}이상{% elif overall == 'warn' %}주의{% else %}정상{% endif %}
+    </p>
+    {% if overall != 'ok' %}
+      <p class="mon-overall-list">
+        {% for c in checks %}{% if c.level == 'bad' %}<span class="mon-overall-item"><span class="mon-status" data-level="bad">이상</span> {{ c.title }}</span>{% endif %}{% endfor %}
+        {% for c in checks %}{% if c.level == 'warn' %}<span class="mon-overall-item"><span class="mon-status" data-level="warn">주의</span> {{ c.title }}</span>{% endif %}{% endfor %}
+      </p>
+    {% else %}
+      <p class="mon-overall-list mon-muted">모든 점검 항목이 기준 안에 있다.</p>
+    {% endif %}
+    <p class="mon-overall-time">판정 <time class="mon-num" datetime="{{ checked_at|date:'c' }}">{{ checked_at|date:'Y-m-d H:i:s' }}</time> · 이 화면을 연 시각 기준</p>
+  </section>
+
+  <section class="mon-block" aria-labelledby="mon-checks-h">
+    <h2 id="mon-checks-h">점검 항목</h2>
+    <ul class="mon-checks">
+      {% for c in checks %}
+        <li class="mon-check" data-level="{{ c.level }}">
+          <span class="mon-status" data-level="{{ c.level }}">{% if c.level == 'ok' %}정상{% elif c.level == 'warn' %}주의{% elif c.level == 'bad' %}이상{% else %}판정 불가{% endif %}</span>
+          <span class="mon-check-title">{{ c.title }}</span>
+          <div>
+            <p class="mon-check-summary">{{ c.summary }}</p>
+            {% if c.detail %}<p class="mon-check-detail">{{ c.detail }}</p>{% endif %}
+          </div>
+        </li>
+      {% empty %}
+        <li class="mon-empty">점검 결과가 없다.</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="mon-block mon-sections" aria-label="현황 숫자">
+    {% for s in sections %}
+      <div class="mon-section" id="mon-{{ s.key }}">
+        <h2>{{ s.title }}</h2>
+        <dl class="mon-items">
+          {% for it in s.items %}
+            <div class="mon-item">
+              <dt>{{ it.label }}</dt>
+              <dd>
+                <span class="mon-item-value">
+                  {{ it.value }}
+                  {% if it.level %}<span class="mon-status" data-level="{{ it.level }}">{% if it.level == 'ok' %}정상{% elif it.level == 'warn' %}주의{% elif it.level == 'bad' %}이상{% else %}판정 불가{% endif %}</span>{% endif %}
+                </span>
+                {% if it.hint %}<span class="mon-item-hint">{{ it.hint }}</span>{% endif %}
+              </dd>
+            </div>
+          {% endfor %}
+        </dl>
+      </div>
+    {% endfor %}
+  </section>
+
+  <section class="mon-block" aria-labelledby="mon-cost-h">
+    <h2 id="mon-cost-h">일별 AI 비용 · 최근 30일</h2>
+    {% if daily_cost %}
+      <p class="mon-cost-head">
+        {% with top=daily_cost|dictsortreversed:"cost_usd"|first %}
+          {% if top.cost_usd %}
+            <span>막대 높이는 기간 최댓값 대비 · 최댓값 <strong class="mon-num">${{ top.cost_usd|floatformat:4 }}</strong> ({{ top.date|date:'m-d' }})</span>
+            <span>막대에 마우스를 올리면 그날 금액</span>
+          {% else %}
+            <span>이 기간에 AI 사용이 없다 — 모든 날이 $0</span>
+          {% endif %}
+        {% endwith %}
+      </p>
+      <ol class="mon-bars" aria-hidden="true">
+        {% for d in daily_cost %}
+          <li class="mon-bar{% if not d.cost_usd %} mon-bar-zero{% endif %}" title="{{ d.date|date:'m-d' }} · ${{ d.cost_usd|floatformat:4 }}">
+            <span style="height: {% widthratio d.ratio 1 100 %}%"></span>
+          </li>
+        {% endfor %}
+      </ol>
+      <p class="mon-bars-axis">
+        <span>{{ daily_cost.0.date|date:'m-d' }}</span>
+        <span>{% with last=daily_cost|last %}{{ last.date|date:'m-d' }}{% endwith %}</span>
+      </p>
+      {% comment %} 막대는 화면 읽기 프로그램에 숨기고 같은 값을 표로 준다. 접어 두는 것은 <details>라 JS가 없다. {% endcomment %}
+      <details class="mon-details">
+        <summary>일별 금액 표로 보기</summary>
+        <div class="mon-scroll">
+          <table>
+            <thead><tr><th>날짜</th><th class="mon-r">금액(USD)</th></tr></thead>
+            <tbody>
+              {% for d in daily_cost %}
+                <tr><td class="mon-nowrap">{{ d.date|date:'Y-m-d' }}</td><td class="mon-r">${{ d.cost_usd|floatformat:4 }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    {% else %}
+      <p class="mon-empty">최근 30일 AI 사용 기록이 없다.</p>
+    {% endif %}
+  </section>
+
+  <section class="mon-block" aria-labelledby="mon-runs-h">
+    <h2 id="mon-runs-h">최근 파이프라인 실행 · 일이 있었던 것만 20건</h2>
+    {% if recent_runs %}
+      <div class="mon-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>시작</th><th>종료</th><th class="mon-r">소요</th><th>방식</th><th>결과</th>
+              <th class="mon-r">신규 공시</th><th class="mon-r">원문</th><th class="mon-r">요약</th>
+              <th class="mon-r">메모리 최저</th><th>메시지</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in recent_runs %}
+              <tr>
+                <td class="mon-nowrap">{{ r.started_at|date:'m-d H:i:s' }}</td>
+                <td class="mon-nowrap">{% if r.finished_at %}{{ r.finished_at|date:'H:i:s' }}{% else %}<span class="mon-muted">—</span>{% endif %}</td>
+                <td class="mon-r">{% if r.duration_seconds is not None %}{{ r.duration_seconds }}초{% else %}<span class="mon-muted">—</span>{% endif %}</td>
+                <td class="mon-nowrap">{{ r.get_mode_display }}</td>
+                <td class="mon-nowrap">
+                  {% if r.ok %}<span class="mon-status" data-level="ok">성공</span>{% else %}<span class="mon-status" data-level="bad">실패</span>{% endif %}
+                  {% if r.exit_code is not None %}<span class="mon-muted mon-num">· 종료 {{ r.exit_code }}</span>{% endif %}
+                </td>
+                <td class="mon-r">{{ r.new_disclosures }}</td>
+                <td class="mon-r">{{ r.fetched }}</td>
+                <td class="mon-r">{{ r.summarized }}</td>
+                <td class="mon-r">{% if r.mem_min_mb is not None %}{{ r.mem_min_mb }}MB{% else %}<span class="mon-muted">—</span>{% endif %}</td>
+                <td class="mon-msg">{{ r.message|default:"" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="mon-empty">기록된 실행이 없다. 헛도는 실행은 기록하지 않으므로, 처리할 일이 없던 기간이면 정상이다.</p>
+    {% endif %}
+  </section>
+
+  <section class="mon-block" aria-labelledby="mon-jobs-h">
+    <h2 id="mon-jobs-h">작업별 마지막 성공·실패</h2>
+    {% if jobs %}
+      <div class="mon-scroll">
+        <table>
+          <thead><tr><th>작업</th><th>마지막 성공</th><th>마지막 실패</th><th>메시지</th></tr></thead>
+          <tbody>
+            {% for j in jobs %}
+              <tr>
+                <td class="mon-nowrap"><strong>{{ j.get_kind_display }}</strong></td>
+                <td class="mon-nowrap">{% if j.last_success_at %}{{ j.last_success_at|date:'m-d H:i:s' }} <span class="mon-muted">({{ j.last_success_at|timesince:checked_at }} 전)</span>{% else %}<span class="mon-status" data-level="unknown">기록 없음</span>{% endif %}</td>
+                <td class="mon-nowrap">{% if j.last_failure_at %}{{ j.last_failure_at|date:'m-d H:i:s' }}{% else %}<span class="mon-muted">—</span>{% endif %}</td>
+                <td class="mon-msg">{{ j.last_message|default:"" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="mon-empty">작업 기록이 아직 없다.</p>
+    {% endif %}
+  </section>
+
+</div>
+{% endblock %}

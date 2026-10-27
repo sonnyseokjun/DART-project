@@ -175,6 +175,10 @@ class Disclosure(models.Model):
         '원문 확보 마지막 시도', null=True, blank=True
     )
     raw_fetch_error = models.CharField('원문 확보 마지막 오류', max_length=300, blank=True)
+    # 원문을 받은 시각(10단계, 이슈 #56). 성공하면 raw_fetch_attempted_at을 지우므로 그것만으로는
+    # "이번 실행에서 원문을 몇 건 받았나"를 셀 수 없다(record_run). 이 필드가 생기기 전에 받은
+    # 원문은 비어 있다 — 모르는 시각을 지어 채우지 않는다.
+    raw_fetched_at = models.DateTimeField('원문 확보 시각', null=True, blank=True)
     # 요약 생성 재시도 제어. 요약에 실패하면 DisclosureSummary 행이 만들어지지 않아
     # 다음 실행에서 그대로 다시 대상이 된다. 하루 1회 폴링에서는 하루 1번이었지만,
     # 7단계에서 파이프라인이 1분마다 돌면 같은 공시로 **LLM을 매분 부른다**.
@@ -515,3 +519,136 @@ class DisclosureSummary(models.Model):
                     if part.strip()
                 )
         return numbers
+
+
+# --- 운영 모니터링 (10단계, 이슈 #56) ---------------------------------------
+#
+# 판정은 "실패했다"가 아니라 "최근 성공이 너무 오래됐다"로 한다(PLAN.md 9.6). 이 프로젝트의
+# 큰 사고 셋이 전부 실패가 아니라 **아예 안 돎**이었고, 그때 로그는 정상으로 보였다(9.3).
+# 판정 규칙은 disclosures/health.py가 단일 출처이고, 아래 표들은 그 재료만 담는다.
+
+
+class JobStatus(models.Model):
+    """작업 종류별 **마지막 성공·실패 시각** — 종류마다 한 행을 덮어쓴다.
+
+    실행마다 행을 쌓지 않는 이유: 감지 폴링은 평일 낮 매분 돈다. 쌓으면 하루 수백 행인데
+    판정에 필요한 것은 "마지막 성공이 언제인가" 하나뿐이다.
+    """
+
+    class Kind(models.TextChoices):
+        DETECT = 'detect', '공시 감지'
+        FULL_POLL = 'full_poll', '전체 폴링'
+        BACKUP = 'backup', '백업'
+        SYNC_LISTED = 'sync_listed', '상장사 명단'
+        HEALTH_CHECK = 'health_check', '운영 점검'
+
+    kind = models.CharField('작업 종류', max_length=20, choices=Kind.choices, unique=True)
+    last_success_at = models.DateTimeField('마지막 성공', null=True, blank=True)
+    last_failure_at = models.DateTimeField('마지막 실패', null=True, blank=True)
+    last_message = models.CharField('마지막 메시지', max_length=300, blank=True)
+    # 성공 기록이 한 번도 없을 때 "언제부터 없었나"를 재는 기준이다. 없으면 배포 직후
+    # 기록이 없는 상태와 한 번도 돌지 않은 상태가 구분되지 않아, 영영 안 도는 작업을
+    # "판정 불가"로 계속 덮어 두게 된다(health._age_basis).
+    created_at = models.DateTimeField('기록 시작', auto_now_add=True)
+    updated_at = models.DateTimeField('갱신 시각', auto_now=True)
+
+    class Meta:
+        verbose_name = '작업 상태'
+        verbose_name_plural = '작업 상태'
+
+    def __str__(self):
+        return self.get_kind_display()
+
+    @classmethod
+    def mark(cls, kind, *, ok=True, message='', now=None):
+        """성공 또는 실패를 한 행에 덮어쓴다. 기록 실패가 본 작업을 실패로 만들면 안 되므로
+        호출하는 쪽은 예외를 삼킨다(record_job_safely)."""
+        from django.utils import timezone
+
+        now = now or timezone.now()
+        fields = {'last_message': (message or '')[:300]}
+        fields['last_success_at' if ok else 'last_failure_at'] = now
+        status, created = cls.objects.get_or_create(kind=kind, defaults=fields)
+        if not created:
+            for name, value in fields.items():
+                setattr(status, name, value)
+            status.save(update_fields=[*fields, 'updated_at'])
+        return status
+
+
+def record_job_safely(kind, *, ok=True, message='', stderr=None):
+    """`JobStatus.mark`를 부르되 **실패해도 예외를 내지 않는다.**
+
+    poll_dart·sync_listed_corps의 본 작업이 끝난 뒤에 부른다. 기록이 실패했다고 수집이
+    실패한 것처럼 끝나면 파이프라인이 뒷단계를 건너뛴다 — 감시 장치가 감시 대상을
+    멈추는 셈이다. 기록이 빠지면 판정이 "오래됨"으로 잡아 준다.
+    """
+    try:
+        JobStatus.mark(kind, ok=ok, message=message)
+    except Exception as exc:  # noqa: BLE001 — 어떤 이유로든 본 작업을 막지 않는다
+        if stderr is not None:
+            stderr.write(f'작업 상태 기록 실패({kind}): {exc}')
+
+
+class PipelineRun(models.Model):
+    """**일이 있었던** 파이프라인 실행의 이력. 헛도는 실행(신규 없음·대기 없음)은 남기지 않는다.
+
+    밤·주말 `--requests`가 매분 도는데 대부분 할 일이 없다. 그걸 다 쌓으면 하루 1,440행이고
+    정작 볼 실행이 묻힌다. 90일 지난 행은 check_health가 하루 한 번 지운다.
+
+    건수는 스크립트 출력을 파싱하지 않고 실행 끝에 **DB에서** 센다(record_run) — 출력 문구를
+    고칠 때마다 기록이 조용히 0이 되는 일을 막는다.
+    """
+
+    class Mode(models.TextChoices):
+        DETECT = 'detect', '감지'
+        RESUME = 'resume', '재개'
+        FULL = 'full', '전체 폴링'
+        REQUESTS = 'requests', '요청 처리'
+
+    mode = models.CharField('실행 모드', max_length=10, choices=Mode.choices)
+    started_at = models.DateTimeField('시작', db_index=True)
+    finished_at = models.DateTimeField('종료', null=True, blank=True)
+    ok = models.BooleanField('성공', default=False)
+    exit_code = models.SmallIntegerField('종료 코드', null=True, blank=True)
+    new_disclosures = models.PositiveIntegerField('신규 공시', default=0)
+    fetched = models.PositiveIntegerField('원문 확보', default=0)
+    summarized = models.PositiveIntegerField('요약 생성', default=0)
+    mem_min_mb = models.PositiveIntegerField('메모리 최저 가용(MB)', null=True, blank=True)
+    message = models.CharField('메시지', max_length=300, blank=True)
+
+    class Meta:
+        verbose_name = '파이프라인 실행'
+        verbose_name_plural = '파이프라인 실행'
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f'{self.started_at:%Y-%m-%d %H:%M} {self.get_mode_display()}'
+
+    @property
+    def duration_seconds(self):
+        """실행 시간(초, 정수). 종료 시각이 없으면 None — 대시보드 실행 이력 표가 쓴다."""
+        if self.finished_at is None:
+            return None
+        return int((self.finished_at - self.started_at).total_seconds())
+
+
+class AlertState(models.Model):
+    """점검 항목별 **마지막으로 알린 상태** — 같은 이상을 한 번만 알리기 위한 기억.
+
+    매 점검(10분)마다 보내면 메일이 소음이 되고 결국 아무도 안 읽는다(PLAN.md 9.6).
+    정상 → 이상으로 바뀔 때 1통, 복구될 때 1통만 보낸다.
+    """
+
+    key = models.CharField('점검 항목', max_length=20, unique=True)
+    level = models.CharField('상태', max_length=10, default='ok')
+    since = models.DateTimeField('이 상태가 된 시각')
+    last_sent_at = models.DateTimeField('마지막 알림 발송', null=True, blank=True)
+    detail = models.CharField('내용', max_length=300, blank=True)
+
+    class Meta:
+        verbose_name = '알림 상태'
+        verbose_name_plural = '알림 상태'
+
+    def __str__(self):
+        return f'{self.key}: {self.level}'

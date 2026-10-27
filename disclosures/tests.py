@@ -561,12 +561,29 @@ class PipelineScriptTest(TestCase):
         set -e 아래에서는 trap의 kill이 실패하는 순간 뒤처리가 끊기고 스크립트가
         1로 끝난다 — 성공한 실행이 cron 눈에는 실패로 보인다. 본문에서 이미 죽인
         뒤라 여기서 kill이 실패하는 것이 오히려 정상 경로다.
+
+        10단계(이슈 #56)에서 trap 한 줄(`kill … || true; rm -f …`)이 `on_exit` 함수로
+        바뀌었다. 실행 기록(record_run)까지 같은 trap에서 해야 하는데 trap은 신호마다 하나라,
+        표본기 줄에서 다시 걸면 기록 trap이 지워진다. 그래서 `|| true` 대신 함수 전체를
+        `set +e`로 돌리고 처음에 잡아 둔 종료 코드로 끝내는지를 본다. 실제로 그렇게 끝나는지는
+        test_monitoring.PipelineRunRecordingTest가 stub으로 돌려 확인한다.
         """
         script = self._read('pipeline.sh')
-        trap = next(ln for ln in script.splitlines() if ln.startswith('trap '))
-        self.assertIn('MEM_SAMPLER', trap)
-        self.assertIn('|| true', trap, 'trap의 kill이 종료 코드를 오염시킨다')
-        self.assertIn('rm -f', trap, '표본 파일을 지우지 않는다')
+        traps = [ln for ln in script.splitlines() if ln.startswith('trap ')]
+        self.assertEqual(traps, ['trap on_exit EXIT'],
+                         'EXIT trap이 둘 이상이면 나중에 건 쪽이 앞의 뒤처리를 지운다')
+
+        match = re.search(r'^on_exit\(\) \{\n(.*?)\n\}$', script, re.DOTALL | re.MULTILINE)
+        self.assertIsNotNone(match, 'pipeline.sh에서 on_exit 함수를 찾지 못했다')
+        body = match.group(1)
+        commands = [ln.strip() for ln in body.splitlines()
+                    if ln.strip() and not ln.strip().startswith('#')]
+        # 첫 명령이 아니면 그 앞 명령의 종료 코드로 덮인다.
+        self.assertEqual(commands[0], 'local rc=$?', '종료 코드를 맨 먼저 잡지 않는다')
+        self.assertEqual(commands[1], 'set +e', '뒤처리의 실패가 set -e로 종료 코드를 오염시킨다')
+        self.assertEqual(commands[-1], 'exit "$rc"', '처음 잡은 종료 코드로 끝내지 않는다')
+        self.assertIn('kill "$MEM_SAMPLER"', body)
+        self.assertIn('rm -f "$MEM_SAMPLES"', body, '표본 파일을 지우지 않는다')
 
     def test_memory_minimum_is_logged(self):
         """재기만 하고 남기지 않으면 30분 표본과 다를 게 없다."""

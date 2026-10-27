@@ -295,6 +295,13 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 - **AWS Budgets**: 월 $15 임계값 이메일 알림
 - **OpenAI 대시보드**: 사용량 한도(hard limit) 설정
 - **Lightsail 메트릭**: CPU·네트워크 경보
+- **운영 점검 메일** (10단계, 이슈 #56): 서버 cron이 10분마다 `check_health`를 돌려 이상이
+  생길 때 1통, 복구될 때 1통을 보낸다. 무엇을 보는지는 PLAN.md 9.6, 받았을 때 할 일은 5장
+  "알림 메일을 받았다". 설정은 3.1의 `EMAIL_*`·`ALERT_EMAIL_TO`
+- **UptimeRobot** (외부, 무료): 5분마다 `https://<도메인>/`에 접속해 안 열리면 메일을 보낸다.
+  **서버가 통째로 죽으면 위 점검 메일도 함께 죽는다** — 그 경우를 잡는 것은 이것뿐이다.
+  가입 → Add New Monitor → HTTP(s) · URL `https://<도메인>/` · 5분 → Alert Contacts에 메일.
+  서버에 설치하는 것은 없다
 
 ---
 
@@ -320,6 +327,14 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | `KAKAO_ADMIN_KEY` | (32자) | 콘솔 → 앱 → **어드민 키**. 탈퇴 시 연결 끊기와 연결 해제 웹훅 확인에 쓴다. **가장 강력한 키다** |
 | `PRIVACY_CONTACT_EMAIL` | `owner@example.com` | 개인정보처리방침에 **공개되는** 보호책임자 연락처. 비우면 방침에 "준비 중"이 뜬다 |
 | `AI_MONTHLY_BUDGET_USD` | `6.5` | 월 AI 비용 상한(USD). **적지 않아도 된다** — 비우면 6.5. 목표 1만 원보다 낮게 둔 이유는 PLAN.md 9.4 |
+| `EMAIL_HOST_USER` | `dart.alert@gmail.com` | 알림 메일을 **보내는** Gmail 계정. 10단계(이슈 #56). 개인 메일과 분리된 서비스용 계정을 권한다 |
+| `EMAIL_HOST_PASSWORD` | (16자) | 그 계정의 **앱 비밀번호**(2단계 인증 → 앱 비밀번호). 로그인 비밀번호가 아니다. 4자씩 띄어 붙여 넣어도 된다 |
+| `ALERT_EMAIL_TO` | `owner@example.com` | 알림을 **받는** 주소. 쉼표로 여러 개 |
+| `EMAIL_HOST` / `EMAIL_PORT` | | **적지 않아도 된다** — 비우면 `smtp.gmail.com` · `587` |
+
+**메일 세 항목(`EMAIL_HOST_USER`·`EMAIL_HOST_PASSWORD`·`ALERT_EMAIL_TO`) 중 하나라도 비면
+점검은 돌지만 메일은 나가지 않는다.** 오류로 끝나지 않으므로 `health.log`에 "메일 미설정"
+경고가 10분마다 찍히는 것으로만 드러난다. 설정한 뒤에는 반드시 시험 메일을 보내 본다(4장).
 
 **카카오 키 둘 중 하나라도 비면 로그인 버튼이 "준비 중"으로 바뀐다.** 서버는 정상으로
 뜨고 사이트도 열리므로 오류로 보이지 않는다. 어드민 키가 비면 탈퇴는 되지만 카카오
@@ -391,6 +406,10 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 | 요약 요청 대기 | `docker compose exec web python manage.py pending_work` (DART·LLM 미호출) |
 | 월 한도 조정 | `.env`의 `AI_MONTHLY_BUDGET_USD` (기본 6.5) → `docker compose up -d` |
 | 상장사 명단 갱신 | `docker compose exec web python manage.py sync_listed_corps` (매일 06:50 자동) |
+| **운영 대시보드** | `/admin/monitoring/` — 한 화면에 전체 상황 (10단계) |
+| 운영 점검 (판정만) | `docker compose exec web python manage.py check_health --dry-run` (메일·기록 없음) |
+| 시험 메일 | `docker compose exec web python manage.py check_health --test` |
+| 운영 점검 로그 | `tail -30 /var/log/dart/health.log` (10분마다) |
 
 **요약 생성은 돈이 나간다.** cron이 `--limit 20`으로 돌린다. 수동 실행할 때도
 반드시 `--limit`을 붙이고, 붙이기 전에 대상 건수를 먼저 확인한다.
@@ -400,6 +419,57 @@ Lightsail 콘솔 → 인스턴스 → `스냅샷` 탭 → **자동 스냅샷 활
 30분 샘플러로는 이 서비스의 1순위 리스크(메모리 초과)가 발생하는 바로 그 순간을 볼 수 없다.
 
 ---
+
+### 10단계 적용 (운영 모니터링 · 이슈 #56)
+
+**한 번만 하는 절차다.** 마이그레이션은 `0013_monitoring` 하나이고 기존 표에는 열 하나
+(`raw_fetched_at`)만 더한다. 사이트 중단은 재빌드 동안뿐이다.
+
+```bash
+cd ~/DART-project
+git status                           # 수정된 파일이 없어야 한다
+git pull
+git log --oneline -1                 # 10단계 머지 커밋이어야 한다
+
+# 1. .env에 메일 세 줄을 추가한다 (값은 3.1) — nano .env
+#    EMAIL_HOST_USER= / EMAIL_HOST_PASSWORD= / ALERT_EMAIL_TO=
+awk -F= '/^(EMAIL_HOST_USER|EMAIL_HOST_PASSWORD|ALERT_EMAIL_TO)=/{printf "%s 길이: %d\n", $1, length($2)}' .env
+#    셋 다 0이 아니어야 한다. 앱 비밀번호는 16(띄어 썼으면 19)
+
+# 2. 재빌드 — 컨테이너가 뜰 때 0013이 적용된다
+docker compose up -d --build
+docker compose exec -T web python manage.py showmigrations disclosures | tail -1
+#    [X] 0013_monitoring
+
+# 3. 시험 메일 — 받은편지함(없으면 스팸함)에 "[DART 알림] 시험 메일"이 와야 한다
+docker compose exec -T web python manage.py check_health --test
+
+# 4. 판정만 먼저 본다. 첫 배포 직후라 백업·전체 폴링은 아직 기록이 없다 — 정상이다
+docker compose exec -T web python manage.py check_health --dry-run
+
+# 5. cron 교체 — 운영 점검 줄(3·13·…·53분)이 더해졌다
+crontab -l > ~/crontab.before-stage10
+crontab deploy/crontab
+crontab -l | grep -v '^\s*#' | grep -c 'pipeline.sh'    # 6 (그대로)
+crontab -l | grep -v '^\s*#' | grep -c 'check_health'   # 1
+```
+
+**6. 확인한다.**
+
+| 볼 것 | 어떻게 | 정상 |
+|---|---|---|
+| 대시보드 | `/admin/monitoring/` (admin 첫 화면 맨 위 링크) | 다섯 패널이 뜨고 "마지막 점검"이 10분 이내 |
+| 점검 cron | 13분 뒤 `tail /var/log/dart/health.log` | 판정 줄이 찍혀 있다 |
+| 기록 | 다음 감지 실행 뒤 대시보드 "마지막 감지" | 방금 시각 |
+| 백업 기록 | **다음 날** 04:00 뒤 대시보드 "마지막 백업" | 그날 04:00 |
+| UptimeRobot | 2.10대로 등록 | 모니터가 Up |
+
+**첫 날 받을 수 있는 메일.** 백업·전체 폴링은 배포 시점부터 26시간 안에 한 번씩 돌아야
+기록이 생긴다. 그 전에는 "기록 없음"이 이상이 아니라 **배포 시각부터 잰다** — 그래서 첫날
+이상 메일이 오면 그것은 진짜로 하루 넘게 돌지 않았다는 뜻이다.
+
+**되돌리기.** `git switch` 로 이전 커밋 → `crontab ~/crontab.before-stage10` →
+`docker compose up -d --build`. 새 표는 남아 있어도 옛 코드가 보지 않는다.
 
 ### 8단계 적용 (사용자가 고르는 기업 · 이슈 #44)
 
@@ -604,6 +674,25 @@ grep '메모리 최저 가용' /var/log/dart/pipeline.log
 줄 자체가 남지 않는다 — `free`가 없는 환경이라는 뜻이므로 그때는 명령 존재를 확인한다.
 
 ## 5. 장애 대응
+
+### 알림 메일을 받았다
+
+메일 본문의 항목마다 "대응:" 줄이 이 장의 절을 가리킨다. 먼저 대시보드(`/admin/monitoring/`)를
+열어 다른 항목도 함께 나빠졌는지 본다 — 여럿이 동시에 이상이면 원인은 대개 하나다
+(메모리 → 컨테이너 재시작 → 감지 멈춤).
+
+| 항목 | 뜻 | 먼저 할 것 |
+|---|---|---|
+| 공시 감지 | 감지가 예정보다 오래 성공하지 못했다 | 아래 "파이프라인이 안 돈다" |
+| 전체 폴링 · 백업 | 26시간 넘게 성공 기록이 없다 | `tail /var/log/dart/pipeline.log` · `tail /var/log/dart/backup.log` |
+| 요약 요청 | **처리할 수 있는** 요청이 15분 넘게 그대로다(원문 미공개 대기는 제외) | "파이프라인이 안 돈다" → `summarize_disclosures --stuck` |
+| 재시도 상한 | 원문·요약이 포기됐다 | 아래 "원문을 못 받는 공시가 있다" |
+| AI 비용 | 이번 달 상한의 80% 이상 · 소진 | `/admin/disclosures/aiusage/` — 소진이면 월말까지 요약이 멈춘다(4장 "월 한도 조정") |
+| 메모리 · 디스크 | 가용 메모리 부족 · 디스크 80% 초과 | 아래 "컨테이너가 계속 재시작한다" · `docker system df` |
+
+**메일이 아예 안 온다**고 이상한 게 아니다 — 정상이면 메일은 없다. 점검 자체가 살아 있는지는
+대시보드 "마지막 점검"(25분 넘으면 주의)과 `health.log`로 본다. 서버 전체가 죽은 경우는
+UptimeRobot 메일로만 온다(2.10).
 
 ### 사이트가 안 열린다
 ```bash

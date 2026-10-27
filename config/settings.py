@@ -271,6 +271,24 @@ def _int_env(name, default):
 # .env 로 덮어쓸 수 있게 둔 것은 코드 수정·재배포 없이 조정하기 위해서다.
 REALTIME_POLL_INTERVAL_SECONDS = _int_env('REALTIME_POLL_INTERVAL_SECONDS', 30)
 
+# 운영 알림 메일 (10단계, 이슈 #56). Gmail SMTP + 앱 비밀번호(PLAN.md 9.6).
+#
+# Lightsail은 25번 포트만 막으므로 587(STARTTLS)은 쓸 수 있다. 셋(계정·비밀번호·받는 주소)
+# 중 하나라도 비면 check_health가 **메일 없이 경고만 남기고 정상 종료한다** — 메일을 아직
+# 설정하지 않은 서버(로컬·재구축 직후)에서 점검 cron이 매번 실패로 끝나지 않게 하기 위해서다.
+EMAIL_HOST = os.getenv('EMAIL_HOST', '').strip() or 'smtp.gmail.com'
+EMAIL_PORT = _int_env('EMAIL_PORT', 587)
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '').strip()
+# Gmail 앱 비밀번호는 화면에 4자씩 띄어 보인다. 그대로 붙여 넣어도 되게 공백을 뺀다.
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '').replace(' ', '')
+EMAIL_USE_TLS = True
+# SMTP가 응답하지 않을 때 점검 명령이 잠금을 쥔 채 멈추지 않게 한다(파이프라인과 같은 잠금).
+EMAIL_TIMEOUT = 20
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER or 'webmaster@localhost'
+ALERT_EMAIL_TO = [a.strip() for a in os.getenv('ALERT_EMAIL_TO', '').split(',') if a.strip()]
+# 알림 메일에 대시보드 주소를 적는 데 쓴다. Caddy와 같은 값이다(스킴 없이).
+SITE_DOMAIN = os.getenv('SITE_DOMAIN', '').strip()
+
 def _float_env(name, default):
     """실수 환경변수. `_int_env`와 같은 이유로 빈 값은 기본값으로 떨어뜨린다."""
     raw = os.getenv(name, '').strip()

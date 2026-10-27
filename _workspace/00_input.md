@@ -1,179 +1,127 @@
-# 5단계 입력 명세 — 요약 파이프라인 자동 교정
+# 00 입력 명세 — 10단계 운영 모니터링 (이슈 #56)
 
-브랜치: `feature/stage5-auto-correction` (base: `main` @ 84a5902, PR #9 머지 직후)
-로드맵: PLAN.md 9장 2단계(AI 요약) · 4단계(품질·검증)
+브랜치: `feat/stage10-monitoring` · 설계: PLAN.md 9.6 · 절대 제약은 오케스트레이터 스킬 참조(여기 다시 적지 않는다).
 
-## 1. 왜 하는가
+## 왜 하는가
 
-4단계에서 사람 검수 **도구**는 만들었지만 검수 **부담**은 줄이지 못했다.
-요약 140건 중 56건(40%)이 검수 대기다. 이 상태로 데이터가 10배 늘면 사람 몫도 10배 는다.
-사용자의 지적이 이 작업의 출발점이다 — *"이러면 AI를 활용한 의미가 없어집니다."*
+지인 베타테스트를 연다. 지금 운영 점검은 운영자가 SSH로 명령 열 개를 돌려 보는 방식이다.
+이 프로젝트의 큰 사고 셋(전체 폴링 이틀 미실행 · 재시도 사다리 5일 지연 · 1분 칸이 2분마다)은
+**모두 로그가 정상으로 보이는 채** 며칠씩 갔다(PLAN.md 9.3). 목표는 **운영자가 사용자보다 먼저 안다.**
 
-목표는 **사람이 볼 건을 한 자릿수로 줄이는 것**이다.
+## 확정된 설계 결정 (다시 논의하지 않는다)
 
-## 2. 확정된 진단 (추측 아님, 실데이터로 확인)
+1. **판정은 "실패"가 아니라 "마지막 성공이 너무 오래됨"(freshness)** 으로 한다. 실패 기록은 보조다.
+2. **헛도는 실행은 행을 쌓지 않는다.** 작업 종류별 "마지막 성공"은 한 행을 덮어쓴다(`JobStatus`).
+   일이 있었던 파이프라인 실행만 이력(`PipelineRun`)으로 쌓는다.
+3. **`pending_work`는 계속 읽기 전용이다.** 밤 `--requests` 매분 실행에 쓰기를 붙이지 않는다.
+   요청 처리의 정상 여부는 "처리 가능한데 15분 넘게 그대로인 요청"으로 판정한다.
+4. **DB 쓰기 주체는 하나.** 파이프라인 밖에서 쓰는 기록(백업 · 점검 명령)은
+   `flock -w … /tmp/dart-pipeline.lock`으로 같은 잠금을 잡는다(crontab의 sync_listed_corps 줄과 같은 방식).
+5. **판정 규칙의 단일 출처는 새 모듈 `disclosures/health.py`.** 메일 알림과 대시보드가 같은 함수를 쓴다.
+   임계값은 모듈 상단 상수로 둔다.
+6. **같은 이상은 한 번만 알린다** — 정상→이상 전환 때 1통, 복구 때 1통(`AlertState`).
+7. **메일은 Gmail SMTP(587, TLS, 앱 비밀번호).** 설정은 `.env`. 없으면 메일 없이 경고만 출력하고 정상 종료.
+8. **대시보드는 `/admin/monitoring/`** — Caddy의 `/admin/*` IP 화이트리스트를 그대로 물려받는다.
+   staff 전용. DART·LLM 미호출. JS 없음. 개인정보는 숫자로만.
+9. 컨테이너에는 `data/`만 마운트돼 있어 `/var/log/dart`를 못 읽는다. 로그 파일을 읽는 설계를 하지 않는다.
+   메모리는 `/proc/meminfo`의 `MemAvailable`(컨테이너 메모리 제한이 없어 호스트 값이 보인다),
+   디스크는 `shutil.disk_usage`(DB가 있는 디렉터리)로 직접 읽는다.
 
-### 2.1 진짜 오류 — 전부 같은 원인
+## 점검 항목과 임계값 (health.py 상수)
 
-| 요약 id | 원문 | AI 출력 | 실제 값 |
+| key | 이상(bad) 조건 | 주의(warn) | 비고 |
 |---|---|---|---|
-| 128 | `39,890,534,790,000` | 3조 9,891억 | **39조 8,905억** |
-| 81 | `45,453,450,000,000` | 4조 5,453억 | **45조 4,534억** |
-| 107 | `43,140,750,000,000` | 4조 3,140억 | **43조 1,407억** |
+| `detect` | 마지막 감지 성공이 평일 09~18시면 10분, 그 외 2시간 10분 초과 | — | 시각 판정은 `timezone.localtime`. 시간대 경계 직후(09:00~09:10)에 오탐하지 않게 할 것 |
+| `full_poll` | 마지막 전체 폴링 성공 26시간 초과 | — | 07:05 일 1회 |
+| `backup` | 마지막 백업 성공 26시간 초과 | — | 04:00 일 1회 |
+| `requests` | **처리 가능한데** 요약 요청 후 15분 넘게 요약이 없는 공시 ≥1 | — | DART 원문 미공개로 사다리 대기 중인 건은 정상(대기)이다. 월 상한 소진은 `ai_budget`에서 따로 잡는다 |
+| `stuck` | — | 재시도 상한에 걸린 원문·요약 ≥1 | `retry_policy` 재사용 |
+| `ai_budget` | 상한 소진 | 이번 달 사용 ≥ 80% | `ai_budget` 재사용 |
+| `memory` | MemAvailable < 150MB | < 250MB | 측정 실패 시 판정 불가(None)로 두고 알리지 않는다 |
+| `disk` | 사용률 > 90% | > 80% | |
 
-전부 정확히 10배. **콤마는 3자리로 끊고 만·억·조는 4자리로 끊는데 AI가 콤마 기준으로 잘랐다.**
-`45,453,...` → 앞 두 덩어리 `45453`을 "4조 5,453억"으로 읽음. 4자리로 끊으면 `45 / 4534` = 45조 4,534억.
+판정 결과 타입(제안): `Check(key, title, level: 'ok'|'warn'|'bad'|'unknown', summary: str, detail: str)`.
+메일은 level이 `bad`·`warn`인 항목의 **전환**에만 보낸다.
 
-**숫자 자체는 한 자리도 안 틀렸다. 자릿수 끊기에서만 무너진다.** 코드가 하면 영원히 안 틀린다.
+## 데이터 (models.py · 새 마이그레이션)
 
-### 2.2 검증기 오탐 — 표 헤더 단위 미인식
+- `JobStatus` — 작업 종류별 한 행. `kind`(unique, choices: detect·full_poll·backup·sync_listed·health_check),
+  `last_success_at`, `last_failure_at`, `last_message`, `updated_at`.
+- `PipelineRun` — 일이 있었던 실행만. `mode`(detect·resume·full·requests), `started_at`, `finished_at`,
+  `ok`, `exit_code`, `new_disclosures`, `fetched`, `summarized`, `mem_min_mb`(null), `message`.
+  건수는 실행 끝에 DB에서 `started_at` 이후 변화로 계산한다(스크립트가 출력을 파싱하지 않는다).
+  90일 지난 행은 `check_health`가 하루 한 번 정리한다.
+- `AlertState` — `key`(unique), `level`, `since`, `last_sent_at`, `detail`.
+- 모두 한국어 `verbose_name`. admin에는 읽기 전용으로 등록(추가·수정 불가).
 
-요약 id 8(삼성전자 특수관계인에대한출자)은 **AI가 맞았는데 경고가 붙었다.**
-원문 표 머리에 `(단위 : 억원)`이 있고 값은 `4,000`인데 AI는 `4,000억원`으로 정확히 읽었다.
-검증기가 헤더 단위 선언을 반영하지 않아 오탐.
+## 기록 지점
 
-→ **수치 경고 19건 안에 진짜 오류와 오탐이 섞여 있다. 전수 분류가 작업의 일부다.**
-
-### 2.3 검증이 게시를 막지 않는다
-
-id 128(39조→3조)이 경고가 붙은 채 웹에 그대로 노출돼 있었다. 검증 결과가 노출에 영향을 안 준다.
-
-### 2.4 검수 대상을 AI의 중요도 판단으로 정한다
-
-검수 대기 56건 = 경고로 걸린 18건 + **"중요도 높음은 무조건" 규칙 38건**.
-그 '높음'은 AI가 매겼다. **AI를 못 믿어서 검수하는데 검수 대상 선정은 AI에 맡기고 있다.**
-
-### 2.5 현재 경고 분포 (140건 기준)
-
-수치 19 · 인용 14 · 문체 4 = 총 33건
-
-## 3. 목표 파이프라인
-
-```
-LLM 요약 (원문 숫자를 그대로 인용, 환산은 하지 않는다)
-  → 단위 환산·파생 수치를 코드가 계산
-  → 검증 (표 헤더 단위 반영)
-      ├ 통과        → 자동 게시                    ← 대다수가 여기여야 한다
-      ├ 수치 불일치 → 미게시 + 경고를 되먹여 1회 재생성
-      │                재생성도 실패 → 사람 검수 큐
-      └ 인용 형식   → 게시하되 표시만 (사실 오류 아님)
-```
-
-## 4. 파일 소유권 — 병렬 충돌 방지
-
-**같은 파일을 두 에이전트가 동시에 고치지 않는다.** 남의 파일이 필요하면 소유자에게 요청한다.
-
-| 에이전트 | 소유 파일 |
+| 지점 | 방식 |
 |---|---|
-| analyst | `_workspace/10_analyst_*.md` (코드 수정 없음, **읽기 전용 조사**) |
-| backend | `units.py`(신규) · `verification.py`(신규) · `models.py` · `admin.py` · `views.py` · `migrations/` · `management/commands/**` |
-| ai-prompt | `summarizer.py` (**Phase B 리팩터 완료 후에만**) |
-| frontend | `templates/**` · `static/**` · `templatetags/**` |
-| qa | `tests.py` |
+| 감지·전체 폴링 성공 | `poll_dart`가 끝에서 `JobStatus` 갱신. `--detect` "신규 없음"(종료 9)도 **성공**이다 |
+| 일이 있었던 파이프라인 실행 | `pipeline.sh`가 뒷단계 끝(또는 EXIT trap에서 실패 시)에 `record_run` 명령 호출. 이미 잠금 안이다. **기록 실패가 파이프라인을 실패로 만들면 안 된다**(`|| log …`) |
+| 백업 성공 | `backup.sh` 끝에서 `flock -w 600` 잡고 `record_job backup --message <S3 경로>` |
+| 상장사 명단 | `sync_listed_corps`가 끝에서 `JobStatus` 갱신 (이미 잠금 안에서 돈다) |
+| 점검 자체 | `check_health`가 실행마다 `health_check` 갱신 → 대시보드가 "감시자가 살아 있나"를 보여 준다 |
 
-### 4.1 `summarizer.py` 분리 — 소유권 충돌의 해소책
+## 알림 (`check_health` 명령)
 
-현재 `summarizer.py`(955행)에 프롬프트·검증·비용추정이 한 파일에 있어 backend와 ai-prompt가
-동시에 필요하다. **Phase B에서 backend가 먼저 기계적으로 분리**한 뒤 ai-prompt가 넘겨받는다.
+- cron: `3-59/10 * * * *` + `flock -w 120` 같은 잠금. 로그는 `/var/log/dart/health.log`.
+  (매시 00분 감지 · 06:50 · 07:05 줄과 분이 겹치지 않는다 — PLAN.md 9.3 주의 3)
+- 옵션: `--dry-run`(판정만 출력, 메일·상태 저장 없음), `--test`(시험 메일 1통 발송).
+- 메일 제목 `[DART 알림] 이상: …` / `[DART 알림] 복구: …`. 본문에 대시보드 URL(`https://{SITE_DOMAIN}/admin/monitoring/`)과
+  RUNBOOK 대응 절을 적는다. 한 번 점검에서 여러 전환이 생기면 **한 통으로 묶는다.**
+- `.env` 새 항목: `EMAIL_HOST`(기본 smtp.gmail.com) · `EMAIL_PORT`(587) · `EMAIL_HOST_USER` · `EMAIL_HOST_PASSWORD` ·
+  `ALERT_EMAIL_TO`(쉼표 구분). `.env.example`에 빈 값으로 추가. **실제 `.env`는 건드리지 않는다.**
 
-| 이동 대상 | 현재 위치 | 이동 후 | 소유 |
-|---|---|---|---|
-| 검증 로직 (`_normalize`~`build_review_warnings`) | `summarizer.py` L400–775 | **`verification.py`(신규)** | backend |
-| 한국 단위 환산 | 없음 (신규) | **`units.py`(신규)** | backend |
-| 프롬프트·스키마·클라이언트·비용추정 | `summarizer.py` | `summarizer.py` 잔류 | ai-prompt |
+## 대시보드 — 뷰와 템플릿 사이 계약 (frontend·backend 병렬 작업의 경계)
 
-분리는 **동작 변경 없는 순수 이동**이어야 한다. 기존 import 경로(`from .summarizer import ...`)를
-쓰는 곳이 있으므로 `summarizer.py`에서 재수출(re-export)해 하위 호환을 유지한다.
-(`models.py`가 `ACCURACY_WARNING_PREFIXES` 등을 import한다 — 반드시 확인할 것)
+URL `admin/monitoring/` (이름 `admin_monitoring`), `admin.site.admin_view`로 감싼다. admin 첫 화면에 링크.
+템플릿 `disclosures/templates/admin/monitoring.html`, `admin/base_site.html` 확장.
 
-## 5. 절대 제약
+```python
+context = {
+    **admin.site.each_context(request),
+    'title': '운영 모니터링',
+    'checked_at': datetime,                  # 판정 시각 (aware)
+    'overall': 'ok' | 'warn' | 'bad',        # 가장 나쁜 level ('unknown'은 무시)
+    'checks': [Check, ...],                  # health.py 판정 결과, 위 표 순서
+    'sections': [                            # 숫자 패널
+        {'key': 'service',  'title': '서비스',     'items': [Item, ...]},
+        {'key': 'pipeline', 'title': '파이프라인', 'items': [...]},
+        {'key': 'summary',  'title': '요약',       'items': [...]},
+        {'key': 'cost',     'title': '비용',       'items': [...]},
+        {'key': 'server',   'title': '서버',       'items': [...]},
+    ],
+    # Item = {'label': str, 'value': str(이미 포맷됨), 'level': 'ok'|'warn'|'bad'|None, 'hint': str}
+    'daily_cost': [{'date': date, 'cost_usd': float, 'ratio': float(0~1, 기간 최대값 대비)}],  # 최근 30일
+    'recent_runs': [PipelineRun, ...],       # 최근 20건, 최신 먼저
+    'jobs': [JobStatus, ...],                # 종류별 마지막 성공·실패
+}
+```
 
-1. **LLM을 실제로 호출하지 마라.** `summarize_disclosures` 실행 금지.
-   사용자 돈이 나가는 유일한 경로이고, 언제 쓸지는 사용자가 정한다.
-   프롬프트 변경 효과는 **코드·테스트로만** 검증하고, 실호출이 필요하면 리더에게 보고만 한다.
-   `revalidate_summaries`는 LLM 호출이 없으므로 **자유롭게 써도 된다** — 검증기 수정 효과 측정에 쓸 것.
-2. **`git push` 금지 · `.env` 수정 금지 · `rm` 사용 금지.** 커밋도 리더가 한다.
-3. **`db.sqlite3`를 손상시키지 마라.** 읽기는 자유. 쓰기가 필요하면 인메모리 테스트 DB를 쓴다.
-   `revalidate_summaries`는 실 DB를 쓰지만 멱등이므로 허용.
-4. **PLAN.md 12.1** — 사용자 요청 경로(views)에서 DART·LLM을 호출하지 않는다. 기존 테스트로 고정돼 있다.
-5. 모델 필드·admin에 한국어 `verbose_name`. 주석·docstring도 한국어.
+섹션 항목(값은 backend가 문자열로 포맷한다): 서비스 — 회원 수(오늘 신규) · 최근 7일 접속 · 관심 기업 수 · 추적 기업 수 /
+파이프라인 — 마지막 감지 · 마지막 전체 폴링 · 오늘 감지 공시 · 마지막 점검 / 요약 — 요청 대기 · 원문 대기(사다리) · 포기 ·
+요청→완료 중앙값(최근 30일) · 경고 붙은 요약 · 미검수 / 비용 — 이번 달 / 상한 · 남은 금액 / 서버 — 메모리 가용 · 디스크 · 마지막 백업.
 
-## 6. 에이전트별 완료 조건
+## 파일 소유권
 
-### analyst (Phase A, 단독 선행)
-- [ ] **수치 경고 19건 전수 분류** — 각 건이 `진짜 오류` / `검증기 오탐` / `판정 불가` 중 무엇인지,
-      근거(원문의 해당 구절)와 함께. 이게 이후 모든 작업의 기준선이 된다
-- [ ] **원문의 단위 표기 실태 조사** — `raw_content` 140건 전수에서 `(단위 : 억원)` 류 헤더가
-      어떤 변형으로 나타나는지 (공백·콜론·괄호·`단위:백만원`·`(단위: 천원)` 등) 정규식 후보 제시
-- [ ] 헤더 단위의 **적용 범위** 판단 근거 — 표 전체인가, 특정 열인가, 문서 전체인가.
-      실제 사례로 답할 것. 잘못 적용하면 오탐을 오탐으로 바꿀 뿐이다
-- [ ] **파생 수치(증감률 등) 실태** — AI가 계산한 `11.0`, `2.44`, `3.01` 류가 원문에 있는 값인지
-      AI가 만든 값인지. 있다면 코드가 계산할 수 있는 형태인지
-- [ ] 인용 경고 14건도 훑고, 3단계에서 정리한 "조각 이어붙이기" 외 새 패턴이 있는지 확인
-
-### backend (Phase B → C)
-**Phase B (단독, 선행)**
-- [ ] `summarizer.py` → `verification.py` 분리 (동작 변경 0). 재수출로 하위 호환 유지.
-      `manage.py test disclosures` 209건이 **그대로 통과**해야 한다
-- [ ] `units.py` 신규 — 원 단위 정수 → 한국어 표기 순수 함수.
-      경계값 테스트 가능하도록 부작용 없는 함수로. Django 의존 금지
-- [ ] `verification.py`에 표 헤더 단위 인식 추가 (analyst의 정규식·적용범위 판단 기반)
-- [ ] `revalidate_summaries`로 140건 재검증 → **경고가 몇 건에서 몇 건으로 줄었는지 보고**
-
-**Phase C (병렬)**
-- [ ] 검증 실패 시 `is_published=False`로 생성 (자동 미게시). 사유를 `hidden_reason`에 남긴다
-- [ ] 수치 경고 시 경고를 프롬프트에 되먹여 **1회 재생성**. **재시도 상한 필수**(무한 루프 방지).
-      재생성 시도 이력을 남길 것(필드 추가 시 마이그레이션 포함)
-- [ ] 재생성도 실패하면 사람 검수 큐로
-- [ ] 검수 게이트를 AI의 `importance`가 아니라 **공시 유형** 기준으로 변경.
-      유형 목록은 근거를 대고 정할 것(유상증자·합병·감사의견 등). `selection.py`의 기존 분류 재사용 검토
-- [ ] 재생성 경로는 **코드로만 구현하고 실행하지 마라** (제약 1)
-
-### ai-prompt (Phase C, backend Phase B 완료 후)
-- [ ] 프롬프트에서 **단위 환산을 금지**한다. 원문 숫자를 그대로 인용하게 한다
-- [ ] 파생 수치(증감률 등) 계산도 요구하지 않도록 정리 (analyst 조사 결과 반영)
-- [ ] **재생성용 프롬프트** 설계 — 어떤 경고를 어떤 형태로 되먹일 때 교정률이 높은지.
-      원 프롬프트에 경고를 덧붙이는 방식인지 별도 교정 프롬프트인지 판단하고 근거를 대라
-- [ ] `PROMPT_VERSION`을 올린다 (현재 `v2`). 기존 요약과 구분 가능해야 한다
-- [ ] 출력 스키마 변경이 필요하면 backend·frontend에 **먼저** 알린다
-- [ ] 실호출 없이 검증 — 프롬프트 문자열·스키마 단위 테스트는 qa와 협의
-
-### frontend (Phase C, 소규모)
-- [ ] 검수 화면(`_review_panel.html`)에 **자동 미게시 사유·재생성 이력** 표시
-- [ ] 코드가 환산한 값과 AI 원문 인용을 구분해 보여줄지 판단 (backend 스키마 확정 후)
-- [ ] 웹 화면은 변경 불필요할 가능성이 높다 — `published_disclosures()`가 이미 거른다.
-      불필요하면 **불필요하다고 보고하고 손대지 마라**
-
-### qa (Phase D)
-- [ ] `units.py` 경계값 — 9,999 / 10,000 / 1억 / 1조 / 10조 + **위 3건의 실제 값**(39,890,534,790,000 등)
-- [ ] 표 헤더 단위 인식이 **id 8의 오탐을 없애면서 진짜 오류를 계속 잡는지** (양방향)
-- [ ] 재생성 루프의 **상한이 실제로 걸리는지** — 무한 재시도는 곧 무한 비용이다
-- [ ] 검수 게이트 유형 기준이 기존 `importance` 기준과 어떻게 달라지는지 실데이터로 비교
-- [ ] `summarize_disclosures.py` 테스트 추가 (현재 커버리지 **0%**, 비용 발생 경로)
-- [ ] 회귀: `manage.py test disclosures` 전건 통과 · `check` 0 issues · `makemigrations --check` 무변경
-- [ ] **LLM 실호출 없이** 검증할 것 (제약 1). 모킹으로 처리한다
-
-## 7. 최종 측정 (리더가 확인)
-
-이 작업의 성패는 하나의 숫자로 판정한다:
-
-> `revalidate_summaries` 재실행 후 **사람 검수가 필요한 건수**
-
-- 현재: **56건 / 140건 (40%)**
-- 목표: **한 자릿수**
-- 여전히 수십 건이면 → 요약 대상 범위 자체를 재검토해야 한다 (별도 논의)
-
-검증기 수정 효과는 LLM 비용 없이 지금 측정 가능하다. 프롬프트 수정 효과는 사용자가
-실호출을 승인한 뒤에야 측정 가능하므로, **그 전까지는 "예상"으로만 보고할 것.**
-
-## 8. 산출물
-
-| 에이전트 | 파일 |
+| 에이전트 | 소유 |
 |---|---|
-| analyst | `_workspace/10_analyst_number_triage.md` |
-| backend | `_workspace/21_backend_units_verification.md` (Phase B) · `_workspace/22_backend_pipeline.md` (Phase C) |
-| ai-prompt | `_workspace/23_ai-prompt_no_arithmetic.md` |
-| frontend | `_workspace/24_frontend_review_panel.md` |
-| qa | `_workspace/30_qa_verification.md` |
+| backend | `disclosures/models.py` · `migrations/**` · `admin.py` · 새 `health.py` · 새 `monitoring.py`(뷰) · `management/commands/**`(poll_dart·sync_listed_corps 수정, record_run·record_job·check_health 신설) · `config/settings.py` · `config/urls.py` · `deploy/pipeline.sh` · `deploy/backup.sh` · `deploy/crontab` · `.env.example` |
+| frontend | `disclosures/templates/admin/monitoring.html` · admin 첫 화면 링크용 템플릿(`disclosures/templates/admin/index.html` 확장 등) |
+| qa | 새 `disclosures/test_monitoring.py` (기존 `tests.py`는 건드리지 않는다. 기존 테스트가 깨지면 담당자에게 보고) |
+| 리더 | `docs/RUNBOOK.md` · `PLAN.md` · `CLAUDE.md` · 커밋 |
 
-보고서에는 **판단이 갈렸던 지점과 그 이유**를 반드시 남긴다. 결론만 적힌 보고서는 쓸모가 없다.
+## 완료 조건
+
+- backend: 위 모델·기록 지점·명령·뷰가 동작. `manage.py check`·`makemigrations --check` 통과. 산출물 `_workspace/21_backend_monitoring.md`
+  (판단이 갈린 지점과 이유 포함 — 특히 `requests` 판정과 pipeline.sh 종료 코드 보존).
+- frontend: 계약대로 렌더링. 브라우저로 띄워 확인(CLAUDE.md: 화면은 반드시 눈으로). 산출물 `_workspace/22_frontend_dashboard.md`.
+- qa: 판정 경계(시간대 경계 · 임계값 경계 · 측정 불가) · 알림 전환/중복 억제 · 메일 미설정 시 정상 종료 ·
+  staff 외 접근 차단 · 대시보드가 DART/LLM을 부르지 않음 · pipeline.sh 기존 종료 코드 의미 유지. 전체 테스트 통과. 산출물 `_workspace/30_qa_monitoring.md`.
+
+## 성공 지표
+
+- 서버 반영 후 시험 메일 수신, 대시보드가 한 화면에 전 항목 표시.
+- 의도적으로 `JobStatus.detect`를 오래된 값으로 만들면 다음 점검에서 메일 1통, 되돌리면 복구 메일 1통, 그 사이 추가 메일 0통.
