@@ -41,7 +41,7 @@ RUNBOOK_REFS = {
     'requests': 'RUNBOOK 5장 "원문을 못 받는 공시가 있다" · "파이프라인이 안 돈다"',
     'stuck': 'RUNBOOK 5장 "원문을 못 받는 공시가 있다"',
     'ai_budget': 'RUNBOOK 4장 (월 AI 비용 상한)',
-    'memory': 'RUNBOOK 5장 "컨테이너가 계속 재시작한다"',
+    'memory': 'RUNBOOK 5장 "가용 메모리가 부족하다"',
     'disk': 'RUNBOOK 2.9 (로그 회전)',
 }
 
@@ -144,6 +144,9 @@ class Command(BaseCommand):
             health.ensure_job_rows()
 
         checks = health.run_checks(now)
+        # 회차마다 시각을 먼저 찍는다. health.log는 10분마다 덧붙여지므로 이 줄이 없으면 알림
+        # 메일의 시각으로 그 회차를 찾을 수 없다. pipeline.sh의 log()와 같은 형식이다.
+        self.stdout.write(f'[{timezone.localtime(now).isoformat(timespec="seconds")}] 운영 점검')
         for check in checks:
             self.stdout.write(f'{LEVEL_LABELS[check.level]:<5} {check.title}: {check.summary}'
                               + (f' — {check.detail}' if check.detail else ''))

@@ -371,6 +371,25 @@ class _HealthyServerMixin:
         return out.getvalue()
 
 
+class RunbookRefsTest(SimpleTestCase):
+    """알림 메일의 "대응:" 줄이 RUNBOOK에 실제로 있는 절을 가리킨다.
+
+    메모리 알림이 `.env` 빈 값·`data` 소유권을 다루는 "컨테이너가 계속 재시작한다"를 가리키고
+    있었다. 2026-11-10 첫 메모리 알림에서 그 절을 열어 봐도 할 일이 없었다.
+    """
+
+    def test_quoted_section_titles_exist(self):
+        headings = {line.lstrip('#').strip()
+                    for line in (REPO_DIR / 'docs' / 'RUNBOOK.md').read_text(encoding='utf-8').splitlines()
+                    if line.startswith('###')}
+        for key, ref in check_health_command.RUNBOOK_REFS.items():
+            for title in re.findall(r'"([^"]+)"', ref):
+                self.assertIn(title, headings, f'{key}: RUNBOOK에 "{title}" 절이 없다')
+
+    def test_memory_points_to_memory_section(self):
+        self.assertIn('가용 메모리가 부족하다', check_health_command.RUNBOOK_REFS['memory'])
+
+
 @override_settings(**MAIL_ON)
 class CheckHealthAlertTest(_HealthyServerMixin, TestCase):
     """같은 이상은 한 번만 — 정상→이상 1통, 유지 중 0통, 복구 1통.
@@ -378,6 +397,11 @@ class CheckHealthAlertTest(_HealthyServerMixin, TestCase):
     10분마다 같은 메일이 오면 소음이 되고 결국 아무도 읽지 않는다(PLAN.md 9.6).
     반대로 상태를 너무 일찍 저장하면 이상이 영영 알려지지 않는다.
     """
+
+    def test_each_run_starts_with_timestamp(self):
+        """health.log는 10분마다 덧붙여진다 — 시각이 없으면 알림 메일의 회차를 찾을 수 없다."""
+        first_line = self._run().splitlines()[0]
+        self.assertRegex(first_line, r'^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+09:00\] 운영 점검$')
 
     def test_healthy_server_sends_nothing(self):
         self._run()
