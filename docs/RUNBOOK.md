@@ -126,7 +126,7 @@ PLAN.md 9.2의 상시 메모리 예산 445MB는 Caddy(~30MB)와 OS를 포함한 
   (현재 콘솔은 IPv4/IPv6 방화벽 표가 하나로 통합돼 있다. SSH를 IPv4 주소로 좁히면
   IPv6 우회 경로도 함께 닫히므로 따로 할 일이 없다.)
 
-### 2.2 스왑 2GB
+### 2.2 스왑 2GB · fwupd 끄기
 
 요약 작업 피크가 약 157MB라 1GB로 충분하지만, 안전망으로 둔다.
 
@@ -138,6 +138,20 @@ sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 free -h
 ```
+
+같은 자리에서 **펌웨어 업데이트 데몬(fwupd)을 끈다.** Ubuntu 기본 설치에 들어 있고, 상주하며
+약 30MB를 쓰다가 하루 두 번 무작위 시각에 LVFS 메타데이터를 받아 읽는 몇 초 동안 더 쓴다.
+가상 서버의 펌웨어는 AWS가 관리하므로 이 서버에서 할 일이 없다("0 devices are supported").
+
+```bash
+sudo systemctl stop fwupd-refresh.timer fwupd
+sudo systemctl mask fwupd-refresh.timer fwupd-refresh.service fwupd
+systemctl status fwupd --no-pager | head -3     # Loaded: masked 이면 된다
+```
+
+2026-11-10 17:23에 이 갱신이 운영 점검과 같은 순간에 돌아 가용 메모리가 240MB로 찍혔고
+"주의" 메일이 나갔다(평소 350~430MB). 요약 생성(100~125MB)과 겹쳤다면 150MB 아래였다.
+`mask`는 `unmask`로 되돌릴 수 있다. 패키지를 지우지 않으므로 의존 관계를 건드리지 않는다.
 
 ### 2.3 Docker
 
@@ -693,7 +707,8 @@ grep '메모리 최저 가용' /var/log/dart/pipeline.log
 | 요약 요청 | **처리할 수 있는** 요청이 15분 넘게 그대로다(원문 미공개 대기는 제외) | "파이프라인이 안 돈다" → `summarize_disclosures --stuck` |
 | 재시도 상한 | 원문·요약이 포기됐다 | 아래 "원문을 못 받는 공시가 있다" |
 | AI 비용 | 이번 달 상한의 80% 이상 · 소진 | `/admin/disclosures/aiusage/` — 소진이면 월말까지 요약이 멈춘다(4장 "월 한도 조정") |
-| 메모리 · 디스크 | 가용 메모리 부족 · 디스크 80% 초과 | 아래 "컨테이너가 계속 재시작한다" · `docker system df` |
+| 메모리 | 가용 메모리가 250MB(주의) · 150MB(이상) 미만 | 아래 "가용 메모리가 부족하다" |
+| 디스크 | 디스크 80% 초과 | `docker system df` · 2.9 (로그 회전) |
 
 **메일이 아예 안 온다**고 이상한 게 아니다 — 정상이면 메일은 없다. 점검 자체가 살아 있는지는
 대시보드 "마지막 점검"(25분 넘으면 주의)과 `health.log`로 본다. 서버 전체가 죽은 경우는
@@ -771,6 +786,41 @@ docker compose exec web python manage.py fetch_documents --retry-stuck
 
 시도 기록을 지워 다음 실행에서 처음부터 다시 시도한다. 특정 1건만 지금 당장
 다시 받으려면 `--rcept-no`를 쓴다 — 대기를 건너뛴다.
+
+### 가용 메모리가 부족하다
+
+점검은 그 순간의 `MemAvailable` **한 점**만 본다. 그래서 먼저 가릴 것은 **잠깐 떨어진 값인지,
+평소 수준이 내려앉았는지**다. 둘은 대응이 정반대다 — 앞의 것은 그 순간 무엇이 겹쳤는지를
+찾으면 되고, 뒤의 것은 무엇이 메모리를 쥐고 놓지 않는지를 찾아야 한다.
+
+```bash
+# 1. 지속인가 일시인가 — 30분 표본. 각 날짜 줄 다음 줄의 마지막 숫자가 가용(MB)
+tail -12 /var/log/dart/mem.log
+grep '메모리 최저 가용' /var/log/dart/pipeline.log | tail -5    # 일이 있었던 실행의 최저값
+
+# 2. 알림 시각의 점검 출력 — 각 회차 첫 줄에 [시각]이 찍힌다
+grep -A10 '^\[2026-11-10T17:23' /var/log/dart/health.log
+
+# 3. 그 시각 우리 파이프라인이 일을 했나 (헛도는 실행은 로그를 남기지 않는다)
+grep '2026-11-10T17:2[2-4]' /var/log/dart/pipeline.log
+
+# 4. 그 시각 OS가 무엇을 돌렸나 — Ubuntu 24.04 syslog는 ISO 시각이라 "Nov 10"으로 찾으면 안 나온다
+journalctl --since "2026-11-10 17:15" --until "2026-11-10 17:30" --no-pager | grep -v CRON
+```
+
+| 보이는 것 | 뜻 | 조치 |
+|---|---|---|
+| 다음 표본·다음 점검에서 회복 (복구 메일이 온다) | 무언가 잠깐 겹쳤다 | 4번에서 찾은 OS 작업이 상주할 이유가 없으면 끈다 (2.2의 fwupd가 그 예) |
+| 표본이 날마다 조금씩 내려간다 | 무언가 쌓인다 | `ps aux --sort=-rss \| head -15` · `docker stats --no-stream`으로 커지는 프로세스를 찾는다 |
+| 스왑을 **계속** 읽고 쓴다 (`vmstat 1 5`의 si·so가 0이 아니다) | 실제로 모자라다 | 사이트가 느려진다. gunicorn 워커를 1로 줄이거나(`Dockerfile`의 `--workers`) 2GB 플랜으로 올린다 |
+
+**스왑 사용량 자체는 문제가 아니다.** 오래 안 쓰인 페이지가 밀려난 것이라 수백 MB여도 si·so가
+0이면 괜찮다. 판단 기준은 PLAN.md 9.3의 "요약 중 최저 가용 200MB"다 — 평소 여유에서 요약 1건
+(100~125MB)을 빼도 그 선을 지키는가.
+
+2026-11-10 첫 메모리 알림이 첫째 줄이었다. 처음에는 gunicorn 워커가 메모리를 쌓아 가는 것으로
+짐작했으나 워커는 30·35MB였고, 원인은 점검 직전(17:23:26~28)에 돈 fwupd 메타데이터 갱신이었다.
+**짐작으로 재시작하지 말고 위 순서대로 가릴 것** — 재시작하면 잠깐 떨어진 값이었는지 영영 모른다.
 
 ### 컨테이너가 계속 재시작한다
 
