@@ -95,13 +95,21 @@ PLAN.md 9.2의 상시 메모리 예산 445MB는 Caddy(~30MB)와 OS를 포함한 
     │                           ▲        │
     │  호스트 cron ─────────────┘        │
     │   평일 09~18시 매분 pipeline.sh     │
-    │   그 외·주말 매시간 pipeline.sh      │
-    │   07:00 pipeline.sh --full         │
+    │   그 외 매시 00분 pipeline.sh --wait│
+    │   밤·주말 매분 pipeline.sh --requests│
+    │   06:50 sync_listed_corps          │
+    │   07:05 pipeline.sh --full         │
+    │   10분마다 check_health → 메일      │
+    │   03:00 revalidate_summaries       │
     │   04:00 backup.sh → S3             │
+    │   30분마다 free → mem.log           │
     └────────────────────────────────────┘
 ```
 
 호스트 포트로 열리는 것은 22 · 80 · 443뿐이다. gunicorn은 컴포즈 네트워크 안에만 있다.
+DB에 쓰는 cron 작업은 모두 같은 잠금(`/tmp/dart-pipeline.lock`)을 잡는다. 정확한 분 단위
+일정은 `deploy/crontab`이 기준이고, 바꿀 때는 2.9와 `disclosures/health.py`의 기한도 함께 본다.
+서버가 통째로 죽는 경우는 외부 UptimeRobot이 잡는다(2.10).
 
 ---
 
@@ -263,7 +271,8 @@ docker compose exec -T web python manage.py sync_listed_corps
 ### 2.9 자동화
 
 **⚠ crontab 설치 전에 시간대를 먼저 맞춘다.** Ubuntu 기본값은 UTC다. 그대로 두면
-`deploy/crontab`의 `0 7 * * *`가 **한국시간 16:00**에 돈다.
+`deploy/crontab`의 `5 7 * * *`(전체 폴링 07:05)가 **한국시간 16:05**에 돌고, 평일 09~18시
+매분 줄은 한국시간 18시~다음 날 03시에 돈다.
 
 ```bash
 sudo timedatectl set-timezone Asia/Seoul
@@ -931,9 +940,11 @@ UTC인 채로 컨테이너를 띄우면 `docker logs`(컨테이너 안은 `TZ=As
 
 ---
 
-## 7. EC2로 이전할 때 (7단계)
+## 7. EC2로 이전할 때
 
-Celery 워커를 별도 프로세스로 분리하는 시점에 검토한다(PLAN.md 9.2 전환 트리거 1번).
+예정된 일이 아니다. 처음에는 7단계에 Celery 워커를 분리하면서 옮길 계획이었으나 7·8단계 모두
+Celery를 넣지 않기로 했다(PLAN.md 9.3·9.4). 9.3의 전환 조건(`database is locked` 발생 ·
+한 실행에 요약 수십 건 · 메모리 여유 100MB 미만 지속)이 실제로 측정되면 그때 검토한다.
 
 - Lightsail 스냅샷 → **EC2로 내보내기**가 공식 지원된다
 - 다만 6번 재구축 절차를 EC2에서 그대로 밟는 편이 깨끗하다. 이전이 곧 재구축 리허설이다
