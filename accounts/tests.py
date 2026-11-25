@@ -406,3 +406,81 @@ class KakaoUnlinkWebhookTest(TestCase):
         response = self.client.get(self.url, {'app_id': '1585419'},
                                    HTTP_AUTHORIZATION=f'KakaoAK {ADMIN_KEY}')
         self.assertEqual(response.status_code, 400)
+
+
+class AdminUserDeleteGuardTest(TestCase):
+    """어드민 사용자 화면 — 자기 자신과 마지막 관리자는 지울 수 없다.
+
+    2026-11-25에 운영자가 어드민에서 유일한 관리자 계정을 지워 두 번 잠겼다.
+    """
+
+    def setUp(self):
+        User = get_user_model()
+        self.me = User.objects.create_superuser(username='me', password='x')
+        self.client.force_login(self.me)
+
+    def _delete_url(self, user):
+        return reverse('admin:auth_user_delete', args=[user.pk])
+
+    def _bulk_delete(self, *users):
+        return self.client.post(reverse('admin:auth_user_changelist'), {
+            'action': 'delete_selected',
+            '_selected_action': [u.pk for u in users],
+            'post': 'yes',
+        })
+
+    def _exists(self, user):
+        return get_user_model().objects.filter(pk=user.pk).exists()
+
+    def test_cannot_delete_myself_from_the_delete_page(self):
+        self.assertEqual(self.client.get(self._delete_url(self.me)).status_code, 403)
+        self.assertEqual(
+            self.client.post(self._delete_url(self.me), {'post': 'yes'}).status_code, 403)
+        self.assertTrue(self._exists(self.me))
+
+    def test_change_page_hides_the_delete_link_for_myself(self):
+        page = self.client.get(reverse('admin:auth_user_change', args=[self.me.pk]))
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, self._delete_url(self.me))
+
+    def test_cannot_bulk_delete_myself(self):
+        self._bulk_delete(self.me)
+        self.assertTrue(self._exists(self.me))
+
+    def test_staff_cannot_delete_the_last_superuser(self):
+        """superuser가 아닌 운영 보조 계정이 마지막 superuser를 지우는 경우."""
+        from django.contrib.auth.models import Permission
+        helper = get_user_model().objects.create_user(
+            username='helper', password='x', is_staff=True)
+        helper.user_permissions.add(*Permission.objects.filter(
+            codename__in=['view_user', 'delete_user']))
+        self.client.force_login(helper)
+
+        self.assertEqual(self.client.get(self._delete_url(self.me)).status_code, 403)
+        self._bulk_delete(self.me)
+        self.assertTrue(self._exists(self.me))
+
+    def test_cannot_bulk_delete_every_other_superuser_at_once(self):
+        """하나씩 보면 '마지막'이 아니어도, 한꺼번에 지우면 0명이 되는 경우."""
+        from django.contrib.auth.models import Permission
+        User = get_user_model()
+        other = User.objects.create_superuser(username='other', password='x')
+        helper = User.objects.create_user(username='helper', password='x', is_staff=True)
+        helper.user_permissions.add(*Permission.objects.filter(
+            codename__in=['view_user', 'delete_user']))
+        self.client.force_login(helper)
+
+        response = self._bulk_delete(self.me, other)
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(self._exists(self.me))
+        self.assertTrue(self._exists(other))
+
+    def test_can_still_delete_another_superuser_when_one_remains(self):
+        other = get_user_model().objects.create_superuser(username='other', password='x')
+        self.client.post(self._delete_url(other), {'post': 'yes'})
+        self.assertFalse(self._exists(other))
+
+    def test_can_still_delete_ordinary_members(self):
+        member = _kakao_login().user
+        self._bulk_delete(member)
+        self.assertFalse(self._exists(member))
