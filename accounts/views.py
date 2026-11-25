@@ -36,11 +36,23 @@ def withdraw(request):
     """회원 탈퇴. GET은 확인 화면, POST가 실제 탈퇴다.
 
     GET 한 번으로 탈퇴되면 링크 미리보기나 실수 클릭으로도 계정이 사라진다.
+
+    **관리자 계정(staff·superuser)은 이 경로로 지우지 않는다.** 어드민과 사이트는 같은
+    세션을 쓰므로, 어드민에 로그인한 채 사이트 머리말의 "탈퇴"를 누르면 운영 서버의
+    유일한 관리자 계정이 사라진다. 그러면 검수·모니터링 화면에 아무도 들어가지 못하고
+    서버 셸에서 `createsuperuser`로 되살릴 때까지 운영자가 눈을 잃는다. 관리자 계정을
+    정말 지워야 하면 어드민의 사용자 화면에서 지운다 — 그쪽은 지워지는 것이 무엇인지
+    보여주는 확인 화면을 거친다.
     """
+    user = request.user
+    if user.is_staff or user.is_superuser:
+        status = 200 if request.method == 'GET' else 403
+        return render(request, 'accounts/withdraw.html',
+                      {'protected': True}, status=status)
+
     if request.method == 'GET':
         return render(request, 'accounts/withdraw.html')
 
-    user = request.user
     for account in SocialAccount.objects.filter(user=user, provider='kakao'):
         kakao.unlink(account.uid)
     # 세션을 먼저 끊는다. 계정을 지운 뒤에는 로그아웃이 지울 대상을 못 찾는다.

@@ -6,6 +6,16 @@
 {% block content %}
   <section class="intro">
     <h1>회원 탈퇴</h1>
+    {% if protected %}
+    {% comment %} 관리자 계정은 여기서 지우지 않는다(accounts/views.py withdraw).
+       버튼 자체를 그리지 않아 실수로 누를 수 없게 한다. {% endcomment %}
+    <p>관리자 계정은 이 화면에서 탈퇴할 수 없습니다.</p>
+    <p class="landing-note">
+      이 계정이 지워지면 검수·운영 화면에 들어갈 수 없게 됩니다.
+      꼭 지워야 한다면 관리자 화면의 사용자 목록에서 지우세요.
+    </p>
+    <a class="link-label" href="{% url 'disclosures:home' %}">돌아가기</a>
+    {% else %}
     <p>탈퇴하면 아래 정보가 <strong>즉시 삭제</strong>되며 되돌릴 수 없습니다.</p>
     <ul>
       <li>카카오 회원번호와 닉네임</li>
@@ -22,5 +32,6 @@
       <button type="submit" class="btn btn-danger">탈퇴하기</button>
       <a class="link-label" href="{% url 'disclosures:home' %}">취소하고 돌아가기</a>
     </form>
+    {% endif %}
   </section>
 {% endblock %}

@@ -309,6 +309,45 @@ class WithdrawTest(TestCase):
         self.assertTrue(get_user_model().objects.filter(pk=self.user.pk).exists())
 
 
+class StaffWithdrawGuardTest(TestCase):
+    """관리자 계정은 사이트의 탈퇴로 지워지지 않는다.
+
+    어드민과 사이트가 세션을 공유하므로, 어드민에 로그인한 채 머리말의 "탈퇴"를 누르면
+    운영 서버의 관리자 계정이 사라질 수 있었다.
+    """
+
+    def _assert_survives(self, user, **flags):
+        for name, value in flags.items():
+            setattr(user, name, value)
+        user.save()
+        self.client.force_login(user)
+
+        with patch('accounts.kakao.requests.post') as post:
+            page = self.client.get(reverse('accounts:withdraw'))
+            response = self.client.post(reverse('accounts:withdraw'))
+
+        self.assertEqual(page.status_code, 200)
+        self.assertNotContains(page, '탈퇴하기')       # 누를 버튼 자체가 없다
+        self.assertContains(page, '관리자 계정은 이 화면에서 탈퇴할 수 없습니다')
+        self.assertEqual(response.status_code, 403)
+        post.assert_not_called()                       # 카카오 연결도 끊지 않는다
+        self.assertTrue(get_user_model().objects.filter(pk=user.pk).exists())
+        self.assertIn('_auth_user_id', self.client.session)  # 로그아웃도 안 된다
+
+    def test_staff_account_survives(self):
+        user = get_user_model().objects.create_user(username='reviewer')
+        self._assert_survives(user, is_staff=True)
+
+    def test_superuser_survives(self):
+        user = get_user_model().objects.create_user(username='root')
+        self._assert_survives(user, is_superuser=True)
+
+    def test_staff_linked_to_kakao_keeps_its_link(self):
+        account = _kakao_login()
+        self._assert_survives(account.user, is_staff=True)
+        self.assertTrue(SocialAccount.objects.filter(pk=account.pk).exists())
+
+
 @override_settings(
     KAKAO_ADMIN_KEY=ADMIN_KEY, KAKAO_LOGIN_ENABLED=True,
     SOCIALACCOUNT_PROVIDERS={'kakao': {
